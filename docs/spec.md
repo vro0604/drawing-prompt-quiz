@@ -1061,8 +1061,8 @@ URL: `/u/[handle]`
 
 | 工程 | 内容 | 終了条件 |
 |---|---|---|
-| **3A** | スキーマ設計の確定（実装なし） | この仕様書と decisions.md へ反映済み |
-| **3B-1** | マスタ5表：`tag_pools` `card_slots` `draft_modes` `draft_mode_slots` `tags`<br>＋RLS＋権限＋マスタ行（タグ本体を除く） | モードと枠の構成を管理画面で確認できる |
+| ~~**3A**~~ ✅ | スキーマ設計の確定（実装なし） | この仕様書と decisions.md へ反映済み |
+| ~~**3B-1**~~ ✅ | マスタ5表：`tag_pools` `card_slots` `draft_modes` `draft_mode_slots` `tags`<br>＋RLS＋権限＋マスタ行（タグ本体を除く） | モードと枠の構成を管理画面で確認できる |
 | **3B-2a** | ドラフト2表：`draft_sessions` `draft_candidates`＋RLS＋権限 | `draft_candidates` が0件で返る |
 | **3B-2b** | 確定お題・クイズ4表：`prompts` `prompt_cards` `quiz_questions` `quiz_choices`<br>＋RLS＋権限 | 機密3表が0件で返る |
 | **3B-3a** | 作品・回答・集計6表：`works` `answers` `answer_items`<br>`work_slot_stats` `user_stats` `user_slot_stats`＋RLS＋権限 | `works` が0件で返る |
@@ -1072,6 +1072,17 @@ URL: `/u/[handle]`
 | **3E** | 横断診断ページで全テーブルの状態を確認しコミット | 権限表と実際の設定が一致 |
 
 各工程の前に説明を提示し、確認を待ってから着手する。取り消し用SQLも工程ごとに用意する。
+
+**共通の作法**（3B-1 で確立。以降の工程もこれに従う）
+
+- マイグレーションは全体を `begin` / `commit` で囲む。途中で失敗したら何も残らない
+- `create table` に `if not exists` を付けない。付けると、列や制約が異なる
+  古い表があっても作成を飛ばして黙って使ってしまう。
+  やり直すときは取り消し用SQLで消してから流し直す
+- 正常終了した番号付きマイグレーションは再実行しない
+- 機密でない表も、公開する列は `grant select (列名, ...)` で明示する。
+  その結果 **`select *` は権限エラーになる**ため、アプリ側は列名を必ず列挙する
+- 取り消し用SQLも `begin` / `commit` で囲み、参照している側から順に消す
 
 ---
 

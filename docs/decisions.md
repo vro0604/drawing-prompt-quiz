@@ -226,6 +226,48 @@ DBの制約では表現できないので RPC 側で強制する。
 
 ---
 
+## Step 3B-1（マスタ5表）で確認できたこと
+
+### D29. RLS ポリシーは、利用者に列権限が無い列も条件に使える（実地検証済み）
+`draft_modes` は `is_active` の列権限を `anon` / `authenticated` に与えていないが、
+SELECT ポリシーの条件には `is_active = true` を使っている。
+この組み合わせが正しく働くかは事前に確証が無かったため、
+3B-1 の実行時に `set local role anon` で実際に確かめた。
+
+```
+結果: anon から select mode_key, label, candidate_count → easy と standard の2行が返った
+      anon から select weight from tags       → ERROR 42501: permission denied
+```
+
+**分かったこと**
+
+- ポリシーの条件式に使う列と、利用者が読める列は independent。
+  「絞り込みには使うが値は見せない」列を作れる
+- 列権限は利用者が書いたクエリに対して効く。ポリシーの内部評価には効かない
+
+**この事実に依存する設計**（以降の工程でも同じ形を使う）
+
+- `tags` … `is_active` で絞り込むが値は返さない
+- `works` … `is_published` / `review_status` / `deleted_at` で絞り込むが、
+  他人にはこれらの値を返さない（D23）
+
+### D30. 列単位の grant を使うと `select *` が権限エラーになる
+`grant select (列名, ...)` で列を絞ると、`select *` は「読めない列を含む」ため
+`permission denied for table ...` になる。データが一部だけ返るのではなく、
+クエリ全体が失敗する。
+
+アプリ側では列名を必ず列挙する。
+
+```
+NG:  .from("tags").select("*")
+OK:  .from("tags").select("id, pool_key, label")
+```
+
+Step 2 の `profiles` は表全体に SELECT を与えているため `*` が使える。
+この差は混乱しやすいので、コード側にも注意書きを残す。
+
+---
+
 ## 公開前の必須課題
 
 MVPでは実装しないが、**一般公開の前に必ず決着させる**もの。
