@@ -1,6 +1,10 @@
+import Link from "next/link";
 import { connection } from "next/server";
 import { missingSupabaseEnv, SUPABASE_URL, SUPABASE_PUBLISHABLE_KEY } from "@/lib/env";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
+import { Field, Layout, Section, Status } from "./_ui";
+
+const NOTE = "このページは開発用です。Step 3 でテーブルを作成したら本物のクエリに置き換えます。";
 
 /**
  * Supabase との接続を確認するための診断ページ（開発用）。
@@ -83,7 +87,7 @@ export default async function HealthPage() {
 
   if (missing.length > 0) {
     return (
-      <Layout>
+      <Layout title="Supabase 接続診断" note={NOTE}>
         <Status ok={false} title="環境変数が未設定です" />
         <Section label="未設定の変数">
           <ul className="list-disc pl-5">
@@ -126,23 +130,17 @@ export default async function HealthPage() {
   }
 
   return (
-    <Layout>
+    <Layout title="Supabase 接続診断" note={NOTE}>
       <Status ok={result.ok} title={result.title} />
       <Section label="詳細">
         <p className="whitespace-pre-wrap">{result.detail}</p>
       </Section>
       <Section label="接続先">
         <dl className="space-y-1">
-          <div>
-            <dt className="inline text-black/50 dark:text-white/50">URL: </dt>
-            <dd className="inline break-all">{SUPABASE_URL}</dd>
-          </div>
-          <div>
-            <dt className="inline text-black/50 dark:text-white/50">Publishable key: </dt>
-            <dd className="inline break-all">
-              {SUPABASE_PUBLISHABLE_KEY.slice(0, 22)}…（以降は伏せています）
-            </dd>
-          </div>
+          <Field label="URL">{SUPABASE_URL}</Field>
+          <Field label="Publishable key">
+            {SUPABASE_PUBLISHABLE_KEY.slice(0, 22)}…（以降は伏せています）
+          </Field>
         </dl>
       </Section>
       {result.hint.length > 0 && (
@@ -154,41 +152,11 @@ export default async function HealthPage() {
           </ol>
         </Section>
       )}
+      <Section label="次の診断">
+        <Link className="underline" href="/health/auth">
+          /health/auth — 匿名サインインと profiles 自動生成
+        </Link>
+      </Section>
     </Layout>
-  );
-}
-
-function Layout({ children }: { children: React.ReactNode }) {
-  return (
-    <main className="mx-auto max-w-2xl space-y-6 p-8 font-mono text-sm">
-      <h1 className="text-xl font-bold">Supabase 接続診断</h1>
-      {children}
-      <p className="pt-4 text-xs text-black/40 dark:text-white/40">
-        このページは開発用です。Step 3 でテーブルを作成したら本物のクエリに置き換えます。
-      </p>
-    </main>
-  );
-}
-
-function Status({ ok, title }: { ok: boolean; title: string }) {
-  return (
-    <p
-      className={`rounded-lg px-4 py-3 text-base font-bold ${
-        ok
-          ? "bg-emerald-500/15 text-emerald-700 dark:text-emerald-300"
-          : "bg-rose-500/15 text-rose-700 dark:text-rose-300"
-      }`}
-    >
-      {ok ? "OK" : "NG"} — {title}
-    </p>
-  );
-}
-
-function Section({ label, children }: { label: string; children: React.ReactNode }) {
-  return (
-    <section className="space-y-1">
-      <h2 className="text-xs uppercase tracking-wider text-black/40 dark:text-white/40">{label}</h2>
-      <div className="leading-relaxed">{children}</div>
-    </section>
   );
 }

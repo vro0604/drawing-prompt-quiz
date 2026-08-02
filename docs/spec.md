@@ -537,12 +537,12 @@ reports(id, work_id, reporter_id, reason, detail, status, created_at)
 | 列 | 型 | 既定 | 備考 |
 |---|---|---|---|
 | id | uuid PK → auth.users.id | | 匿名ユーザーも含む |
-| handle | text UNIQUE (null可) | null | 登録時に確定。3〜20字の英数字とハイフン |
-| display_name | text | 「ゲスト」 | |
-| bio | text | null | |
-| links | jsonb | `{}` | X / pixiv など |
-| is_anonymous | boolean | true | 昇格時に false |
-| **show_answer_stats** | boolean | **true** | 回答者としての成績を公開するか |
+| handle | text UNIQUE (null可) | null | 登録時に確定。3〜20字の**小文字**英数字とハイフン。先頭・末尾のハイフン不可 |
+| display_name | text | 「ゲスト」 | 1〜30字 |
+| bio | text | null | 500字以内 |
+| links | jsonb | `{}` | X / pixiv など。JSON object かつ 4096 バイト以内 |
+| is_anonymous | boolean | true | 昇格時に false。**プロフィールの閲覧範囲の判定に使う**（D12）。更新は `auth.users` からのトリガー経由のみ |
+| **show_answer_stats** | boolean | **false** | 回答者としての成績を公開するか（D11） |
 | **show_answer_history** | boolean | **false** | 回答履歴を公開するか（本人のみが初期値） |
 | **show_saved_works** | boolean | **false** | 保存作品を公開するか（本人のみが初期値） |
 | created_at | timestamptz | | |
@@ -620,7 +620,7 @@ Supabase の**新しいキー体系（publishable / secret）**を使う。
 
 | テーブル | SELECT | INSERT | UPDATE | DELETE |
 |---|---|---|---|---|
-| profiles | 全員 | 本人 | 本人 | × |
+| profiles | `is_anonymous = false` **かつ** handle 確定済みは全員／それ以外は本人のみ（D12） | **トリガーのみ**（クライアント不可） | 本人（6列のみ。handle / is_anonymous は不可） | × |
 | tag_pools / card_slots | 全員 | × | × | × |
 | tags | 全員（`is_active` のみ） | × | × | × |
 | draft_sessions | owner のみ | RPC | RPC | × |
@@ -800,7 +800,7 @@ URL: `/u/[handle]`
 | 11 | 項目別正答率＋集計トリガー | 別端末で回答すると%が動く |
 | 12 | いいね・保存（登録必須） | 匿名では押せない |
 | 13 | ランキング（3種×2系統） | 人気は登録ユーザーのいいねのみ |
-| 14 | ポートフォリオページ＋公開設定 | 既定で履歴・保存が非公開 |
+| 14 | ポートフォリオページ＋公開設定 | 既定で成績・履歴・保存が非公開 |
 | 15 | 共有OGP／通報／削除・非公開 | |
 | 16 | Vercelデプロイ／匿名ユーザー掃除Cron／CAPTCHA | 本番で一連の流れが通る |
 
