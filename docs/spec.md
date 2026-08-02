@@ -22,7 +22,7 @@
 
 | # | 論点 | 決定 |
 |---|---|---|
-| B1 | モード | MVPは「お手軽3枚」「標準5枚」の2モードのみ |
+| B1 | モード | MVPは「お手軽（3項目）」「標準（5項目）」の2モードのみ |
 | B3 | クイズ問数 | MVPは3問固定 |
 | B6 | 匿名ID | Supabase 匿名サインインを採用 |
 | B6-a | 昇格 | 匿名 → **新規**通常アカウントへの昇格のみMVPに含める |
@@ -40,8 +40,8 @@
 
 | # | 仮定 |
 |---|---|
-| A1 | 伏せカードは1スロットあたり4枚。そこから1枚選ぶ |
-| A2 | クイズは4択×3問 |
+| A1 | 伏せカードの枚数はモードごとに決まる（`draft_modes.candidate_count`）。easy=3 / standard=5 |
+| A2 | クイズは**4択×3問**。選択肢数は `candidate_count` とは独立した固定値（D15） |
 | A3 | `constraint`（制約）はカードとしては引くが、クイズ対象からは除外する |
 | A4 | 1作品につき1ユーザー（匿名ID含む）1回のみ回答できる |
 | A5 | 1投稿1画像。複数枚・差分投稿はMVP外 |
@@ -49,7 +49,8 @@
 | A7 | 投稿削除は論理削除（`deleted_at`）＋Storage画像の削除 |
 | A8 | AI部門は自己申告。自動検出はしない |
 | A9 | 「他の候補を見る」を押しても、その後の投稿は引き続き可能 |
-| A10 | サーバータイマーはMVP未実装。列だけ用意する |
+| A10 | サーバータイマーはMVPで扱わない。**列も持たない** |
+| A11 | **1つのお題から作れる作品は最大1件**。作れるのはお題の作成者本人のみ（D17） |
 
 ---
 
@@ -73,8 +74,9 @@
 ### 3-2. カードスロット（card_slots）
 
 お題の「枠」。**どのプールから引くかを指定するだけ**で、タグは持たない。
+主キーは `card_slot_key`（text）。数値IDは使わない（D14）。
 
-| slot_key | 表示名 | pool_key | quiz_priority | クイズ対象 |
+| card_slot_key | 表示名 | pool_key | quiz_priority | クイズ対象 |
 |---|---|---|---|---|
 | `motif_a` | モチーフA | `motif` | 1 | ○ |
 | `motif_b` | モチーフB | `motif` | 2 | ○ |
@@ -87,37 +89,66 @@
 | `gender_expr` | 性別・性表現 | `gender` | 9 | ○ |
 | `constraint` | 制約 | `constraint` | — | × |
 
+10枠すべてを `card_slots` に登録する（設計の語彙を固定するため）。
+そのうちMVPで実際に使うのは、下の `draft_mode_slots` が参照する5枠のみ。
+
 **この分離によって得られること**
 
 - 「傘」というタグを motif_a 用・motif_b 用に二重登録しなくてよい
 - 「深い青」を main_color 用・sub_color 用に二重登録しなくてよい
 - タグの追加はプールに1行足すだけで、全スロットに反映される
 
-### 3-3. モード定義
+### 3-3. モード定義（draft_modes / draft_mode_slots）
 
-| mode | 表示名 | スロット | MVP |
-|---|---|---|---|
-| `easy` | お手軽（3枚） | motif_a, motif_b, main_color | 実装する |
-| `standard` | 標準（5枚） | ＋ species, genre_type | 実装する |
-| `advanced` | 本格（8枚） | ＋ sub_color, role, era_env | 後日 |
-| `full` | フル（10枚） | ＋ gender_expr, constraint | 後日 |
+モードは「枠の構成」と「1枠あたりの伏せカード枚数」を**別々に**持つ（D16）。
+どちらもマスタテーブルに置き、コードに定数として埋め込まない。
+
+**draft_modes**
+
+| mode_key | 表示名 | 枠数 | candidate_count | max_rerolls | quiz_question_count | MVP |
+|---|---|---|---|---|---|---|
+| `easy` | お手軽 | 3項目 | **3** | 1 | 3 | 実装する |
+| `standard` | 標準 | 5項目 | **5** | 1 | 3 | 実装する |
+
+`advanced` / `full` は `candidate_count` 等が未確定のため、**MVPでは行を登録しない**。
+実装するときに `draft_modes` へ行を足すだけで有効化できる。
+
+**draft_mode_slots**
+
+| mode_key | card_slot_key | sort_order |
+|---|---|---|
+| `easy` | `motif_a` | 1 |
+| `easy` | `main_color` | 2 |
+| `easy` | `genre_type` | 3 |
+| `standard` | `motif_a` | 1 |
+| `standard` | `motif_b` | 2 |
+| `standard` | `main_color` | 3 |
+| `standard` | `species` | 4 |
+| `standard` | `genre_type` | 5 |
+
+**用語の注意**: 「3項目」「5項目」は**枠の数**であり、`candidate_count`（1枠あたりの伏せカード枚数）とは別の設定値。
+標準モードは 5枠 × 5候補 = 25枚の伏せカードを引く。
+画面表示では枠数を「項目」と呼び、「◯枚」という表現は使わない。
 
 ### 3-4. 制作時間（カードではない）
 
 **ドラフト開始前にユーザーが選択する設定値。**抽選しない。クイズ対象にもならない。
 
-| time_limit_type | 表示 |
+秒数（`time_limit_seconds`）を唯一の正本として保存する（D18）。
+`null` は「無制限」を表す。表示用の区分（10分／30分…）は画面側で秒数から導く。
+
+| 選択肢 | time_limit_seconds |
 |---|---|
-| `t10` | 10分 |
-| `t30` | 30分 |
-| `t60` | 60分 |
-| `t120` | 120分 |
-| `unlimited` | 無制限 |
-| `custom` | 自由設定（分を入力。1〜10000） |
-| `timer` | サーバータイマー参加（**MVP未実装。列のみ用意**） |
+| 10分 | 600 |
+| 30分 | 1800 |
+| 60分 | 3600 |
+| 120分 | 7200 |
+| 無制限 | `null` |
+| 自由設定 | 60〜600000（1〜10000分） |
 
 結果画面・お題カード・作品詳細では**バッジ**として表示する（伏せない）。
-投稿時に申告する「実績制作時間」は別データ（§7 works）。
+投稿時に申告する実績時間は別データ（`works.actual_time_seconds`）。
+サーバータイマーはMVPで扱わず、列も持たない（A10）。
 
 ---
 
@@ -126,29 +157,47 @@
 ### 4-1. 候補生成アルゴリズム（サーバー側で1回だけ実行）
 
 ```
-入力: mode, ruleset
-1. slots = モードに対応するスロット一覧
+入力: mode_key
+0. N = draft_modes.candidate_count（easy=3 / standard=5）
+1. slots = draft_mode_slots で mode_key に紐づく card_slot_key 一覧
 2. slots を pool_key でグループ化する
 3. 各プール P について:
-     needed = 4 × (P を使うスロットの数)
-       例) easy モードの motif プール → motif_a と motif_b の2スロット → 8件
-           easy モードの color プール → main_color の1スロット      → 4件
+     needed = N × (P を使うスロットの数)
+       例) standard の motif プール → motif_a と motif_b の2スロット → 5×2 = 10件
+           standard の color プール → main_color の1スロット        → 5×1 = 5件
+           easy の motif プール     → motif_a の1スロット            → 3×1 = 3件
      tags(P) から weight による重み付き抽選で needed 件を「重複なし」で取得
-     取得した件を各スロットへ 4件ずつ配分する
-4. draft_candidates へ INSERT（session_id, generation, slot_key, slot_index 0..3, tag_id）
-5. クライアントには slot_key と slot_index だけ返す。tag_id / label は返さない
+     取得した件を各スロットへ N 件ずつ配分する
+4. draft_candidates へ INSERT
+     (session_id, generation, card_slot_key, candidate_index 0..N-1, tag_id)
+5. クライアントには card_slot_key と candidate_index だけ返す。tag_id / label は返さない
 ```
+
+`candidate_index` は 0 から `candidate_count - 1` まで。**枠を表す `card_slot_key` と、
+その枠の中での位置を表す `candidate_index` は別の列**として持つ（D16）。
 
 **保証されること**
 
 - 同一プールを使う複数スロット間で、候補が1件も重複しない
   → motif_a で「傘」を選んだあと motif_b の候補に「傘」が残っている、という事態が起きない
-- どの札を選んでも結果は異なる（4枚に別々のタグが入っている＝偽の選択ではない）
+- どの札を選んでも結果は異なる（各候補に別々のタグが入っている＝偽の選択ではない）
 - 選択前にクライアントは中身を知り得ない（レスポンスに含まれない）
+
+**必要なタグ数の下限**（この式から導かれる）
+
+| プール | easy | standard | クイズの誤答用 | **下限** |
+|---|---|---|---|---|
+| `motif` | 1枠×3 = 3 | **2枠×5 = 10** | 2 + 3 = 5 | **10** |
+| `color` | 1枠×3 = 3 | 1枠×5 = 5 | 1 + 3 = 4 | **5** |
+| `species` | — | 1枠×5 = 5 | 1 + 3 = 4 | **5** |
+| `genre` | 1枠×3 = 3 | 1枠×5 = 5 | 1 + 3 = 4 | **5** |
+
+「クイズの誤答用」は `そのお題が使っている同プールのタグ数 + 誤答3件`。
+いずれも抽選側の要求が上回るため、**下限は合計25件**。実用上の推奨値は §8-2 を参照。
 
 ### 4-2. 開封（reveal_card）
 
-ユーザーが `slot_index` を1つ選ぶと、サーバーが該当行を `is_chosen = true` にして、
+ユーザーが `candidate_index` を1つ選ぶと、サーバーが該当行を `is_chosen = true` にして、
 **その1件の label だけ**返す。他の3件は伏せたまま。開封は不可逆。
 
 ### 4-3. リロール（引き直し）
@@ -156,14 +205,20 @@
 | 項目 | 仕様 |
 |---|---|
 | 単位 | **ドラフト全体**。カード単位の引き直しは不可 |
-| 回数 | MVPは **1回まで**（`draft_sessions.max_rerolls = 1`） |
+| 回数 | `draft_modes.max_rerolls`（MVPは easy / standard とも **1回**） |
 | 挙動 | `generation` を +1 して候補を全スロット分ゼロから再抽選。旧世代の行は残すが無効化する |
 | 記録 | 確定時に `prompts.was_rerolled` と `prompts.reroll_count` に記録する |
 | 表示 | お題カード・作品詳細に「引き直しあり」を控えめに表示する |
-| 将来拡張 | `draft_sessions.ruleset` で制御。`'standard'` → max_rerolls=1、`'one_shot'`（一発ドラフト） → max_rerolls=0 |
 
 リロールを1回に制限する理由: 無制限にすると「当たりが出るまで回す」ゲームになり、
 正答率という指標の意味が薄れるため。
+
+`ruleset` 列は廃止した（D19）。回数の制御は `draft_modes.max_rerolls` が担う。
+セッション開始時にその値を `draft_sessions.max_rerolls` へ写しとして保存し、
+進行中にマスタを変更してもそのセッションのルールは変わらないようにする。
+
+**一発ドラフト（引き直し0回）の扱いは未確定。** モードとして足すか、
+モードとは独立した設定として持つかを含め、実装時に改めて設計する（D19）。
 
 ### 4-4. 未選択カードの開示
 
@@ -188,12 +243,18 @@
 
 ```
 候補 = そのお題の prompt_cards のうち card_slots.is_quiz_eligible = true のもの
-quiz_priority の昇順に並べ、上位3件を採用
-  easy     → motif_a, motif_b, main_color
+quiz_priority の昇順に並べ、上位 draft_modes.quiz_question_count 件を採用
+  easy     → motif_a, main_color, genre_type（3枠すべてが対象になる）
   standard → motif_a, motif_b, main_color （species / genre_type は優先度下位のため出題されない）
 ```
 
+**制約**: `quiz_question_count` は、そのモードのクイズ対象スロット数を超えられない。
+モードを追加するときはこの条件を必ず確認する。
+
 ### 5-2. 選択肢の生成
+
+**選択肢は4択で固定**。`candidate_count`（伏せカードの枚数）とは独立した設定値であり、
+モードが変わっても4択のまま（A2 / D15）。
 
 ```
 各問（スロット S、プール P）について:
@@ -235,19 +296,18 @@ quiz_priority の昇順に並べ、上位3件を採用
       │  ※画面下部に常時 [ドラフトを引き直す（残り1回）] を表示
       │     押すと最初のステップに戻り、候補を全スロット再抽選する
       ↓
-    [結果画面]
+    [結果画面]  /p/[prompt_id]  ← 作成者本人のみ開ける
       ・確定したお題カード一覧
       ・制作時間バッジ（例: 60分）
       ・引き直しバッジ（引き直した場合のみ）
-      ・お題コード: A7K3M9
-      ・[カード画像を保存] [URLをコピー] [Xで共有]
+      ・[カード画像を保存]  ← 共有はこの画像で行う。URLは他人が開けない
       ・[このお題で描く] → 投稿導線
       ・[他の候補を見る]  ← 押すと未選択カードを開示（本人のみ・不可逆）
       ・[このお題は描かない] → チャレンジ放棄。未選択カードを開示
       ↓
     [このお題で描く]
       ├ 未ログイン（匿名）→ ここで初めて登録を促す（投稿はアカウント必須）
-      └ ログイン済 → /works/new?prompt=A7K3M9
+      └ ログイン済 → /works/new?prompt=[prompt_id]
            ・画像1枚
            ・タイトル
            ・部門（オリジナル / ファンアート / AI作品）
@@ -299,7 +359,7 @@ MVPでは、その場合に「匿名の記録は引き継げません」と明�
 | `/` | 通常フィード（オリジナル＋ファンアート） | 可 | |
 | `/ai` | AI作品フィード | 可 | 通常フィードと完全分離 |
 | `/draft` | モード・制作時間選択 → カードドラフト | 可 | |
-| `/p/[code]` | お題カード | 作成者のみ | |
+| `/p/[id]` | お題カード | 作成者のみ | 共有コードは廃止（D17）。他人が開いても中身は返らない |
 | `/works/new` | 投稿フォーム | **不可** | 登録必須 |
 | `/works/[id]` | 作品詳細＋クイズ | 可 | |
 | `/rankings` | ランキング | 可 | `?type=popular|accuracy|duration&feed=normal|ai` |
@@ -315,27 +375,35 @@ MVPでは、その場合に「匿名の記録は引き継げません」と明�
 
 ### 8-1. テーブル一覧
 
+全21テーブル。`profiles` は Step 2 で作成済み。
+
 ```
-profiles              プロフィール（匿名ユーザーも1行持つ）＋公開設定
+profiles              プロフィール（匿名ユーザーも1行持つ）＋公開設定   ← Step 2 済
 tag_pools             タグプール定義（マスタ）
 card_slots            カードスロット定義（マスタ）
+draft_modes           モード定義（マスタ）
+draft_mode_slots      モードが使う枠（マスタ）
 tags                  タグ本体（プールに属する・重み付き）
 draft_sessions        ドラフト進行状態
 draft_candidates      伏せカードの中身【機密】
 prompts               確定したお題
 prompt_cards          お題を構成する確定カード【機密】
-quiz_questions        出題される3問
-quiz_choices          各問の4択【is_correct が機密】
-works                 投稿作品
+quiz_questions        出題される3問【機密】
+quiz_choices          各問の4択【機密】
+works                 投稿作品（prompt_id は非公開列）
 answers               回答（1作品1ユーザー1件）
 answer_items          回答の内訳【機密：正解が推測できるため本人限定】
 work_slot_stats       作品×スロットの正答集計
 user_stats            ユーザーの通算成績
 user_slot_stats       ユーザー×スロットの成績
-likes                 いいね（登録ユーザーのみ）
+likes                 いいね（登録ユーザーのみ・本人のみ閲覧可）
 saves                 保存（登録ユーザーのみ）
-reports               通報
+reports               通報【機密】
 ```
+
+**【機密】= `anon` / `authenticated` へテーブル権限を一切与えない**（D20）。
+RLSポリシーを作らないことに加え、`grant` そのものを行わない二重の防御とする。
+必要な情報はサーバー関数（RPC）だけが返す。
 
 ### 8-2. マスタ系
 
@@ -351,30 +419,69 @@ reports               通報
 
 | 列 | 型 | 備考 |
 |---|---|---|
-| key | text PK | `motif_a` など |
+| card_slot_key | text PK | `motif_a` など。数値IDは使わない（D14） |
 | label | text | 表示名 |
 | pool_key | text FK → tag_pools | **どのプールから引くか** |
-| sort_order | int | ドラフトの提示順 |
-| quiz_priority | int | 小さいほど優先して出題 |
+| quiz_priority | int | 小さいほど優先して出題。クイズ対象外は null |
 | is_quiz_eligible | boolean | `constraint` のみ false |
 
-**tags**
+提示順はモードごとに変わるため、`card_slots` ではなく `draft_mode_slots` が持つ。
+
+**draft_modes**
 
 | 列 | 型 | 備考 |
 |---|---|---|
-| id | bigint PK | |
-| pool_key | text FK → tag_pools | **スロットではなくプールに属する** |
-| label | text | |
-| weight | int | 既定100。レアは小さく |
-| is_active | boolean | 既定true |
-| note | text | 運用メモ |
+| mode_key | text PK | `easy` / `standard` |
+| label | text | 表示名 |
+| candidate_count | int | **1枠あたりの伏せカード枚数**。easy=3 / standard=5 |
+| max_rerolls | int | 引き直せる回数。MVPはどちらも1 |
+| quiz_question_count | int | 出題数。MVPはどちらも3 |
+| sort_order | int | 選択画面の並び順 |
+| is_active | boolean | 選択肢として出すか |
+
+CHECK: `candidate_count >= 2` / `max_rerolls >= 0` / `quiz_question_count >= 1`
+
+**draft_mode_slots**
+
+| 列 | 型 | 備考 |
+|---|---|---|
+| mode_key | text FK → draft_modes | |
+| card_slot_key | text FK → card_slots | |
+| sort_order | int | ドラフトの提示順 |
+
+PRIMARY KEY(mode_key, card_slot_key) / UNIQUE(mode_key, sort_order)
+
+**tags**
+
+| 列 | 型 | 公開 | 備考 |
+|---|---|---|---|
+| id | bigint PK | ○ | |
+| pool_key | text FK → tag_pools | ○ | **スロットではなくプールに属する** |
+| label | text | ○ | |
+| weight | int | **×** | 既定100。レアは小さく。**運営用・非公開**（D21） |
+| is_active | boolean | **×** | 既定true。false の行はそもそも返さない |
+| note | text | **×** | 運用メモ |
 
 UNIQUE(pool_key, label)
+
+**公開取得で返す列は `id` / `pool_key` / `label` の3つだけ**（D21）。
+`weight` を公開すると「どのタグが出にくいか」が分かり、クイズの推測材料になる。
+`is_active = false` の行は RLS の条件で除外するため、列そのものも返さない。
 
 > **運用ポリシー**: タグに既存IPの固有名詞を登録しない。
 > 代わりに `genre` プールへ「変身戦士」「魔法少女」「巨大ロボ」「怪獣災害」「学園異能」
 > 「収集・育成型怪物」などの一般的な類型を入れる。
 > 利用者が自主的に既存IPへ寄せた場合はファンアート部門で投稿してもらう。
+
+**初期投入数**（MVPで使う4プールのみ。残り4プールは定義だけ作りタグは入れない）
+
+| プール | 下限（§4-1） | 推奨初期投入 | 根拠 |
+|---|---|---|---|
+| `motif` | 10 | **80** | standard で毎回10件消費するため最も厚く積む |
+| `color` | 5 | **32** | 将来 `sub_color` が増えると2枠になる |
+| `species` | 5 | **24** | |
+| `genre` | 5 | **20** | 固有名詞禁止。一般類型のみ |
+| | **計25** | **計156** | |
 
 ### 8-3. ドラフト・お題
 
@@ -384,16 +491,18 @@ UNIQUE(pool_key, label)
 |---|---|---|
 | id | uuid PK | |
 | owner_id | uuid FK → profiles | 匿名含む |
-| mode | text | `easy` / `standard` |
-| ruleset | text | `standard`（既定） / `one_shot`（将来） |
-| time_limit_type | text | ユーザーが選択 |
-| time_limit_minutes | int | `custom` のときのみ |
-| max_rerolls | int | ruleset から決定（standard=1, one_shot=0） |
+| mode_key | text FK → draft_modes | |
+| candidate_count | int | **開始時点の写し**。進行中にマスタが変わっても影響を受けない |
+| max_rerolls | int | **開始時点の写し**。同上 |
+| time_limit_seconds | int null | null = 無制限（§3-4） |
 | reroll_count | int | 既定0 |
 | current_generation | int | 既定1。リロールで +1 |
 | status | text | `in_progress` / `completed` / `abandoned` |
 | prompt_id | uuid FK | 完了時に紐付け |
 | created_at | timestamptz | |
+
+CHECK: `reroll_count <= max_rerolls`
+CHECK: `time_limit_seconds is null or time_limit_seconds between 60 and 600000`
 
 **draft_candidates** 【機密】
 
@@ -402,23 +511,21 @@ UNIQUE(pool_key, label)
 | id | bigint PK | |
 | session_id | uuid FK | |
 | generation | int | 世代。開示対象は最終世代のみ |
-| slot_key | text FK → card_slots | |
-| slot_index | int | 0〜3 |
+| card_slot_key | text FK → card_slots | **どの枠か** |
+| candidate_index | int | **その枠の中での位置**。0 〜 candidate_count-1 |
 | tag_id | bigint FK → tags | **クライアントに渡らない** |
 | is_chosen | boolean | |
 
-UNIQUE(session_id, generation, slot_key, slot_index)
+UNIQUE(session_id, generation, card_slot_key, candidate_index)
+UNIQUE(session_id, generation, tag_id) ← 同一世代でタグが重複しないことをDBでも保証
 
 **prompts**
 
 | 列 | 型 | 備考 |
 |---|---|---|
-| id | uuid PK | |
-| code | text UNIQUE | 公開コード（例 `A7K3M9`） |
-| mode | text | |
-| ruleset | text | |
-| time_limit_type | text | 公開情報 |
-| time_limit_minutes | int | |
+| id | uuid PK | 共有コード（`code`）は廃止（D17） |
+| mode_key | text FK → draft_modes | |
+| time_limit_seconds | int null | **確定時に draft_sessions からコピー**。null = 無制限 |
 | was_rerolled | boolean | 引き直しの有無 |
 | reroll_count | int | |
 | status | text | `active` / `submitted` / `abandoned` |
@@ -433,50 +540,77 @@ UNIQUE(session_id, generation, slot_key, slot_index)
 |---|---|
 | id | bigint PK |
 | prompt_id | uuid FK |
-| slot_key | text FK → card_slots |
+| card_slot_key | text FK → card_slots |
 | tag_id | bigint FK → tags |
 | position | int |
 
-UNIQUE(prompt_id, slot_key)
+UNIQUE(prompt_id, card_slot_key)
 
-**quiz_questions / quiz_choices**
+**quiz_questions / quiz_choices** 【どちらも機密】
 
 ```
-quiz_questions(id, prompt_id, slot_key, position 0..2)
+quiz_questions(id, prompt_id, card_slot_key, position 0..n-1)
     UNIQUE(prompt_id, position)
 
 quiz_choices(id, question_id, tag_id, is_correct 【機密】, position 0..3)
     UNIQUE(question_id, position)
 ```
 
-公開ビュー `public_quiz_view`: `question_id, prompt_id, slot_key, slot_label, choice_position, tag_id, tag_label`
-（**is_correct を含めない**）
+`quiz_questions` も機密扱いとする（D20）。
+「どのお題のどの枠が出題されているか」自体が推測材料になるうえ、
+クライアントは `get_work_quiz`（§9-2）だけを使うので直接読む必要がない。
+
+**公開ビュー `public_quiz_view` は廃止し、RPC `get_work_quiz(work_id)` に置き換える**（D22）。
+理由は §9-6 を参照。
 
 ### 8-4. 投稿・回答
 
 **works**
 
-| 列 | 型 | 備考 |
-|---|---|---|
-| id | uuid PK | |
-| prompt_id | uuid FK | |
-| user_id | uuid FK → profiles | **登録ユーザーのみ** |
-| title | text | 最大60字 |
-| image_path | text | Storage内パス |
-| image_width / image_height | int | |
-| division | text | `original` / `fanart` / `ai` |
-| **source_title** | text | ファンアートの元作品名。`fanart` のとき必須 |
-| **source_character** | text | 元キャラクター名。任意 |
-| **fanart_note** | text | 補足・注意書き。任意 |
-| duration_type | text | 実績。`t10`/`t30`/`t60`/`t120`/`unlimited`/`custom`/`timer` |
-| duration_minutes | int | `custom` のとき |
-| is_published | boolean | 既定true |
-| deleted_at | timestamptz | 論理削除 |
-| likes_count / saves_count / answers_count | int | トリガー更新 |
-| created_at | timestamptz | |
+| 列 | 型 | 公開 | 備考 |
+|---|---|---|---|
+| id | uuid PK | ○ | |
+| **prompt_id** | uuid FK **UNIQUE** | **×** | **どの取得経路でもクライアントへ返さない**（D17 / D23） |
+| user_id | uuid FK → profiles | ○ | **登録ユーザーのみ**。NOT NULL |
+| title | text | ○ | 最大60字 |
+| image_path | text | ○ | Storage内パス |
+| image_width / image_height | int | ○ | |
+| division | text | ○ | `original` / `fanart` / `ai`。**投稿後は変更不可** |
+| **source_title** | text | ○ | ファンアートの元作品名。`fanart` のとき必須。100字以内 |
+| **source_character** | text | ○ | 元キャラクター名。任意。100字以内 |
+| **fanart_note** | text | ○ | 補足・注意書き。任意。500字以内 |
+| actual_time_seconds | int null | ○ | 実績時間の**自己申告**。null = 未申告 |
+| is_published | boolean | 本人のみ | 既定true |
+| review_status | text | 本人のみ | `ok` / `flagged` / `hidden`。**運営のみ変更可** |
+| deleted_at | timestamptz | 本人のみ | 論理削除 |
+| likes_count / saves_count / answers_count | int | ○ | トリガー更新のキャッシュ（D24） |
+| created_at | timestamptz | ○ | |
 
-CHECK: `division <> 'fanart' OR source_title IS NOT NULL`
-CHECK: `division = 'fanart' OR (source_title IS NULL AND source_character IS NULL AND fanart_note IS NULL)`
+`prompt_id` に UNIQUE を張ることで、**1つのお題から作れる作品は最大1件**になる（A11 / D17）。
+
+**ファンアート項目の整合条件**（2つのCHECK制約）
+
+```
+条件1: division = 'fanart'  → source_title が NOT NULL であること
+条件2: division <> 'fanart' → source_title / source_character / fanart_note が
+                              3つとも NULL であること
+```
+
+条件2により、オリジナル部門やAI部門の行にファンアート情報が紛れ込むことをDBが防ぐ。
+`division` を投稿後に変更できない設計にしているのは、この整合性を保つため。
+部門を誤った場合は投稿し直す。
+
+**変更可否**
+
+| 区分 | 列 |
+|---|---|
+| 本人が変更できる | `title` `source_title` `source_character` `fanart_note` `is_published`<br>`actual_time_seconds`（**未公開の間のみ**。D25） |
+| 誰も直接変更できない | `id` `prompt_id` `user_id` `image_path` `image_width` `image_height`<br>`division` 各カウンタ `review_status` `deleted_at` `created_at` |
+
+`actual_time_seconds` は一度公開したら変更できない（D25）。
+ただし**時間別ランキングの分類基準には使わない**。分類は `prompts.time_limit_seconds`
+（お題を引いた時点で確定している制限時間）で行い、`actual_time_seconds` は
+作品ページに表示する自己申告の補助情報として扱う。
 
 **answers**
 
@@ -532,6 +666,12 @@ reports(id, work_id, reporter_id, reason, detail, status, created_at)
     reason: copyright / inappropriate / spam / ai_undeclared / other
 ```
 
+**likes の行は本人しか読めない**（D26）。他人へ公開するのは `works.likes_count` だけで、
+「誰がいいねしたか」を見せる機能はMVPに含めない。
+
+`likes` の行を正本とし、`works.likes_count` は**トリガーで同期するキャッシュ**として扱う（D24）。
+値がずれた場合は `likes` を数え直せば復旧できる。`saves_count` / `answers_count` も同じ扱い。
+
 ### 8-5. profiles と公開設定
 
 | 列 | 型 | 既定 | 備考 |
@@ -547,11 +687,11 @@ reports(id, work_id, reporter_id, reason, detail, status, created_at)
 | **show_saved_works** | boolean | **false** | 保存作品を公開するか（本人のみが初期値） |
 | created_at | timestamptz | | |
 
-公開用ビュー:
+公開用の取得経路（ビューではなくRPC。D22）:
 
 ```
-public_answer_history      -- show_answer_history = true のユーザーのみ
-    (user_id, work_id, correct_count, created_at)
+get_public_answer_history(user_id)   -- show_answer_history = true のユーザーのみ
+    返す列: work_id, correct_count, created_at
     ※ selected_tag_id と is_correct は含めない（正解漏洩の防止）
 ```
 
@@ -560,9 +700,17 @@ public_answer_history      -- show_answer_history = true のユーザーのみ
 | バケット | 公開 | パス | 用途 |
 |---|---|---|---|
 | `works` | public read | `{user_id}/{work_id}.{ext}` | 投稿画像 |
-| `prompt-cards` | public read | `{prompt_code}.png` | お題カードの共有画像・OGP |
+| `prompt-cards` | public read | `{prompt_id}.png` | お題カードの共有画像 |
 
 上限5MB / `image/jpeg`・`image/png`・`image/webp` のみ。
+
+`prompt-cards` のパスは推測できない uuid なので、リンクを知らなければ到達できない。
+作成者が自らSNSへ画像を投稿した場合はその内容が公開されるが、
+`works.prompt_id` をクライアントへ一切返さないため
+「その画像がどの作品のお題か」は外部から辿れない（D23の残存リスクとして受容）。
+
+`works` バケットのパス先頭は投稿者の `user_id`。
+作品作成RPCは `image_path` が**呼び出し本人の領域を指しているか**を検査する（§9-2）。
 
 ---
 
@@ -603,41 +751,118 @@ Supabase の**新しいキー体系（publishable / secret）**を使う。
 
 ### 9-2. サーバー関数（security definer）
 
+**Step 3 では権限設定だけを行い、関数の中身は各機能の Step で実装する。**
+テストできる画面が無い段階で関数を大量に書かないため。
+
+**ドラフト・お題**
+
 | 関数 | 役割 |
 |---|---|
-| `start_draft(mode, time_limit_type, time_limit_minutes, ruleset)` | セッション作成＋候補をプール単位で重複なし抽選 |
+| `start_draft(mode_key, time_limit_seconds)` | セッション作成＋候補をプール単位で重複なし抽選 |
 | `reroll_draft(session_id)` | 残り回数を検査し、generation を進めて再抽選 |
-| `reveal_card(session_id, slot_key, slot_index)` | 1枚めくる。選んだ1件の label だけ返す |
+| `reveal_card(session_id, card_slot_key, candidate_index)` | 1枚めくる。選んだ1件の label だけ返す |
 | `complete_draft(session_id)` | prompts / prompt_cards / quiz_questions / quiz_choices を確定生成 |
 | `reveal_unchosen(prompt_id, reason)` | 未選択カードを開示（本人のみ・不可逆） |
 | `abandon_prompt(prompt_id)` | チャレンジ放棄＋開示 |
-| `submit_answer(work_id, selections)` | 採点・保存・統計更新・正解返却 |
-| `toggle_like(work_id)` / `toggle_save(work_id)` | 登録判定＋カウンタ整合 |
+
+**お題の取得経路**（`prompt_cards` を直接読ませないための入口。D23）
+
+| 関数 | 誰が使えるか | 返すもの |
+|---|---|---|
+| `get_my_prompt(prompt_id)` | **作成者のみ** | 確定カード全部。開示済みなら未選択候補も |
+| `get_my_prompts()` | 本人 | 自分が発行したお題の一覧（カード内容を含む） |
+
+共有コードによる取得（`get_prompt_by_code`）は**MVPに含めない**（D17）。
+同じお題を複数人が描くチャレンジ機能は、将来、通常のお題とは別の機能として設計する。
+
+**作品の取得経路**（`works` を直接読ませないための入口。D23）
+
+| 関数 | 誰が使えるか | 返すもの |
+|---|---|---|
+| `get_public_works(filter, sort, cursor)` | 誰でも | フィード用の一覧 |
+| `get_work_detail(work_id)` | 誰でも | 作品1件の詳細 |
+| `get_my_works()` | 本人 | 自分の作品一覧（非公開・審査中・削除済みも含む） |
+| `get_my_work(work_id)` | 本人 | 自分の作品1件（編集画面用） |
+
+公開取得（`get_public_works` / `get_work_detail`）が返すのは次を**すべて**満たす作品のみ。
+
+```
+is_published = true  かつ  review_status = 'ok'  かつ  deleted_at is null
+```
+
+**`prompt_id` はどの取得経路でもクライアントへ返さない。**
+
+**作品の作成・更新・削除**
+
+| 関数 | 役割 |
+|---|---|
+| `create_work(...)` | 下の6検査を通してから作品を作成し、未選択カードを開示 |
+| `update_work(work_id, ...)` | 許可された列だけを更新 |
+| `delete_work(work_id)` | 論理削除（`deleted_at`）＋Storage画像の削除 |
+
+`create_work` が必ず行う検査（D27）:
+
+```
+1. 呼び出し元が登録済みユーザーであること（JWT の is_anonymous が false）
+2. 呼び出し元が対象 prompt の作成者本人であること
+3. prompt が完成済みであること（status = 'active'）
+4. その prompt がまだ別の作品に使われていないこと（works.prompt_id の UNIQUE）
+5. division と source_title / source_character / fanart_note が整合していること
+6. image_path が呼び出し元本人の Storage 領域（{自分のuser_id}/...）を指していること
+```
+
+1〜4のいずれかを満たさない場合はエラーを返し、作品を作らない。
+
+**クイズ・回答**
+
+| 関数 | 誰が使えるか | 役割 |
+|---|---|---|
+| `get_work_quiz(work_id)` | 誰でも（ゲスト含む） | 3問と各4択の**選択肢の文字だけ**。正解の印は含めない |
+| `submit_answer(work_id, selections)` | 誰でも（ゲスト含む） | 採点・保存・統計更新・正解返却 |
+| `get_answer_result(work_id)` | **回答済みの本人のみ** | 自分の選択・正誤・正解を再取得 |
+
+`submit_answer` は**作品の作者本人による自作への回答を拒否する**（D28）。
+自作のお題は本人が知っているため、回答すると統計が歪む。
+DBの制約では表現できないため、RPC側で必ず検査する。
+
+**その他**
+
+| 関数 | 役割 |
+|---|---|
+| `toggle_like(work_id)` / `toggle_save(work_id)` | 登録判定＋行の追加削除。カウンタはトリガーが同期 |
 | `create_report(work_id, reason, detail)` | 通報＋レート制限 |
 | `promote_anonymous(handle, display_name)` | 匿名 → 新規アカウント昇格の仕上げ |
 
 ### 9-3. テーブル別ポリシー
 
+「**権限なし**」= `anon` / `authenticated` に `grant` を一切与えない。
+RLSポリシーを作らないことに加えた二重の防御（D20）。読もうとしても0件が返る。
+
 | テーブル | SELECT | INSERT | UPDATE | DELETE |
 |---|---|---|---|---|
 | profiles | `is_anonymous = false` **かつ** handle 確定済みは全員／それ以外は本人のみ（D12） | **トリガーのみ**（クライアント不可） | 本人（6列のみ。handle / is_anonymous は不可） | × |
 | tag_pools / card_slots | 全員 | × | × | × |
-| tags | 全員（`is_active` のみ） | × | × | × |
+| draft_modes / draft_mode_slots | 全員（`is_active` のみ） | × | × | × |
+| tags | 全員（`is_active = true` の行の<br>`id` / `pool_key` / `label` のみ。D21） | × | × | × |
 | draft_sessions | owner のみ | RPC | RPC | × |
-| **draft_candidates** | **ポリシー無し（完全遮断）** | × | × | × |
+| **draft_candidates** | **権限なし** | RPC | RPC | × |
 | prompts | created_by のみ | RPC | RPC | × |
-| **prompt_cards** | **ポリシー無し** | × | × | × |
-| quiz_questions | 全員（slot と順序のみ） | RPC | × | × |
-| **quiz_choices** | **ポリシー無し** → 公開ビュー経由のみ | RPC | × | × |
-| works | 公開かつ未削除は全員／自作は常に | **本人 かつ 非匿名** | 本人 | 本人（論理削除） |
-| answers | 本人のみ（公開履歴はビュー経由） | RPC のみ | × | × |
-| **answer_items** | **本人のみ（公開設定に関わらず）** | RPC のみ | × | × |
-| work_slot_stats | 全員 | RPC | RPC | × |
-| user_stats | 本人 OR `show_answer_stats = true` | RPC | RPC | × |
-| user_slot_stats | 本人 OR `show_answer_stats = true` | RPC | RPC | × |
-| likes | 全員（集計のため） | **本人 かつ 非匿名** | × | 本人 |
-| saves | 本人 OR `show_saved_works = true` | **本人 かつ 非匿名** | × | 本人 |
-| reports | × | RPC のみ（匿名可） | × | × |
+| **prompt_cards** | **権限なし** | RPC | × | × |
+| **quiz_questions** | **権限なし**（D20） | RPC | × | × |
+| **quiz_choices** | **権限なし** | RPC | × | × |
+| **works** | **権限なし** → 4つの取得RPC経由のみ（D23） | RPC | RPC | × |
+| answers | 本人のみ | RPC | × | × |
+| **answer_items** | **本人のみ（公開設定に関わらず）** | RPC | × | × |
+| work_slot_stats | 全員 | トリガー | トリガー | × |
+| user_stats | 本人 OR `show_answer_stats = true` | トリガー/RPC | トリガー/RPC | × |
+| user_slot_stats | 本人 OR `show_answer_stats = true` | トリガー/RPC | トリガー/RPC | × |
+| **likes** | **本人のみ**（D26） | RPC | × | RPC |
+| saves | 本人 OR `show_saved_works = true` | RPC | × | RPC |
+| **reports** | **権限なし** | RPC（匿名可） | × | × |
+
+`works` の SELECT 権限を与えないため、更新も RPC（`update_work`）経由になる（D23）。
+Postgres では `update ... where id = ?` の条件式にも SELECT 権限が必要で、
+直接更新を許すと結局いくつかの列を読ませることになるため、経路を1本に統一する。
 
 ### 9-4. 未選択カードの開示制御
 
@@ -654,14 +879,38 @@ Supabase の**新しいキー体系（publishable / secret）**を使う。
 
 | 経路 | 結果 |
 |---|---|
-| `prompt_cards` を直接SELECT | ポリシー無し → 0件 |
-| `quiz_choices` を直接SELECT | ポリシー無し → 0件。ビューに `is_correct` が存在しない |
-| `draft_candidates` を直接SELECT | 0件 |
+| `prompt_cards` を直接SELECT | 権限なし → 0件 |
+| `quiz_questions` / `quiz_choices` を直接SELECT | 権限なし → 0件 |
+| `draft_candidates` を直接SELECT | 権限なし → 0件 |
+| `works` を直接SELECT | 権限なし → 0件。取得は4つのRPCのみ |
+| **作品からお題への到達** | `prompt_id` をどのRPCも返さない → 辿れない |
+| `tags` から出やすさを推測 | `weight` を返さない → 推測材料にならない |
 | 他人の `answer_items` を直接SELECT | 0件（公開設定に関わらず） |
+| 他人の `likes` を直接SELECT | 0件。公開するのは `works.likes_count` のみ |
 | 公開された回答履歴 | 作品・日時・正答数のみ。選択タグは含まれない |
 | ドラフトAPIのレスポンス | 開封した1枚の label のみ |
 | 作品詳細のHTMLソース | 未回答時はお題データを一切埋め込まない |
 | `submit_answer` の連打 | UNIQUE制約＋関数内チェックで既存結果を返すのみ |
+| 作者が自作に回答して正解を得る | `submit_answer` が作者本人を拒否（D28） |
+
+### 9-6. 公開ビューを使わない理由
+
+当初は `public_quiz_view` などの公開ビューで機密列を隠す想定だったが、
+**MVPではビューを作らず、すべてRPCに統一する**（D22）。
+
+| 観点 | 公開ビュー | RPC |
+|---|---|---|
+| RLSの扱い | 作成者の権限で動くため、下のテーブルのRLSを素通りしうる。`security_invoker` の明示が必須 | 明示的に権限を指定して書く |
+| うっかり漏洩 | 定義に `select *` を使うと、後から増えた列が自動的に公開される | 返り値を型で宣言するため勝手には出ない |
+| **`prompt_id` の隠蔽** | **クイズと作品を結ぶために `prompt_id` を含めざるを得ない** | `work_id` を受け取って内部で解決するので外に出さずに済む |
+| 引数での絞り込み | できない（全行が対象） | `work_id` 単位で必要な行だけ返せる |
+| 見つけやすさ | テーブル一覧に紛れる | 関数一覧に並ぶ |
+
+決め手は3行目。§9-5 で「作品からお題へ辿れないこと」を保証する以上、
+`prompt_id` を含むビューでは要件を満たせない。
+
+`public_answer_history`（回答履歴の公開）も同じ方針で RPC 化する。
+最終判断は Step 3C で行う。
 
 ---
 
@@ -672,11 +921,12 @@ Supabase の**新しいキー体系（publishable / secret）**を使う。
 | お題を引く（ドラフト） | ○ | ○ |
 | 制作時間を選ぶ | ○ | ○ |
 | ドラフトを引き直す（1回） | ○ | ○ |
-| お題IDを発行する | ○ | ○ |
-| お題カードを保存・共有 | ○ | ○ |
+| お題を発行する | ○ | ○ |
+| お題カード画像を保存・共有 | ○ | ○ |
 | 未選択カードを開示 | ○ | ○ |
 | 作品を見る | ○ | ○ |
 | クイズに回答する | ○ | ○ |
+| **自作へのクイズ回答** | **×** | **×**（作者本人は不可。D28） |
 | 回答を全体統計へ反映 | ○ | ○ |
 | 正解・正答率を見る | ○ | ○ |
 | ランキングを見る | ○ | ○ |
@@ -789,7 +1039,7 @@ URL: `/u/[handle]`
 | 0-c | Next.js 雛形作成、Git初期化 | `npm run dev` が動く |
 | 1 | Supabase接続・環境変数・クライアント3分割 | サーバーから疎通確認 |
 | 2 | 匿名サインイン＋profiles自動生成 | 初回書き込みでゲストIDが発行される |
-| 3 | スキーマ＋RLS＋タグマスタ投入 | 管理画面でポリシーを確認できる |
+| 3 | スキーマ＋RLS＋タグマスタ投入（下表のとおり8工程に分割） | 管理画面でポリシーを確認できる |
 | 4 | カードドラフト（制作時間選択・重複なし抽選・リロール1回） | 4枚から選べる／motif_bにmotif_aの候補が出ない |
 | 5 | 結果画面・お題カード表示・共有・未選択カード開示 | 3条件でのみ開示される |
 | 6 | 登録（匿名→新規昇格）＋handle設定 | 匿名の記録が引き継がれる |
@@ -804,13 +1054,34 @@ URL: `/u/[handle]`
 | 15 | 共有OGP／通報／削除・非公開 | |
 | 16 | Vercelデプロイ／匿名ユーザー掃除Cron／CAPTCHA | 本番で一連の流れが通る |
 
+### 13-1. Step 3 の分割
+
+範囲が大きいため8工程に分ける。**テーブルとそのRLS・権限は必ず同じマイグレーションに書く**
+（R3。作ってから後でポリシーを張ると、その間テーブルが無防備になる）。
+
+| 工程 | 内容 | 終了条件 |
+|---|---|---|
+| **3A** | スキーマ設計の確定（実装なし） | この仕様書と decisions.md へ反映済み |
+| **3B-1** | マスタ5表：`tag_pools` `card_slots` `draft_modes` `draft_mode_slots` `tags`<br>＋RLS＋権限＋マスタ行（タグ本体を除く） | モードと枠の構成を管理画面で確認できる |
+| **3B-2a** | ドラフト2表：`draft_sessions` `draft_candidates`＋RLS＋権限 | `draft_candidates` が0件で返る |
+| **3B-2b** | 確定お題・クイズ4表：`prompts` `prompt_cards` `quiz_questions` `quiz_choices`<br>＋RLS＋権限 | 機密3表が0件で返る |
+| **3B-3a** | 作品・回答・集計6表：`works` `answers` `answer_items`<br>`work_slot_stats` `user_stats` `user_slot_stats`＋RLS＋権限 | `works` が0件で返る |
+| **3B-3b** | 反応・通報3表：`likes` `saves` `reports`＋RLS＋権限 | `likes` が他人から0件で返る |
+| **3C** | 公開取得経路の設計確定とレビュー（ビュー vs RPC の最終判断） | 正解へ到達する経路が無いことを §9-5 の表で確認 |
+| **3D** | タグ投入。`docs/tags-master.md` に案を作り**目視確認してから**投入 | 4プールで計156件前後 |
+| **3E** | 横断診断ページで全テーブルの状態を確認しコミット | 権限表と実際の設定が一致 |
+
+各工程の前に説明を提示し、確認を待ってから着手する。取り消し用SQLも工程ごとに用意する。
+
 ---
 
 ## 14. 技術的リスク
 
 | # | リスク | 対策 |
 |---|---|---|
-| R1 | 正解の漏洩 | 機密テーブルは SELECT ポリシー無し。公開ビューとRPC経由のみ |
+| R1 | 正解の漏洩 | 機密テーブルはポリシー無し**かつ権限なし**。RPC経由のみ（D20） |
+| R1-a | **作品からお題への到達** | `works.prompt_id` をどのRPCも返さない（D23） |
+| R1-b | **作者が自作に回答して統計を歪める** | `submit_answer` が作者本人を拒否（D28） |
 | R2 | **他人の回答行から正解が漏れる** | `answer_items` は常に本人のみ。公開履歴は正答数のみ |
 | R3 | RLSの付け忘れ | テーブル作成SQLとポリシーSQLを同じマイグレーションに書く |
 | R4 | secret キーの露出 | `NEXT_PUBLIC_` を付けない。クライアントで import しない。必要になるまで参照もしない |
@@ -844,21 +1115,23 @@ URL: `/u/[handle]`
    │   ├─ decisions.md              # 決定とその理由のログ
    │   └─ tags-master.md            # タグマスタ原案（固有名詞は入れない）
    ├─ supabase/
-   │   ├─ migrations/
-   │   │   ├─ 001_tables.sql
-   │   │   ├─ 002_rls.sql
-   │   │   ├─ 003_functions.sql
-   │   │   └─ 004_triggers.sql
-   │   └─ seed/
-   │       ├─ 001_pools_slots.sql
-   │       └─ 002_tags.sql
+   │   └─ migrations/            # テーブルとRLSは同じファイルに書く（R3）
+   │       ├─ 001_profiles.sql            # Step 2
+   │       ├─ 001_profiles_rollback.sql
+   │       ├─ 002_masters.sql             # Step 3B-1
+   │       ├─ 003_draft.sql               # Step 3B-2a
+   │       ├─ 004_prompts_quiz.sql        # Step 3B-2b
+   │       ├─ 005_works_answers.sql       # Step 3B-3a
+   │       ├─ 006_reactions.sql           # Step 3B-3b
+   │       ├─ 007_tags_seed.sql           # Step 3D
+   │       └─ *_rollback.sql              # 各工程の取り消し用
    └─ src/
       ├─ app/
       │   ├─ layout.tsx
       │   ├─ page.tsx                    # 通常フィード
       │   ├─ ai/page.tsx                 # AIフィード
       │   ├─ draft/page.tsx
-      │   ├─ p/[code]/page.tsx
+      │   ├─ p/[id]/page.tsx             # 作成者のみ
       │   ├─ works/
       │   │   ├─ new/page.tsx
       │   │   └─ [id]/
