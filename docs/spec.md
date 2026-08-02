@@ -485,39 +485,95 @@ UNIQUE(pool_key, label)
 
 ### 8-3. ドラフト・お題
 
+実装済み（Step 3B-2a / `supabase/migrations/003_draft.sql`）。
+
 **draft_sessions**
 
-| 列 | 型 | 備考 |
-|---|---|---|
-| id | uuid PK | |
-| owner_id | uuid FK → profiles | 匿名含む |
-| mode_key | text FK → draft_modes | |
-| candidate_count | int | **開始時点の写し**。進行中にマスタが変わっても影響を受けない |
-| max_rerolls | int | **開始時点の写し**。同上 |
-| time_limit_seconds | int null | null = 無制限（§3-4） |
-| reroll_count | int | 既定0 |
-| current_generation | int | 既定1。リロールで +1 |
-| status | text | `in_progress` / `completed` / `abandoned` |
-| prompt_id | uuid FK | 完了時に紐付け |
-| created_at | timestamptz | |
+| 列 | 型 | 公開 | 備考 |
+|---|---|:---:|---|
+| id | uuid PK | ○ | 既定 `gen_random_uuid()` |
+| **user_id** | uuid FK → profiles | **×** | 匿名含む。RLSの条件に使うが値は渡さない |
+| mode_key | text FK → draft_modes | ○ | |
+| candidate_count | int | ○ | **開始時点の写し**。進行中にマスタが変わっても影響を受けない |
+| max_rerolls | int | ○ | **開始時点の写し**。同上 |
+| quiz_question_count | int | ○ | **開始時点の写し**。同上 |
+| reroll_count | int | ○ | 既定0 |
+| time_limit_seconds | int null | ○ | null = 無制限（§3-4） |
+| current_generation | int | ○ | 既定1。リロールで +1 |
+| **current_slot_order** | int | ○ | 既定1。いま何枠目か。リロールで1に戻る |
+| status | text | ○ | `in_progress` / `completed` / `abandoned` |
+| created_at | timestamptz | ○ | |
+| **updated_at** | timestamptz | ○ | トリガーで自動更新。`in_progress` の掃除基準 |
+| **completed_at** | timestamptz null | **×** | |
+| **abandoned_at** | timestamptz null | **×** | 放棄からの経過日数の基準 |
 
-CHECK: `reroll_count <= max_rerolls`
-CHECK: `time_limit_seconds is null or time_limit_seconds between 60 and 600000`
+`prompt_id` は持たない。お題との接続は 3B-2b で `prompts.draft_session_id` として行う。
+
+CHECK:
+- `status in ('in_progress','completed','abandoned')`
+- `reroll_count <= max_rerolls`
+- `current_generation = reroll_count + 1`
+- status と日時の整合（`in_progress` は両日時null／`completed` は完了日時のみ／`abandoned` は放棄日時のみ）
+- `updated_at >= created_at` / 完了・放棄日時も `created_at` 以降
+
+INDEX:
+- **部分UNIQUE** `(user_id) where status = 'in_progress'` … 進行中は1人1件
+- `(user_id)` … 過去のドラフト一覧用
+- 部分 `(updated_at) where status='in_progress'` / `(abandoned_at) where status='abandoned'` … 掃除用
 
 **draft_candidates** 【機密】
 
 | 列 | 型 | 備考 |
 |---|---|---|
-| id | bigint PK | |
+| id | bigint PK | `generated always as identity` |
 | session_id | uuid FK | |
 | generation | int | 世代。開示対象は最終世代のみ |
 | card_slot_key | text FK → card_slots | **どの枠か** |
+| **slot_order** | int | **開始時点の枠の提示順の写し**。後日の開示で当時の順番を再現する |
 | candidate_index | int | **その枠の中での位置**。0 〜 candidate_count-1 |
 | tag_id | bigint FK → tags | **クライアントに渡らない** |
-| is_chosen | boolean | |
+| is_chosen | boolean | お題に採用されたか |
+| **revealed_at** | timestamptz null | 中身が本人に見えた日時。`is_chosen` とは別（D32） |
+| created_at | timestamptz | |
 
 UNIQUE(session_id, generation, card_slot_key, candidate_index)
 UNIQUE(session_id, generation, tag_id) ← 同一世代でタグが重複しないことをDBでも保証
+**部分UNIQUE** `(session_id, generation, card_slot_key) where is_chosen` ← 1枠1枚だけ選べる
+
+CHECK: `is_chosen = false or revealed_at is not null`（選んだのに見ていない状態を作れない）
+
+**外部キーの挙動**
+
+| 参照元 | 参照先 | ON DELETE | ON UPDATE |
+|---|---|---|---|
+| draft_sessions.user_id | profiles | CASCADE | RESTRICT |
+| draft_sessions.mode_key | draft_modes | RESTRICT | RESTRICT |
+| draft_candidates.session_id | draft_sessions | CASCADE | RESTRICT |
+| draft_candidates.card_slot_key | card_slots | RESTRICT | RESTRICT |
+| draft_candidates.tag_id | tags | RESTRICT | RESTRICT |
+
+一度でも使われたタグは削除できない。やめたいタグは `tags.is_active = false` にする。
+
+**掃除の規則**（Step 16 で実装）
+
+| status | 削除条件 | 基準列 |
+|---|---|---|
+| `in_progress` | 最終操作から30日 | `updated_at` |
+| `abandoned` | 放棄から30日 | `abandoned_at` |
+| `completed` | **削除しない** | 未選択カードの後日開示に候補データが必要なため |
+
+**Step 4 の RPC が保証する不変条件**（複数表にまたがるため CHECK では表現できない）
+
+```
+1. candidate_index は 0 以上 candidate_count 未満
+2. 各枠に candidate_count 件の候補を作る
+3. 選択できるのは current_generation の候補だけ
+4. tag の pool_key と card_slot の pool_key が一致する
+5. 同じ枠の全候補で slot_order が一致する
+6. 異なる枠で slot_order が重複しない
+7. 状態遷移は in_progress → completed / abandoned のみ
+8. completed / abandoned から in_progress へは戻せない
+```
 
 **prompts**
 
@@ -836,7 +892,16 @@ DBの制約では表現できないため、RPC側で必ず検査する。
 ### 9-3. テーブル別ポリシー
 
 「**権限なし**」= `anon` / `authenticated` に `grant` を一切与えない。
-RLSポリシーを作らないことに加えた二重の防御（D20）。読もうとしても0件が返る。
+RLSポリシーを作らないことに加えた二重の防御（D20）。
+
+**拒否のされ方が2種類あることに注意**（D31）。
+
+| 状態 | 直接SELECTの結果 |
+|---|---|
+| 権限を与えていない | **`permission denied for table ...`（エラー）** |
+| 権限はあるがRLSが行を除外 | **0件**（エラーにならない） |
+
+機密テーブルは前者、`profiles` や `tags` のように条件付きで公開する表は後者。
 
 | テーブル | SELECT | INSERT | UPDATE | DELETE |
 |---|---|---|---|---|
@@ -879,10 +944,10 @@ Postgres では `update ... where id = ?` の条件式にも SELECT 権限が必
 
 | 経路 | 結果 |
 |---|---|
-| `prompt_cards` を直接SELECT | 権限なし → 0件 |
-| `quiz_questions` / `quiz_choices` を直接SELECT | 権限なし → 0件 |
-| `draft_candidates` を直接SELECT | 権限なし → 0件 |
-| `works` を直接SELECT | 権限なし → 0件。取得は4つのRPCのみ |
+| `prompt_cards` を直接SELECT | 権限なし → **permission denied（エラー）** |
+| `quiz_questions` / `quiz_choices` を直接SELECT | 権限なし → **permission denied** |
+| `draft_candidates` を直接SELECT | 権限なし → **permission denied** |
+| `works` を直接SELECT | 権限なし → **permission denied**。取得は4つのRPCのみ |
 | **作品からお題への到達** | `prompt_id` をどのRPCも返さない → 辿れない |
 | `tags` から出やすさを推測 | `weight` を返さない → 推測材料にならない |
 | 他人の `answer_items` を直接SELECT | 0件（公開設定に関わらず） |
@@ -1063,9 +1128,9 @@ URL: `/u/[handle]`
 |---|---|---|
 | ~~**3A**~~ ✅ | スキーマ設計の確定（実装なし） | この仕様書と decisions.md へ反映済み |
 | ~~**3B-1**~~ ✅ | マスタ5表：`tag_pools` `card_slots` `draft_modes` `draft_mode_slots` `tags`<br>＋RLS＋権限＋マスタ行（タグ本体を除く） | モードと枠の構成を管理画面で確認できる |
-| **3B-2a** | ドラフト2表：`draft_sessions` `draft_candidates`＋RLS＋権限 | `draft_candidates` が0件で返る |
-| **3B-2b** | 確定お題・クイズ4表：`prompts` `prompt_cards` `quiz_questions` `quiz_choices`<br>＋RLS＋権限 | 機密3表が0件で返る |
-| **3B-3a** | 作品・回答・集計6表：`works` `answers` `answer_items`<br>`work_slot_stats` `user_stats` `user_slot_stats`＋RLS＋権限 | `works` が0件で返る |
+| ~~**3B-2a**~~ ✅ | ドラフト2表：`draft_sessions` `draft_candidates`＋RLS＋権限 | `draft_candidates` が permission denied |
+| **3B-2b** | 確定お題・クイズ4表：`prompts` `prompt_cards` `quiz_questions` `quiz_choices`<br>＋RLS＋権限 | 機密3表が permission denied |
+| **3B-3a** | 作品・回答・集計6表：`works` `answers` `answer_items`<br>`work_slot_stats` `user_stats` `user_slot_stats`＋RLS＋権限 | `works` が permission denied |
 | **3B-3b** | 反応・通報3表：`likes` `saves` `reports`＋RLS＋権限 | `likes` が他人から0件で返る |
 | **3C** | 公開取得経路の設計確定とレビュー（ビュー vs RPC の最終判断） | 正解へ到達する経路が無いことを §9-5 の表で確認 |
 | **3D** | タグ投入。`docs/tags-master.md` に案を作り**目視確認してから**投入 | 4プールで計156件前後 |

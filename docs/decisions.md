@@ -266,6 +266,75 @@ OK:  .from("tags").select("id, pool_key, label")
 Step 2 の `profiles` は表全体に SELECT を与えているため `*` が使える。
 この差は混乱しやすいので、コード側にも注意書きを残す。
 
+### D31. 「読めない」には2種類ある（当初の記述の訂正）
+当初は機密テーブルを直接SELECTすると「0件が返る」と書いていたが、これは誤り。
+拒否のされ方は2種類あり、区別しないと動作確認の判定を誤る。
+
+| 状態 | 結果 |
+|---|---|
+| **テーブル権限を与えていない** | `permission denied for table ...`（エラー。42501） |
+| **権限はあるがRLSが行を除外** | **0件**（エラーにならない） |
+
+- `draft_candidates` `prompt_cards` `quiz_questions` `quiz_choices` `works` `reports`
+  … 権限なし → **エラー**
+- `profiles` `tags` `draft_modes` `answer_items` `likes`
+  … 権限あり＋RLSで絞る → **0件**
+
+動作確認では「エラーが出るのが正解」の場面と「0件が正解」の場面がある。
+3B-1 の確認でも、`tags.weight` は 42501 エラー、`draft_modes` は2行という
+異なる結果をそれぞれ正解として確認した。
+
+---
+
+## Step 3B-2a（ドラフト2表）で決めたこと・確認できたこと
+
+### D32. `is_chosen` と `revealed_at` を分ける
+「選ばれたか」と「中身が本人に見えたか」は別の事実。1つの列で兼ねると
+未選択カードの後日開示（spec 4-4）を表現できない。
+
+| 状況 | `is_chosen` | `revealed_at` |
+|---|---|---|
+| めくって選んだ | `true` | めくった時刻 |
+| 選ばなかった（開示前） | `false` | `null` |
+| 選ばなかった（後日開示した） | `false` | 開示した時刻 |
+
+CHECK で「選んだのに見ていない」状態を作れないようにする。
+
+あわせて `draft_candidates.slot_order`（開始時点の枠の提示順）も持たせる。
+`draft_mode_slots` の並び順は将来変更され得るため、写しが無いと
+後日の開示で当時と違う順番になる。
+
+### D33. `updated_at` の自動更新には `clock_timestamp()` を使う
+`now()` は**トランザクション開始時刻**を返すため、同じトランザクション内で
+INSERT と UPDATE を行うと `created_at` と `updated_at` が同値になる。
+RPC は1つのトランザクションで複数の更新を行うので、これでは
+「最後に操作した時刻」として機能せず、30日掃除の基準が壊れる。
+
+`clock_timestamp()` は呼んだ瞬間の実時刻を返すのでこの問題が起きない。
+`created_at` 側は `now()` のままでよい（`clock_timestamp()` は必ずそれ以降に
+なるため `updated_at >= created_at` の CHECK と矛盾しない）。
+
+更新はトリガーで行う。RPC の中に書くと、書き忘れても**エラーにならず静かに壊れる**。
+関数名は表専用（`draft_sessions_set_updated_at`）にして、
+各工程の取り消しSQLが独立して動くようにする。
+
+### D34. RLS の動作確認には JWT クレームの設定が要る（実地検証済み）
+`set local role authenticated` だけでは `auth.uid()` が null のままで、
+「本人の行だけ見える」ことの確認にならない。行が0件でも、それが
+RLS のせいか表が空なだけかを区別できない。
+
+`auth.uid()` は JWT の `sub` を読む関数なので、SQL Editor では手で設定する。
+
+```sql
+select set_config('request.jwt.claim.sub', '<profiles.id>', true);
+set local role authenticated;
+```
+
+3B-2a ではこの方法で、本人 → 1行 / 別人 → 0行 を確認した。
+以降の工程でも、RLS を持つ表はこの形でテストする。
+`set_config(..., true)` の第3引数 true はトランザクション内限定の意味で、
+`rollback` すれば設定も行も残らない。
+
 ---
 
 ## 公開前の必須課題
