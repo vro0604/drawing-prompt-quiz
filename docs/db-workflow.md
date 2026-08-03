@@ -100,7 +100,7 @@ npm run db:privs     # 誰がどの関数を呼べるかを一覧（読むだけ
 | 区分 | 内容 |
 |---|---|
 | 構造 | 表22個・RLS 有効・マスタ行数 |
-| 権限 | 遮断12表に権限0件／ポリシー0本、権限を持つのは10表だけ |
+| 権限 | 遮断12表に権限0件／ポリシー0本、権限を持つのは10表だけ。<br>`profiles` の保護列（`handle` / `handle_updated_at` / `id` / `is_anonymous` / `created_at`）に UPDATE が無く、<br>直接更新してよい6列は残っている |
 | 関数 | `search_path` 固定、PUBLIC に EXECUTE が残っていない、公開／本人用／書き込みの切り分け |
 | 登録必須 | `create_work` / `update_work` / `update_my_profile` / `toggle_like` / `toggle_save` と<br>Storage の追加ポリシーが JWT の `is_anonymous` を見ている |
 | Storage | `works` バケットが公開読み取り・5MiB・画像3種、ポリシー4本、`anon` に書き込みが無い |
@@ -112,6 +112,7 @@ npm run db:privs     # 誰がどの関数を呼べるかを一覧（読むだけ
 | 漏洩 | `prompt_id` を返さない、`get_work_quiz` が `is_correct` に触れない、`weight` を読まない、<br>`prompt_cards`（＝答え）に触れる関数が**4本のまま** |
 | 診断 | Step 3E の A1〜A27（すべて0行なら正常） |
 | 参考 | 合否に数えない件数。修正前クイズの重複数（legacy）など |
+| 一覧 | 合否に数えない**中身**。権限を grantee 別・種類別にそのまま並べる |
 | 実地 | `anon` / `authenticated` に成りすまして、実際に読めない／呼べないことを確認 |
 
 **`[参考]` は合否に数えない。** 「0 であってほしいが、いまは 0 でないことが
@@ -120,6 +121,22 @@ npm run db:privs     # 誰がどの関数を呼べるかを一覧（読むだけ
 いまここに出るのは、選択肢の重複禁止（`20260803045329_quiz_choice_dedupe.sql`）
 より前に作られたクイズの重複件数。既存クイズは作り直さない方針なので
 0 にはならない。診断 A23 は適用後に作られたぶんだけを厳格に見る。
+
+### 「0件であること」の検査には一覧を対で置く
+
+**`[一覧]` は合否に数えない。** 権限やポリシーの中身を grantee 別に
+そのまま並べる欄。0行のときは「0行が正常」と書いた文言を出す。
+
+数だけを見る検査には、その0件の中身を見せる欄を対で置く。
+「期待0／実際N」しか出ないと、**本当に権限があるのか、数え方を
+間違えているのか**が読み取れない（実際に Step 15 で両方が同時に起き、
+切り分けに時間がかかった。D66）。
+
+権限の検査は `aclexplode` で行う。`information_schema.column_privileges` は
+`SELECT` / `INSERT` / `UPDATE` / `REFERENCES` の4種しか見えず、
+**`DELETE` や `TRUNCATE` だけを配られていても気づけない**。
+さらに表単位の grant を全列に展開して見せるため、
+「表に付いているのか列に付いているのか」も読み取れない。
 
 **`prompt_cards` に触れる関数の本数は、単独では意味を持たない。**
 「回答済み判定なしに読んでいないか」を見る項目と**対で**確認すること。
@@ -209,3 +226,5 @@ npm run db:verify
 | 接続文字列やアクセストークンをファイルに書く | 漏れたらDBを自由にされる |
 | ACL を文字列比較で判定する | `anon=X/` にも `=X/` が含まれる。`aclexplode` で grantee の oid を見る |
 | `supabase db pull` | Docker が必要。方針に反する（baseline + repair を使う） |
+| 新しい表を作って `revoke` を書かない | **Supabase は新しい表へ ALL を自動で配る。**<br>遮断表なら `revoke all on <表> from public, anon, authenticated;` まで書いて1組（D65）。<br>20260803221747 で既定を逆にしたので今後は自動では付かないが、<br>別のロールが作った表には効かないため、書く習慣は残す |
+| 権限の検査を `information_schema` だけで行う | `DELETE` / `TRUNCATE` が見えない。`aclexplode` で `relacl` / `attacl` を展開する |

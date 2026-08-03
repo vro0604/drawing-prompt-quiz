@@ -24,7 +24,7 @@
 
 import { createInterface } from "node:readline";
 import pg from "pg";
-import { checks, diagnostics, notices, roleProbes } from "./db-checks.mjs";
+import { checks, diagnostics, listings, notices, roleProbes } from "./db-checks.mjs";
 
 const GREEN = "\x1b[32m";
 const RED = "\x1b[31m";
@@ -162,6 +162,35 @@ async function main() {
         if (n.note) console.log(`      ${DIM}${n.note}${RESET}`);
       } catch (err) {
         console.log(`  ・${n.label}: ${RED}取得できません${RESET} ${DIM}${scrub(err.message)}${RESET}`);
+      }
+    }
+  }
+
+  // ───────────── 2-c. 一覧（合否をつけない）─────────────
+  //
+  // 「0件であること」を検査するだけでは、**本当に何も無いのか、
+  // 数え方を間違えているのか**が読み取れない。中身を目で見て確かめる欄。
+  if (listings.length > 0) {
+    console.log(`\n${BOLD}[一覧] 合否には数えない${RESET}`);
+    for (const l of listings) {
+      try {
+        const res = await client.query(l.sql, l.params ?? []);
+        console.log(`\n  ${BOLD}・${l.label}${RESET}（${res.rowCount}件）`);
+
+        if (res.rowCount === 0) {
+          if (l.emptyNote) console.log(`      ${DIM}${l.emptyNote}${RESET}`);
+        } else {
+          for (const row of res.rows) {
+            const cells = Object.entries(row)
+              .map(([k, v]) => `${k}=${v}`)
+              .join("  ");
+            console.log(`      ${DIM}${cells}${RESET}`);
+          }
+        }
+
+        if (l.note) console.log(`      ${DIM}${l.note}${RESET}`);
+      } catch (err) {
+        console.log(`  ・${l.label}: ${RED}取得できません${RESET} ${DIM}${scrub(err.message)}${RESET}`);
       }
     }
   }

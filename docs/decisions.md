@@ -399,7 +399,8 @@ Step 9 で作り直しになる。**3B-3a 完了時点で集計3表が空なの�
 **通報は匿名ユーザーもできる。** D7 で登録必須にしたのは投稿・いいね・保存であり、
 通報は権利侵害の申告経路なので、登録を必須にすると通報されにくくなる。
 
-これで21表のうち **11表が完全遮断**（`draft_candidates` / `prompt_cards` /
+これで21表のうち **11表が完全遮断**（Step 15 で `handle_history` が加わり、
+22表のうち12表になった。D65）（`draft_candidates` / `prompt_cards` /
 `quiz_questions` / `quiz_choices` / `works` / `answers` / `answer_items` /
 `work_slot_stats` / `likes` / `saves` / `reports`）、
 権限を持つのは10表（`profiles` / マスタ5表 / `draft_sessions` / `prompts` /
@@ -905,6 +906,67 @@ is_published = false, deleted_at = now()
 null を返すとき（下書き・審査中・削除済み）は、タイトルも画像も出さない
 当たり障りのないカードにする。404 にしないのは、SNS 側の表示が壊れるより
 「見つかりません」と書かれたカードが出るほうが分かりやすいため。
+
+### D65. 新しい表は「revoke を書く」までが1組
+
+Step 15 で `handle_history` を作ったとき、権限が `anon` / `authenticated` に
+自動で付いていた。`db:verify` が 24件（3列 × 4種 × 2ロール）を検出した。
+
+**Supabase は public スキーマに作られた表へ、既定で ALL を自動で配る。**
+001〜006 の遮断表はこれを打ち消すため、例外なく次を流していた。
+
+```sql
+revoke all on public.<表> from anon, authenticated;
+```
+
+Step 15 の migration は `create table` だけで、この1行が抜けていた。
+実害は出ていなかった（RLS が有効でポリシーが0本）が、これは D20 が
+警告していた状態そのもの。**誰かがポリシーを1本足した瞬間に開く。**
+
+3つ直した。
+
+1. `handle_history` から `PUBLIC` / `anon` / `authenticated` の権限を落とす
+2. **既定を逆にする**。`alter default privileges in schema public
+   revoke all on tables from anon, authenticated` で、今後は
+   書き忘れても権限が付かない（20260803021911 が関数へ行ったことの表版）
+3. 検査を `aclexplode` ベースに変える（下記）
+
+**検査にも穴があった。** `information_schema.column_privileges` は
+`SELECT` / `INSERT` / `UPDATE` / `REFERENCES` の4種しか見えず、
+**`DELETE` や `TRUNCATE` だけを配られていても気づけない**。
+`relacl` / `attacl` を展開して、表単位・列単位の両方を種類ごとに数える形にした。
+`PUBLIC` は `grantee = 0` で見る（D34 と同じ理由）。
+
+### D66. 「0件であること」の検査には、中身を並べる欄を添える
+
+同じ回で、もう1つの検査が誤検出していた。
+
+```
+handle_updated_at を利用者が直接書き換えられない   期待 0 / 実際 2
+```
+
+こちらは **DB が正しく、検査が誤り**だった。
+`information_schema.column_privileges` は**表単位の grant を全列に展開して
+見せる**ため、001 の `grant select on profiles` が新しい列にも
+SELECT の行として現れる。見たいのは「読めるか」ではなく
+「**更新できるか**」だったので、`has_column_privilege(..., 'UPDATE')` に変えた。
+
+2件とも「期待0／実際N」としか出ないため、**本当に権限があるのか、
+数え方を間違えているのか**が読み取れなかった。原因の切り分けに
+時間がかかった。
+
+そこで `db:verify` に **[一覧]** の欄を足した。合否をつけず、
+grantee 別・権限の種類別に**中身をそのまま並べる**。0行なら
+「0行が正常」と書いた文言を出す。
+
+**0件を数える検査には、その0件の中身を見せる欄を対で置く。**
+数だけを見ていると、正しく0なのか、数えられていないから0なのかが
+区別できない（`prompt_cards` の本数検査に「回答済み判定」の項目を
+対で置いたのと同じ考え方。D61）。
+
+あわせて、守りを足したときに**機能を壊していないか**を見る項目も置いた。
+`profiles` の6列が `authenticated` から更新できること（＝公開設定の
+保存が動くこと）を、期待6として検査する。
 
 ---
 

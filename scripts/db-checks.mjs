@@ -202,6 +202,46 @@ export const FUNCTION_PRIV_SQL = `
   order by p.proname, p.oid::regprocedure::text
 `;
 
+/**
+ * 表の権限を grantee 別に並べる。
+ *
+ * 【なぜ information_schema を使わないか】
+ *   column_privileges は SELECT / INSERT / UPDATE / REFERENCES の4種しか
+ *   見えず、**DELETE や TRUNCATE だけを配られていても現れない**。
+ *   さらに表単位の grant を全列に展開して見せるため、
+ *   「表に付いているのか、列に付いているのか」が読み取れない。
+ *
+ *   relacl（表単位）と attacl（列単位）を別々に展開すれば、
+ *   誰に・何が・どちらの単位で付いているかがそのまま出る。
+ *
+ * 【PUBLIC は grantee = 0】
+ *   ACL を文字列で照合すると 'anon=arwd/' にも '=arwd/' が含まれて
+ *   取り違えるので、必ず oid で見る（D34 と同じ理由）。
+ */
+export const TABLE_PRIV_SQL = `
+  select c.relname                                              as table_name,
+         '表単位'                                                as scope,
+         '-'                                                    as column_name,
+         coalesce(nullif(a.grantee::regrole::text, '-'), 'PUBLIC') as grantee,
+         a.privilege_type
+    from pg_class c
+    join pg_namespace n on n.oid = c.relnamespace,
+         aclexplode(coalesce(c.relacl, '{}'::aclitem[])) a
+   where n.nspname = 'public' and c.relname = any($1)
+  union all
+  select c.relname,
+         '列単位',
+         at.attname,
+         coalesce(nullif(a.grantee::regrole::text, '-'), 'PUBLIC'),
+         a.privilege_type
+    from pg_attribute at
+    join pg_class c on c.oid = at.attrelid
+    join pg_namespace n on n.oid = c.relnamespace,
+         aclexplode(coalesce(at.attacl, '{}'::aclitem[])) a
+   where n.nspname = 'public' and c.relname = any($1)
+  order by 1, 2, 4, 3, 5
+`;
+
 export const checks = [
   // ───────────────────────────── 構造 ─────────────────────────────
   {
@@ -264,11 +304,47 @@ export const checks = [
   },
   {
     group: "権限",
+    name: "遮断12表に PUBLIC / anon / authenticated の権限が0件（種類を漏らさず）",
+    // 上の information_schema による検査は SELECT / INSERT / UPDATE /
+    // REFERENCES の4種しか見えない。**DELETE や TRUNCATE だけを
+    // 配られていても気づけない。** relacl / attacl を展開して、
+    // 表単位・列単位の両方を種類ごとに漏れなく数える。
+    //
+    // PUBLIC（grantee = 0）も対象に入れる。付いていればどのロールからも読める。
+    expected: 0,
+    sql: `select (
+            (select count(*)
+               from pg_class c
+               join pg_namespace n on n.oid = c.relnamespace,
+                    aclexplode(coalesce(c.relacl, '{}'::aclitem[])) a
+              where n.nspname='public' and c.relname = any($1)
+                and a.grantee in (0, 'anon'::regrole::oid,
+                                     'authenticated'::regrole::oid))
+            + (select count(*)
+                 from pg_attribute at
+                 join pg_class c on c.oid = at.attrelid
+                 join pg_namespace n on n.oid = c.relnamespace,
+                      aclexplode(coalesce(at.attacl, '{}'::aclitem[])) a
+                where n.nspname='public' and c.relname = any($1)
+                  and a.grantee in (0, 'anon'::regrole::oid,
+                                       'authenticated'::regrole::oid))
+          )::int`,
+    params: [SEALED_TABLES],
+    detailSql: TABLE_PRIV_SQL,
+    detailParams: [SEALED_TABLES],
+  },
+  {
+    group: "権限",
     name: "遮断12表に RLS ポリシーが0本",
     expected: 0,
     sql: `select count(*)::int from pg_policies
            where schemaname = 'public' and tablename = any($1)`,
     params: [SEALED_TABLES],
+    detailSql: `select tablename, policyname, cmd, roles::text
+                  from pg_policies
+                 where schemaname='public' and tablename = any($1)
+                 order by tablename, policyname`,
+    detailParams: [SEALED_TABLES],
   },
   {
     group: "権限",
@@ -709,14 +785,39 @@ export const checks = [
     name: "handle_history に権限もポリシーも無い",
     // 「誰が昔どの ID だったか」は本人が明かすまで見せない（P5 / D62）。
     // 遮断表の一括検査にも含めているが、狙いが分かるように単独でも見る。
+    //
+    // 【aclexplode で数える理由】
+    //   information_schema.column_privileges は
+    //   SELECT / INSERT / UPDATE / REFERENCES の4種しか見えない。
+    //   **DELETE や TRUNCATE だけを配られていても気づけない。**
+    //   relacl を展開すれば、表に付いた権限を種類ごとに漏れなく数えられる。
+    //
+    // 【PUBLIC を grantee = 0 で見る】
+    //   PUBLIC に付いていればどのロールからも読める。
+    //   ACL を文字列で照合すると 'anon=arwd/' にも '=arwd/' が含まれて
+    //   取り違えるので、grantee の oid で判定する（D34 と同じ理由）。
     expected: 0,
     sql: `select (
-            (select count(*) from information_schema.column_privileges
-              where table_schema='public' and table_name='handle_history'
-                and grantee in ('anon','authenticated'))
+            (select count(*)
+               from pg_class c
+               join pg_namespace n on n.oid = c.relnamespace,
+                    aclexplode(coalesce(c.relacl, '{}'::aclitem[])) a
+              where n.nspname='public' and c.relname='handle_history'
+                and a.grantee in (0, 'anon'::regrole::oid,
+                                     'authenticated'::regrole::oid))
+            + (select count(*)
+                 from pg_attribute at
+                 join pg_class c on c.oid = at.attrelid
+                 join pg_namespace n on n.oid = c.relnamespace,
+                      aclexplode(coalesce(at.attacl, '{}'::aclitem[])) a
+                where n.nspname='public' and c.relname='handle_history'
+                  and a.grantee in (0, 'anon'::regrole::oid,
+                                       'authenticated'::regrole::oid))
             + (select count(*) from pg_policies
                 where schemaname='public' and tablename='handle_history')
           )::int`,
+    detailSql: TABLE_PRIV_SQL,
+    detailParams: [["handle_history"]],
   },
   {
     group: "削除通報",
@@ -740,14 +841,56 @@ export const checks = [
   },
   {
     group: "削除通報",
-    name: "handle_updated_at を利用者が直接書き換えられない",
-    // 直接書けると30日制限の基準を自分でずらせる。
-    // 001 が配った6列に足していないことを確かめる。
+    name: "profiles の保護列を利用者が直接更新できない",
+    // 直接書けると、ID の先取り（D55）と30日制限の回避（P5）ができる。
+    //
+    // 【以前ここを間違えていた】
+    //   information_schema.column_privileges で「何か権限があれば失格」に
+    //   していた。ところがこのビューは**表単位の grant を全列に展開して
+    //   見せる**ため、001 の `grant select on profiles` が
+    //   handle_updated_at にも SELECT の行として現れ、必ず失格になった。
+    //
+    //   見たいのは「読めるか」ではなく「**更新できるか**」。
+    //   has_column_privilege なら表単位と列単位の両方をまとめて評価でき、
+    //   privilege_type を取り違えようがない。
     expected: 0,
-    sql: `select count(*)::int from information_schema.column_privileges
-           where table_schema='public' and table_name='profiles'
-             and column_name='handle_updated_at'
-             and grantee in ('anon','authenticated')`,
+    sql: `select count(*)::int
+            from unnest(array['id','handle','handle_updated_at',
+                              'is_anonymous','created_at']) as col,
+                 unnest(array['anon','authenticated']) as role
+           where has_column_privilege(role, 'public.profiles', col, 'UPDATE')`,
+    detailSql: `select col, role,
+                       has_column_privilege(role, 'public.profiles', col, 'UPDATE') as can_update
+                  from unnest(array['id','handle','handle_updated_at',
+                                    'is_anonymous','created_at']) as col,
+                       unnest(array['anon','authenticated']) as role
+                 order by col, role`,
+  },
+  {
+    group: "削除通報",
+    name: "公開設定など6列は authenticated から更新できる（壊していない）",
+    // 上の revoke で、001 が配った直接更新の権限まで落としていないこと。
+    // 落とすと /account の公開設定が動かなくなる（D55 で「取り上げない」と
+    // 決めている）。**守りを足したついでに機能を壊していないか**を見る。
+    expected: 6,
+    sql: `select count(*)::int
+            from unnest(array['display_name','bio','links','show_answer_stats',
+                              'show_answer_history','show_saved_works']) as col
+           where has_column_privilege('authenticated', 'public.profiles', col, 'UPDATE')`,
+  },
+  {
+    group: "削除通報",
+    name: "今後 public に作る表へ権限が自動で付かない",
+    // 今回の取りこぼしは「書き忘れると権限が付く」構造から生まれた。
+    // 既定を逆にして、書き忘れても付かないようにしてある。
+    expected: 0,
+    sql: `select count(*)::int from pg_default_acl d
+            join pg_namespace n on n.oid = d.defaclnamespace
+           where n.nspname='public' and d.defaclobjtype='r'
+             and exists (
+               select 1 from aclexplode(d.defaclacl) a
+                where a.grantee in (0, 'anon'::regrole::oid,
+                                       'authenticated'::regrole::oid))`,
   },
   {
     group: "削除通報",
@@ -1455,6 +1598,62 @@ export const notices = [
             join public.quiz_choices qc on qc.question_id = qq.id
            where qc.id > public.quiz_choice_dedupe_cutoff()`,
     note: "こちらは診断 A23 が 0 件であることを厳格に見ています。",
+  },
+];
+
+/**
+ * 合否をつけず、**中身をそのまま並べて見せる**項目。
+ *
+ * notices（数を1つ出す）と違い、行をすべて出す。
+ * 「0件であること」を検査するだけでは、**本当に何も無いのか、
+ * 数え方を間違えているのか**が読み取れない。目で見て確かめるための欄。
+ *
+ * emptyNote は0行のときに出す文言。0行が正常な項目では、
+ * 何も出ないことが正常だと分かるようにする。
+ */
+export const listings = [
+  {
+    label: "profiles の権限（grantee 別）",
+    sql: TABLE_PRIV_SQL,
+    params: [["profiles"]],
+    note:
+      "表単位の SELECT が anon / authenticated に、列単位の UPDATE が" +
+      "authenticated の6列だけに付いているのが正しい状態（001 の設計）。" +
+      "handle / handle_updated_at / id / is_anonymous / created_at に" +
+      "UPDATE が現れたら異常。",
+  },
+  {
+    label: "handle_history の権限（grantee 別）",
+    sql: TABLE_PRIV_SQL,
+    params: [["handle_history"]],
+    emptyNote:
+      "0行が正常。PUBLIC / anon / authenticated には何も配らない（P5 / D62）。" +
+      "service_role と所有者の権限はここに出ない（対象外）。",
+  },
+  {
+    label: "handle_history の RLS ポリシー",
+    sql: `select policyname, cmd, roles::text as roles, permissive
+            from pg_policies
+           where schemaname='public' and tablename='handle_history'
+           order by policyname`,
+    emptyNote:
+      "0行が正常。RLS は有効だがポリシーが0本なので、" +
+      "security definer の RPC 以外からは1行も見えない。",
+  },
+  {
+    label: "今後 public に作る表の既定権限",
+    sql: `select coalesce(nullif(a.grantee::regrole::text, '-'), 'PUBLIC') as grantee,
+                 a.privilege_type
+            from pg_default_acl d
+            join pg_namespace n on n.oid = d.defaclnamespace,
+                 aclexplode(d.defaclacl) a
+           where n.nspname='public' and d.defaclobjtype='r'
+             and a.grantee in (0, 'anon'::regrole::oid,
+                                  'authenticated'::regrole::oid)
+           order by 1, 2`,
+    emptyNote:
+      "0行が正常。Supabase の既定は新しい表へ ALL を自動で配るので、" +
+      "それを打ち消してある（20260803221747）。書き忘れても権限が付かない。",
   },
 ];
 
