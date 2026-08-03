@@ -117,7 +117,21 @@ async function main() {
     try {
       const res = await client.query(c.sql, c.params ?? []);
       const actual = res.rows.length ? Number(Object.values(res.rows[0])[0]) : null;
-      line(actual === c.expected, c.name, `期待 ${c.expected} / 実際 ${actual}`);
+      const ok = actual === c.expected;
+      line(ok, c.name, `期待 ${c.expected} / 実際 ${actual}`);
+
+      // 失敗したときだけ、原因が分かる明細を出す
+      if (!ok && c.detailSql) {
+        try {
+          const detail = await client.query(c.detailSql, c.detailParams ?? []);
+          console.log(`${DIM}      ── 明細 ──${RESET}`);
+          for (const row of detail.rows) {
+            console.log(`      ${DIM}${JSON.stringify(row)}${RESET}`);
+          }
+        } catch (e) {
+          console.log(`      ${RED}明細の取得に失敗: ${scrub(e.message)}${RESET}`);
+        }
+      }
     } catch (err) {
       line(false, c.name, `クエリ失敗: ${scrub(err.message)}`);
     }

@@ -73,6 +73,48 @@ export const DRAFT_RPCS = [
 /** 外部へ公開しない内部ヘルパー */
 export const INTERNAL_FUNCS = ["draft_generate_candidates", "draft_state_json"];
 
+/** トリガー関数など、外から呼ばれないもの */
+export const TRIGGER_FUNCS = [
+  "handle_new_user",
+  "sync_profile_anonymous_flag",
+  "draft_sessions_set_updated_at",
+];
+
+/** public スキーマに自作した関数すべて */
+export const ALL_FUNCS = [
+  ...PUBLIC_RPCS,
+  ...OWNER_RPCS,
+  ...DRAFT_RPCS,
+  ...INTERNAL_FUNCS,
+  ...TRIGGER_FUNCS,
+];
+
+/**
+ * 関数ごとの EXECUTE 権限を、引数型つきの正確なシグネチャで並べる診断。
+ *
+ * oid::regprocedure は public.get_my_work(uuid) のように
+ * 「どの関数か」を取り違えようのない形で表示してくれる。
+ * 同じ名前で引数違いの関数があっても区別できる。
+ */
+export const FUNCTION_PRIV_SQL = `
+  select
+    p.oid::regprocedure::text as signature,
+    p.prosecdef               as security_definer,
+    exists (select 1 from aclexplode(coalesce(p.proacl, acldefault('f', p.proowner))) a
+             where a.grantee = 0 and a.privilege_type = 'EXECUTE')      as public_exec,
+    exists (select 1 from aclexplode(coalesce(p.proacl, acldefault('f', p.proowner))) a
+             where a.grantee = 'anon'::regrole::oid
+               and a.privilege_type = 'EXECUTE')                        as anon_exec,
+    exists (select 1 from aclexplode(coalesce(p.proacl, acldefault('f', p.proowner))) a
+             where a.grantee = 'authenticated'::regrole::oid
+               and a.privilege_type = 'EXECUTE')                        as authenticated_exec,
+    coalesce(array_to_string(p.proacl, ' | '), '(デフォルトのまま)')     as acl
+  from pg_proc p
+    join pg_namespace n on n.oid = p.pronamespace
+  where n.nspname = 'public' and p.proname = any($1)
+  order by p.proname, p.oid::regprocedure::text
+`;
+
 export const checks = [
   // ───────────────────────────── 構造 ─────────────────────────────
   {
@@ -181,14 +223,49 @@ export const checks = [
   },
   {
     group: "関数",
-    name: "public/anon に取り残された EXECUTE が0本",
+    name: "PUBLIC に EXECUTE が残っている関数が0本",
     expected: 0,
+    // aclexplode で ACL を1件ずつ展開し、grantee = 0（＝PUBLIC）だけを見る。
+    //
+    // 【以前ここを間違えていた】
+    //   aclitem を文字列にして '%=X/%' で探していたが、
+    //   PUBLIC は '=X/postgres'、anon は 'anon=X/postgres' と表記され、
+    //   後者にも '=X/' が含まれるため **全関数が誤検出**されていた。
+    //   grantee の oid で判定すれば取り違えようがない。
+    //
+    // proacl が null のときは「デフォルトのまま」＝ PUBLIC に EXECUTE がある状態。
+    // acldefault('f', 所有者) で補ってから同じ判定をかける。
     sql: `select count(*)::int from pg_proc p
             join pg_namespace n on n.oid = p.pronamespace
            where n.nspname = 'public'
              and p.proname = any($1)
-             and (p.proacl is null or array_to_string(p.proacl,',') like '%=X/%')`,
-    params: [[...PUBLIC_RPCS, ...OWNER_RPCS, ...DRAFT_RPCS, ...INTERNAL_FUNCS]],
+             and exists (
+               select 1
+                 from aclexplode(coalesce(p.proacl, acldefault('f', p.proowner))) a
+                where a.grantee = 0
+                  and a.privilege_type = 'EXECUTE')`,
+    params: [[...ALL_FUNCS]],
+    detailSql: FUNCTION_PRIV_SQL,
+    detailParams: [[...ALL_FUNCS]],
+  },
+  {
+    group: "関数",
+    name: "今後作る関数へ PUBLIC EXECUTE が自動付与されない設定がある",
+    expected: 1,
+    sql: `select (exists (
+             select 1 from pg_default_acl d
+               join pg_namespace n on n.oid = d.defaclnamespace
+              where n.nspname = 'public' and d.defaclobjtype = 'f'))::int`,
+  },
+  {
+    group: "関数",
+    name: "そのデフォルト設定に PUBLIC の EXECUTE が含まれない",
+    expected: 0,
+    sql: `select count(*)::int from pg_default_acl d
+            join pg_namespace n on n.oid = d.defaclnamespace
+           where n.nspname = 'public' and d.defaclobjtype = 'f'
+             and exists (select 1 from aclexplode(d.defaclacl) a
+                          where a.grantee = 0 and a.privilege_type = 'EXECUTE')`,
   },
   {
     group: "関数",

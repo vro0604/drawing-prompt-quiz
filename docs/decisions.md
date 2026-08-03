@@ -424,6 +424,47 @@ Step 9 で作り直しになる。**3B-3a 完了時点で集計3表が空なの�
 Step 3C の目的だから。出口が固まっていれば、以降の工程で表を直接読ませたく
 なる誘惑が生じない。
 
+### D42. 権限の検査は ACL の文字列ではなく grantee の oid で行う
+
+Step 4 の自動検証で「PUBLIC に EXECUTE が残っている関数が21本」と出たが、
+**検査SQLの誤りだった**。
+
+ACL は `付与先=権限/付与元` という文字列で表される。
+
+```
+PUBLIC          =X/postgres        ← 付与先が空
+anon            anon=X/postgres
+authenticated   authenticated=X/postgres
+```
+
+`like '%=X/%'` で PUBLIC を探すと、`anon=X/` にも当たる。
+結果、EXECUTE を誰かに与えている関数がすべて誤検出された。
+
+正しくは `aclexplode()` で1件ずつ展開し、**grantee の oid が 0（＝PUBLIC）**
+かどうかで判定する。`proacl` が null のときは `acldefault('f', 所有者)` で
+既定値を補ってから同じ判定にかける（null は「既定のまま」＝ PUBLIC に EXECUTE あり）。
+
+**判定の根拠にした事実**：anon は PUBLIC の一員なので、PUBLIC に EXECUTE が
+あれば anon も必ず実行できる。本人用RPC 9本が anon から 0/9 だった時点で、
+少なくともその9本に PUBLIC EXECUTE が無いことは確定していた。
+
+### D43. 関数のデフォルト権限で PUBLIC への自動付与を止める
+
+Postgres は `create function` のたびに EXECUTE を PUBLIC へ自動付与する。
+007 以降は作成直後に revoke しているが、**1本書き忘れれば穴が開く**構造だった。
+
+```sql
+alter default privileges in schema public
+  revoke execute on functions from public;
+```
+
+これで書き忘れても PUBLIC には付かない。既存の関数には遡って効かないため、
+移行時に24本すべてを引数型つきの正確なシグネチャで revoke / grant しなおした
+（`20260803021911_harden_function_privileges.sql`）。
+
+引数型を省略しないのは、同名で引数違いの関数があったときに
+取り違えないため。
+
 ---
 
 ## 公開前の必須課題

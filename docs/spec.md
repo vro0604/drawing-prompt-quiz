@@ -1247,9 +1247,14 @@ URL: `/u/[handle]`
 | ~~**3B-2b**~~ ✅ | 確定お題・クイズ4表：`prompts` `prompt_cards` `quiz_questions` `quiz_choices`<br>＋RLS＋権限 | 機密3表が permission denied |
 | ~~**3B-3a**~~ ✅ | 作品・回答・集計6表：`works` `answers` `answer_items`<br>`work_slot_stats` `user_stats` `user_slot_stats`＋RLS＋権限 | `works` が permission denied |
 | ~~**3B-3b**~~ ✅ | 反応・通報3表：`likes` `saves` `reports`＋RLS＋権限 | `likes` が permission denied |
-| ~~**3C**~~ ✅ | 取得系RPC 13本の実装（`supabase/migrations/007_read_rpcs.sql`） | 正解へ到達する経路が無いことを §9-5 の表で確認 |
+| ~~**3C**~~ ✅ | 取得系RPC 13本の実装（`supabase/applied/007_read_rpcs.sql`） | 正解へ到達する経路が無いことを §9-5 の表で確認 |
 | **3D** | タグ投入。`docs/tags-master.md` に案を作り**目視確認してから**投入 | 4プールで計156件前後 |
-| **3E** | 横断診断ページで全テーブルの状態を確認しコミット | 権限表と実際の設定が一致 |
+| ~~**3E**~~ ✅ | 横断診断を `npm run db:verify` として自動化 | 権限表と実際の設定が一致 |
+
+**3D と 3E は独立工程として先行させない方針へ変更した。**
+3E は `npm run db:verify`（構造24／診断14／実地43）として常時実行できる形になった。
+3D は最小タグ46件を Step 4 で投入済み。本番タグへの差し替えは、
+画面が一通り通ってから行う。
 
 各工程の前に説明を提示し、確認を待ってから着手する。取り消し用SQLも工程ごとに用意する。
 
@@ -1264,7 +1269,11 @@ URL: `/u/[handle]`
   その結果 **`select *` は権限エラーになる**ため、アプリ側は列名を必ず列挙する
 - 取り消し用SQLも `begin` / `commit` で囲み、参照している側から順に消す
 
-### 13-2. Step 3E の必須診断
+### 13-2. 必須診断（旧 Step 3E）
+
+`npm run db:verify` が自動実行する。検査項目の定義は `scripts/db-checks.mjs`。
+手順は `docs/db-workflow.md` を参照。
+
 
 **DB の制約だけでは防げない不整合**を検出する。制約は「最大1件」「型」「参照先の存在」
 までしか保証できず、「必ず1件ある」「複数の表の内容が一致している」は表現できない。
@@ -1286,6 +1295,8 @@ URL: `/u/[handle]`
 | A10 | `likes` / `saves` の持ち主が匿名ユーザー（登録必須のはず。D7） | 匿名かどうかは `profiles` を見ないと分からない |
 | A11 | `works.likes_count` / `saves_count` が実件数と一致しない作品 | キャッシュと正本の照合はCHECKで書けない |
 | A12 | `security definer` なのに `search_path` が固定されていない関数 | 偽テーブルを読まされる危険。カタログを見ないと分からない |
+| A13 | 同一世代でタグが重複しているドラフト | 抽選ロジックの誤り。制約でも防ぐが二重に見る |
+| A14 | 1枠に2枚以上選ばれているドラフト | 同上 |
 
 - A1〜A4 は `complete_draft` RPC（Step 5）が作成時に保証する。診断はその**事後確認**。
 - **A5 は掃除対象にしない**。投稿済みのはずの作品が見当たらない状態であり、

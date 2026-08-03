@@ -11,6 +11,7 @@
     "db:baseline": "bash scripts/db-baseline.sh",
     "db:deploy": "bash scripts/db-deploy.sh",
     "db:verify": "node scripts/db-verify.mjs",
+    "db:privs": "node scripts/db-privs.mjs",
     "db:link": "npx supabase link --project-ref oyyiutiptsffckujqkvl"
   },
   "dependencies": {

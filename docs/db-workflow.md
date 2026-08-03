@@ -20,6 +20,7 @@ scripts/
   db-baseline.sh     001〜007 を「適用済み」として履歴へ登録（1回だけ）
   db-deploy.sh       dry-run → push
   db-verify.mjs      構造・権限・漏洩経路・診断の自動検証
+  db-privs.mjs       関数のEXECUTE権限を引数型つきで一覧（読むだけ）
   db-checks.mjs      検証項目の定義（項目を足すときはここだけ編集）
 ```
 
@@ -80,6 +81,7 @@ npm run db:link      # DBパスワードを聞かれる
 npm run db:status    # 何が適用されるかを見る（DBは変更しない）
 npm run db:deploy    # dry-run を表示 → 問題なければ push
 npm run db:verify    # 構造・権限・漏洩経路・診断を自動判定
+npm run db:privs     # 誰がどの関数を呼べるかを一覧（読むだけ）
 ```
 
 `db:baseline` は初回の1回だけ。2回目以降は実行不要（実行しても害はない）。
@@ -143,4 +145,5 @@ npm run db:verify
 | `applied/` `rollback/` のファイルを `migrations/` へ移す | 再実行されて反映が止まる |
 | 基準マイグレーションへ verify / rollback SQL を混ぜる | rollback には `drop table` が入っている。**新環境で表が消える** |
 | 接続文字列やアクセストークンをファイルに書く | 漏れたらDBを自由にされる |
+| ACL を文字列比較で判定する | `anon=X/` にも `=X/` が含まれる。`aclexplode` で grantee の oid を見る |
 | `supabase db pull` | Docker が必要。方針に反する（baseline + repair を使う） |
