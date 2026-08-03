@@ -49,6 +49,54 @@ export const ACTUAL_TIME_CHOICES: { value: string; label: string }[] = [
   { value: "86400", label: "1日以上" },
 ];
 
+/**
+ * 一覧の絞り込みタブ。
+ *
+ * value が null のときは get_public_works に何も渡さない＝通常フィードで、
+ * **AI 部門は出ない**（20260803041246_feed_ai_separation.sql）。
+ * AI を見るには 'ai' を明示して選ぶ。締め出すのではなく場所を分ける（spec 7-3）。
+ */
+export const FEED_TABS: { key: string; value: string | null; label: string }[] = [
+  { key: "normal", value: null, label: "すべて（AI以外）" },
+  { key: "original", value: "original", label: "オリジナル" },
+  { key: "fanart", value: "fanart", label: "ファンアート" },
+  { key: "ai", value: "ai", label: "AI生成" },
+];
+
+/** 一覧の並び順。get_public_works の p_sort と同じ値 */
+export const FEED_SORTS: { value: string; label: string }[] = [
+  { value: "new", label: "新着" },
+  { value: "likes", label: "いいね順" },
+  { value: "answers", label: "回答数順" },
+];
+
+/** 1ページの件数。get_public_works の上限は50 */
+export const FEED_PAGE_SIZE = 24;
+
+/** 一覧の1件（get_public_works が返す行） */
+export type PublicWorkListItem = {
+  id: string;
+  title: string;
+  image_path: string;
+  image_width: number;
+  image_height: number;
+  division: Division;
+  source_title: string | null;
+  source_character: string | null;
+  fanart_note: string | null;
+  actual_time_seconds: number | null;
+  time_limit_seconds: number | null;
+  mode_key: string;
+  was_rerolled: boolean;
+  likes_count: number;
+  saves_count: number;
+  answers_count: number;
+  created_at: string;
+  author_id: string;
+  author_handle: string | null;
+  author_display_name: string;
+};
+
 /** 枠ごとの伝達率（get_work_detail / get_my_work の slot_stats） */
 export type SlotStat = {
   card_slot_key: string;
@@ -132,6 +180,17 @@ export type WorkWriteResult = {
 /** 部門キーから表示名を引く。未知の値はそのまま返す */
 export function divisionLabel(division: string): string {
   return DIVISIONS.find((d) => d.value === division)?.label ?? division;
+}
+
+/**
+ * 枠ごとの伝達率を百分率にする。挑戦が0回なら null（「まだ分からない」）。
+ *
+ * 0回のときに 0% と出すと「誰も当てられなかった」と読めてしまう。
+ * 「まだ誰も答えていない」と意味が違うので、区別できる形で返す。
+ */
+export function slotAccuracy(stat: SlotStat): number | null {
+  if (stat.attempts === 0) return null;
+  return Math.round((stat.corrects / stat.attempts) * 100);
 }
 
 /** 実制作時間の秒数を「2時間30分」のような表示に変える。null は未申告 */

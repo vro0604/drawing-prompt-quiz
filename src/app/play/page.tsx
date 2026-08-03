@@ -75,6 +75,10 @@ export default async function PlayPage({
           </p>
         )}
         <p className="pt-2">
+          <Link href="/works" className="underline">
+            作品一覧
+          </Link>
+          <span className="px-2 text-black/20 dark:text-white/20">/</span>
           {/* 作品の投稿にはアカウントが要る（spec C3）。導線をここに置く。 */}
           <Link href="/account" className="underline">
             アカウント

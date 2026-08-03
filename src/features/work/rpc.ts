@@ -5,6 +5,7 @@ import {
   WORKS_BUCKET,
   type Division,
   type MyWork,
+  type PublicWorkListItem,
   type WorkDetail,
   type WorkWriteResult,
 } from "@/features/work/types";
@@ -19,6 +20,32 @@ import type { ImageInfo } from "@/features/work/image";
  * エラー文の整形（'CODE: 日本語' から日本語だけ取り出す）は
  * ドラフト側と同じ readableRpcError を使い回す。
  */
+
+/**
+ * 公開作品の一覧。誰でも（未サインインでも）呼べる。
+ *
+ * **division に null を渡すと AI 部門は返らない**（通常フィード）。
+ * AI を見せる画面では 'ai' を明示する。この分岐は SQL 側にあり、
+ * 画面で取ったあとに捨てる形にはしていない。捨てると1ページの件数が
+ * ばらつき、ページ送りの位置もずれるため。
+ */
+export async function fetchPublicWorks(params: {
+  division: string | null;
+  sort: string;
+  limit: number;
+  offset: number;
+}): Promise<PublicWorkListItem[]> {
+  const supabase = await createSupabaseServerClient();
+  const { data, error } = await supabase.rpc("get_public_works", {
+    p_division: params.division,
+    p_sort: params.sort,
+    p_limit: params.limit,
+    p_offset: params.offset,
+  });
+
+  if (error) throw new Error(readableRpcError(error.message));
+  return (data ?? []) as PublicWorkListItem[];
+}
 
 /**
  * 公開作品1件。公開条件を満たさなければ null。
