@@ -396,9 +396,9 @@ answer_items          回答の内訳【機密：正解が推測できる】    
 work_slot_stats       作品×スロットの正答集計                          ← Step 3B-3a 済
 user_stats            ユーザーの通算成績                               ← Step 3B-3a 済
 user_slot_stats       ユーザー×スロットの成績                          ← Step 3B-3a 済
-likes                 いいね（登録ユーザーのみ・本人のみ閲覧可）
-saves                 保存（登録ユーザーのみ）
-reports               通報【機密】
+likes                 いいね（登録ユーザーのみ）                        ← Step 3B-3b 済
+saves                 保存（登録ユーザーのみ）                          ← Step 3B-3b 済
+reports               通報【機密・匿名も可】                            ← Step 3B-3b 済
 ```
 
 **【機密】= `anon` / `authenticated` へテーブル権限を一切与えない**（D20）。
@@ -811,7 +811,17 @@ reports(id, work_id, reporter_id, reason, detail, status, created_at)
     reason: copyright / inappropriate / spam / ai_undeclared / other
 ```
 
-**likes の行は本人しか読めない**（D26）。他人へ公開するのは `works.likes_count` だけで、
+実装済み（Step 3B-3b / `supabase/migrations/006_likes_saves_reports.sql`）。
+実装では次の点が上の擬似定義と異なる。
+
+- `likes` / `saves` … PK は `(work_id, user_id)`。両FKとも **ON DELETE CASCADE**
+  （反応は本人の行動記録なので、本人が消えれば消える）
+- `reports` … `reporter_id` は **ON DELETE SET NULL**（ゲストが消えても通報は残す）。
+  `resolved_at` を追加し、`status` と対で埋まることを CHECK で保証。
+  `reason = 'other'` のときは `detail` を必須にした
+- **3表とも権限もポリシーも与えない**（D39）
+
+**likes の行は本人も直接読めない**（D26 / D39）。他人へ公開するのは `works.likes_count` だけで、
 「誰がいいねしたか」を見せる機能はMVPに含めない。
 
 `likes` の行を正本とし、`works.likes_count` は**トリガーで同期するキャッシュ**として扱う（D24）。
@@ -1010,8 +1020,8 @@ RLSポリシーを作らないことに加えた二重の防御（D20）。
 | **work_slot_stats** | **権限なし** → `get_work_detail` / `get_my_work` の返り値に含める（D36） | トリガー | トリガー | × |
 | user_stats | 本人 OR `show_answer_stats = true`。**`anon` からも読める**（D37） | トリガー | トリガー | × |
 | user_slot_stats | 本人 OR `show_answer_stats = true`。**`anon` からも読める**（D37） | トリガー | トリガー | × |
-| **likes** | **本人のみ**（D26） | RPC | × | RPC |
-| saves | 本人 OR `show_saved_works = true` | RPC | × | RPC |
+| **likes** | **権限なし** → RPC のみ（D26 / D39） | RPC | × | RPC |
+| **saves** | **権限なし** → RPC のみ。公開判定は RPC 側（D39） | RPC | × | RPC |
 | **reports** | **権限なし** | RPC（匿名可） | × | × |
 
 `works` の SELECT 権限を与えないため、更新も RPC（`update_work`）経由になる（D23）。
@@ -1226,7 +1236,7 @@ URL: `/u/[handle]`
 | ~~**3B-2a**~~ ✅ | ドラフト2表：`draft_sessions` `draft_candidates`＋RLS＋権限 | `draft_candidates` が permission denied |
 | ~~**3B-2b**~~ ✅ | 確定お題・クイズ4表：`prompts` `prompt_cards` `quiz_questions` `quiz_choices`<br>＋RLS＋権限 | 機密3表が permission denied |
 | ~~**3B-3a**~~ ✅ | 作品・回答・集計6表：`works` `answers` `answer_items`<br>`work_slot_stats` `user_stats` `user_slot_stats`＋RLS＋権限 | `works` が permission denied |
-| **3B-3b** | 反応・通報3表：`likes` `saves` `reports`＋RLS＋権限 | `likes` が他人から0件で返る |
+| ~~**3B-3b**~~ ✅ | 反応・通報3表：`likes` `saves` `reports`＋RLS＋権限 | `likes` が permission denied |
 | **3C** | 公開取得経路の設計確定とレビュー（ビュー vs RPC の最終判断） | 正解へ到達する経路が無いことを §9-5 の表で確認 |
 | **3D** | タグ投入。`docs/tags-master.md` に案を作り**目視確認してから**投入 | 4プールで計156件前後 |
 | **3E** | 横断診断ページで全テーブルの状態を確認しコミット | 権限表と実際の設定が一致 |
@@ -1263,13 +1273,16 @@ URL: `/u/[handle]`
 | A7 | 内訳の件数が、その作品の問題数と一致しない回答 | 別の表どうしの照合はCHECKで書けない |
 | A8 | `works.answers_count` が `answers` の実件数と一致しない作品 | キャッシュと正本の照合はCHECKで書けない |
 | A9 | `answer_items.card_slot_key` がその問の枠と一致しない | 別の表どうしの照合はCHECKで書けない |
+| A10 | `likes` / `saves` の持ち主が匿名ユーザー（登録必須のはず。D7） | 匿名かどうかは `profiles` を見ないと分からない |
+| A11 | `works.likes_count` / `saves_count` が実件数と一致しない作品 | キャッシュと正本の照合はCHECKで書けない |
 
 - A1〜A4 は `complete_draft` RPC（Step 5）が作成時に保証する。診断はその**事後確認**。
 - **A5 は掃除対象にしない**。投稿済みのはずの作品が見当たらない状態であり、
   自動削除すると原因調査ができなくなる。必ず手で調べる（P4 と区別する）。
 
 検出クエリの全文はマイグレーション末尾のコメントにある。
-A1〜A5 は `004_prompts_quiz.sql`、A6〜A9 は `005_works_answers.sql`。
+A1〜A5 は `004_prompts_quiz.sql`、A6〜A9 は `005_works_answers.sql`、
+A10〜A11 は `006_likes_saves_reports.sql`。
 以降の工程で表が増えたら、この表へ行を追加していく。
 
 **A5 と A8 は掃除対象にしない。** 自動で消すと原因調査ができなくなるため、必ず手で調べる。

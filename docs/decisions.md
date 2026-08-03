@@ -384,6 +384,27 @@ INSERT / UPDATE / DELETE をどのロールにも与えない。更新するの�
 トリガーを 3B-3a で先に作っても、回答を入れる手段が無いため動作確認できず、
 Step 9 で作り直しになる。**3B-3a 完了時点で集計3表が空なのは意図した状態**。
 
+### D39. likes / saves / reports も完全遮断する
+
+`likes` / `saves` が持つのは `work_id` だけで、作品名や画像を出すには `works` が要る。
+その `works` に権限が無い（D23 / D35）以上、どのみち RPC を通ることになるため、
+経路を1本に統一する。
+
+`saves` の公開（`show_saved_works = true`）をポリシーで書くと、D36 と同じ問題
+（作品IDの総当たりで非公開・削除済み作品の存在が漏れる）が起きる。公開判定は
+`get_public_saves` RPC が行う。
+
+`reports` は D20 のとおり元から機密。誰が何を通報したかは当事者にも見せない。
+
+**通報は匿名ユーザーもできる。** D7 で登録必須にしたのは投稿・いいね・保存であり、
+通報は権利侵害の申告経路なので、登録を必須にすると通報されにくくなる。
+
+これで21表のうち **11表が完全遮断**（`draft_candidates` / `prompt_cards` /
+`quiz_questions` / `quiz_choices` / `works` / `answers` / `answer_items` /
+`work_slot_stats` / `likes` / `saves` / `reports`）、
+権限を持つのは10表（`profiles` / マスタ5表 / `draft_sessions` / `prompts` /
+`user_stats` / `user_slot_stats`）となった。
+
 ---
 
 ## 公開前の必須課題
