@@ -12,7 +12,9 @@
     "db:deploy": "bash scripts/db-deploy.sh",
     "db:verify": "node scripts/db-verify.mjs",
     "db:privs": "node scripts/db-privs.mjs",
-    "db:link": "npx supabase link --project-ref oyyiutiptsffckujqkvl"
+    "db:link": "npx supabase link --project-ref oyyiutiptsffckujqkvl",
+    "smoke:draft": "node scripts/smoke-draft.mjs",
+    "smoke:play": "node scripts/smoke-play.mjs"
   },
   "dependencies": {
     "@supabase/ssr": "^0.12.4",
