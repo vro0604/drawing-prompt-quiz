@@ -355,3 +355,25 @@ MVPでは実装しないが、**一般公開の前に必ず決着させる**も�
 
 ### P3. 作品の扱いに関する規約
 上記の挙動を利用規約に明記する。何が消え、何が残るかを投稿前に示す。
+
+### P4. 持ち主のいないお題の掃除（Step 16 で実装）
+
+`prompts.created_by` は ON DELETE SET NULL のため、ゲストが掃除されると
+**誰のものでもないお題**が残る。この行は RLS の `auth.uid() = created_by` が
+真にならないため誰からも見えず、放置すると増え続けるだけになる。
+
+**削除対象は次を「すべて」満たす `prompts` に限る**
+
+1. `created_by is null`（持ち主がいない）
+2. `works` から参照されていない（作品が付いていない）
+3. `status in ('active', 'abandoned')`
+
+`prompts` を削除すれば `prompt_cards` / `quiz_questions` / `quiz_choices` は
+ON DELETE CASCADE で一緒に消える。
+
+**`status = 'submitted'` なのに `works` が無い行は、通常の掃除では削除しない。**
+投稿済みのはずの作品が失われている状態であり、原因を調べる必要がある。
+これは Step 3E の診断 A5（spec.md §13-2）で検出する。
+
+`prompts_orphan_cleanup_idx (status) where created_by is null` を
+004 の時点で張ってあるため、対象の抽出は速い。

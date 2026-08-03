@@ -379,17 +379,17 @@ MVPでは、その場合に「匿名の記録は引き継げません」と明�
 
 ```
 profiles              プロフィール（匿名ユーザーも1行持つ）＋公開設定   ← Step 2 済
-tag_pools             タグプール定義（マスタ）
-card_slots            カードスロット定義（マスタ）
-draft_modes           モード定義（マスタ）
-draft_mode_slots      モードが使う枠（マスタ）
-tags                  タグ本体（プールに属する・重み付き）
-draft_sessions        ドラフト進行状態
-draft_candidates      伏せカードの中身【機密】
-prompts               確定したお題
-prompt_cards          お題を構成する確定カード【機密】
-quiz_questions        出題される3問【機密】
-quiz_choices          各問の4択【機密】
+tag_pools             タグプール定義（マスタ）                        ← Step 3B-1 済
+card_slots            カードスロット定義（マスタ）                      ← Step 3B-1 済
+draft_modes           モード定義（マスタ）                             ← Step 3B-1 済
+draft_mode_slots      モードが使う枠（マスタ）                          ← Step 3B-1 済
+tags                  タグ本体（プールに属する・重み付き）              ← 表は済／行は Step 3D
+draft_sessions        ドラフト進行状態                                ← Step 3B-2a 済
+draft_candidates      伏せカードの中身【機密】                          ← Step 3B-2a 済
+prompts               確定したお題                                     ← Step 3B-2b 済
+prompt_cards          お題を構成する確定カード【機密】                  ← Step 3B-2b 済
+quiz_questions        出題される3問【機密】                            ← Step 3B-2b 済
+quiz_choices          各問の4択【機密】                                ← Step 3B-2b 済
 works                 投稿作品（prompt_id は非公開列）
 answers               回答（1作品1ユーザー1件）
 answer_items          回答の内訳【機密：正解が推測できるため本人限定】
@@ -575,42 +575,78 @@ CHECK: `is_chosen = false or revealed_at is not null`（選んだのに見てい
 8. completed / abandoned から in_progress へは戻せない
 ```
 
+実装済み（Step 3B-2b / `supabase/migrations/004_prompts_quiz.sql`）。以下は実装と一致する。
+
 **prompts**
 
-| 列 | 型 | 備考 |
-|---|---|---|
-| id | uuid PK | 共有コード（`code`）は廃止（D17） |
-| mode_key | text FK → draft_modes | |
-| time_limit_seconds | int null | **確定時に draft_sessions からコピー**。null = 無制限 |
-| was_rerolled | boolean | 引き直しの有無 |
-| reroll_count | int | |
-| status | text | `active` / `submitted` / `abandoned` |
-| created_by | uuid FK → profiles | 匿名も可 |
-| candidates_revealed_at | timestamptz | null なら未開示 |
-| reveal_reason | text | `work_submitted` / `abandoned` / `manual` |
-| created_at | timestamptz | |
+| 列 | 型 | 公開 | 備考 |
+|---|---|---|---|
+| id | uuid PK default gen_random_uuid() | ○ | 共有コード（`code`）は廃止（D17） |
+| draft_session_id | uuid **null許容 UNIQUE** FK → draft_sessions | × | ON DELETE **SET NULL**。未選択カードの参照元 |
+| created_by | uuid null許容 FK → profiles | × | ON DELETE **SET NULL**。匿名も可 |
+| mode_key | text FK → draft_modes | ○ | ON DELETE RESTRICT |
+| time_limit_seconds | int null | ○ | 確定時に draft_sessions からコピー。null = 無制限。60〜600000 |
+| was_rerolled | boolean not null default false | ○ | `was_rerolled = (reroll_count > 0)` を CHECK で保証 |
+| reroll_count | int not null default 0 | ○ | 0〜5 |
+| status | text not null default 'active' | ○ | `active` / `submitted` / `abandoned` |
+| candidates_revealed_at | timestamptz null | ○ | null なら未開示 |
+| reveal_reason | text null | × | `work_submitted` / `abandoned` / `manual` |
+| created_at | timestamptz not null default now() | ○ | |
+| submitted_at | timestamptz null | × | |
+| abandoned_at | timestamptz null | × | |
+
+主な CHECK
+
+- `prompts_reveal_pair` … `candidates_revealed_at` と `reveal_reason` は必ず同時に埋まる
+- `prompts_status_timestamps` … status と submitted_at / abandoned_at の組み合わせを固定
+- `prompts_*_after_created` … 3つの日時はいずれも `created_at` 以降
+
+索引：`prompts_created_by_idx (created_by)`、
+`prompts_orphan_cleanup_idx (status) where created_by is null`（P4 の掃除用）
 
 **prompt_cards** 【機密】
 
 | 列 | 型 |
 |---|---|
-| id | bigint PK |
-| prompt_id | uuid FK |
-| card_slot_key | text FK → card_slots |
-| tag_id | bigint FK → tags |
-| position | int |
+| id | bigint generated always as identity PK |
+| prompt_id | uuid FK → prompts（**ON DELETE CASCADE**） |
+| card_slot_key | text FK → card_slots（RESTRICT） |
+| slot_order | int（1以上。`draft_candidates` と同じ名前に統一） |
+| tag_id | bigint FK → tags（RESTRICT） |
+| created_at | timestamptz |
 
-UNIQUE(prompt_id, card_slot_key)
+UNIQUE(prompt_id, card_slot_key) / UNIQUE(prompt_id, slot_order) / UNIQUE(prompt_id, tag_id)
 
-**quiz_questions / quiz_choices** 【どちらも機密】
+**quiz_questions** 【機密】
 
 ```
-quiz_questions(id, prompt_id, card_slot_key, position 0..n-1)
+quiz_questions(id bigint identity, prompt_id uuid FK cascade,
+               card_slot_key text FK, position int 0..9, created_at)
     UNIQUE(prompt_id, position)
-
-quiz_choices(id, question_id, tag_id, is_correct 【機密】, position 0..3)
-    UNIQUE(question_id, position)
+    UNIQUE(prompt_id, card_slot_key)   ← 同じ枠を2回出題しない
 ```
+
+**quiz_choices** 【機密】
+
+```
+quiz_choices(id bigint identity, question_id bigint FK cascade,
+             tag_id bigint FK, position int 0..3, is_correct boolean 【機密】, created_at)
+    UNIQUE(question_id, position)
+    UNIQUE(question_id, tag_id)        ← 同じ選択肢が2回出ない
+    部分UNIQUE (question_id) where is_correct   ← 正解は「最大1件」
+```
+
+**部分UNIQUE が保証するのは「最大1件」であって「必ず1件」ではない**。
+正解0件の問題は DB を通ってしまう。ちょうど1件であることは Step 5 の
+`complete_draft` が保証し、§13-2 の診断で継続的に確認する。
+
+**権限**
+
+- `prompts` … `authenticated` に**上表の「公開○」8列だけ** `grant select`。
+  RLS ポリシーは `prompts_select_own`（`(select auth.uid()) = created_by`）の1本だけ。
+  `anon` には何も与えない。
+- 機密3表 … **`grant` も RLS ポリシーも1つも作らない**。直接 SELECT すると
+  `permission denied`（D31）。データは `security definer` の RPC からのみ出る。
 
 `quiz_questions` も機密扱いとする（D20）。
 「どのお題のどの枠が出題されているか」自体が推測材料になるうえ、
@@ -618,6 +654,13 @@ quiz_choices(id, question_id, tag_id, is_correct 【機密】, position 0..3)
 
 **公開ビュー `public_quiz_view` は廃止し、RPC `get_work_quiz(work_id)` に置き換える**（D22）。
 理由は §9-6 を参照。
+
+**`created_by` が null になった行の見え方**
+
+ゲスト掃除などで `created_by` が null になると `auth.uid() = null` は真にならないため、
+その行は**誰から見ても0件**になる（エラーではない）。作品側の表示は
+`security definer` の RPC が担うので、クイズは成立し続ける。
+この状態の行は P4 の掃除対象になる。
 
 ### 8-4. 投稿・回答
 
@@ -1117,7 +1160,7 @@ URL: `/u/[handle]`
 | 13 | ランキング（3種×2系統） | 人気は登録ユーザーのいいねのみ |
 | 14 | ポートフォリオページ＋公開設定 | 既定で成績・履歴・保存が非公開 |
 | 15 | 共有OGP／通報／削除・非公開 | |
-| 16 | Vercelデプロイ／匿名ユーザー掃除Cron／CAPTCHA | 本番で一連の流れが通る |
+| 16 | Vercelデプロイ／匿名ユーザー掃除Cron／CAPTCHA／**孤児お題の掃除（P4）** | 本番で一連の流れが通る |
 
 ### 13-1. Step 3 の分割
 
@@ -1129,7 +1172,7 @@ URL: `/u/[handle]`
 | ~~**3A**~~ ✅ | スキーマ設計の確定（実装なし） | この仕様書と decisions.md へ反映済み |
 | ~~**3B-1**~~ ✅ | マスタ5表：`tag_pools` `card_slots` `draft_modes` `draft_mode_slots` `tags`<br>＋RLS＋権限＋マスタ行（タグ本体を除く） | モードと枠の構成を管理画面で確認できる |
 | ~~**3B-2a**~~ ✅ | ドラフト2表：`draft_sessions` `draft_candidates`＋RLS＋権限 | `draft_candidates` が permission denied |
-| **3B-2b** | 確定お題・クイズ4表：`prompts` `prompt_cards` `quiz_questions` `quiz_choices`<br>＋RLS＋権限 | 機密3表が permission denied |
+| ~~**3B-2b**~~ ✅ | 確定お題・クイズ4表：`prompts` `prompt_cards` `quiz_questions` `quiz_choices`<br>＋RLS＋権限 | 機密3表が permission denied |
 | **3B-3a** | 作品・回答・集計6表：`works` `answers` `answer_items`<br>`work_slot_stats` `user_stats` `user_slot_stats`＋RLS＋権限 | `works` が permission denied |
 | **3B-3b** | 反応・通報3表：`likes` `saves` `reports`＋RLS＋権限 | `likes` が他人から0件で返る |
 | **3C** | 公開取得経路の設計確定とレビュー（ビュー vs RPC の最終判断） | 正解へ到達する経路が無いことを §9-5 の表で確認 |
@@ -1148,6 +1191,29 @@ URL: `/u/[handle]`
 - 機密でない表も、公開する列は `grant select (列名, ...)` で明示する。
   その結果 **`select *` は権限エラーになる**ため、アプリ側は列名を必ず列挙する
 - 取り消し用SQLも `begin` / `commit` で囲み、参照している側から順に消す
+
+### 13-2. Step 3E の必須診断
+
+**DB の制約だけでは防げない不整合**を検出する。制約は「最大1件」「型」「参照先の存在」
+までしか保証できず、「必ず1件ある」「複数の表の内容が一致している」は表現できない。
+そこを人手で確認するのがこの診断。
+
+**すべて 0 行が返れば正常。1行でも返れば、それは壊れたデータ。**
+
+| # | 検出するもの | なぜ制約で防げないか |
+|---|---|---|
+| A1 | 正解がちょうど1件でない `quiz_questions` | 部分UNIQUE は「最大1件」しか保証しない。**0件を通す** |
+| A2 | 選択肢が4件でない問題 | 「何件あるか」は行をまたぐのでCHECKで書けない |
+| A3 | 正解タグが `prompt_cards` の答えと一致しない問題 | 別の表どうしの照合はCHECKで書けない |
+| A4 | `prompt_cards` の件数がモードの枠数と一致しない `prompts` | 同上 |
+| A5 | `status = 'submitted'` なのに `works` が存在しない `prompts` | 同上（3B-3a 以降で有効） |
+
+- A1〜A4 は `complete_draft` RPC（Step 5）が作成時に保証する。診断はその**事後確認**。
+- **A5 は掃除対象にしない**。投稿済みのはずの作品が見当たらない状態であり、
+  自動削除すると原因調査ができなくなる。必ず手で調べる（P4 と区別する）。
+
+検出クエリの全文は `supabase/migrations/004_prompts_quiz.sql` 末尾のコメントにある。
+3B-3a 以降の表が増えたら、この表へ行を追加していく。
 
 ---
 
