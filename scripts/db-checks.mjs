@@ -81,6 +81,16 @@ export const DRAFT_RPCS = [
  */
 export const WRITE_RPCS = ["create_work", "update_work"];
 
+/**
+ * 回答の書き込みRPC（authenticated のみ）。
+ *
+ * **WRITE_RPCS とは分けている。** 作品の投稿は登録ユーザー限定だが、
+ * 回答は匿名ゲストにも許す（spec 10 の権限表）。
+ * 同じ配列に入れると「is_anonymous を見ているか」の検査が
+ * 回答RPCまで巻き込んでしまい、意味が逆になる。
+ */
+export const ANSWER_RPCS = ["submit_answer"];
+
 /** storage.objects に張った works バケット用のポリシー */
 export const STORAGE_POLICIES = [
   "works_objects_read_public",
@@ -97,6 +107,14 @@ export const TRIGGER_FUNCS = [
   "handle_new_user",
   "sync_profile_anonymous_flag",
   "draft_sessions_set_updated_at",
+  "answers_after_insert_stats",
+  "answer_items_after_insert_stats",
+];
+
+/** 回答が入ったときに集計を進めるトリガー */
+export const STATS_TRIGGERS = [
+  "answers_after_insert_stats",
+  "answer_items_after_insert_stats",
 ];
 
 /** public スキーマに自作した関数すべて */
@@ -105,6 +123,7 @@ export const ALL_FUNCS = [
   ...OWNER_RPCS,
   ...DRAFT_RPCS,
   ...WRITE_RPCS,
+  ...ANSWER_RPCS,
   ...INTERNAL_FUNCS,
   ...TRIGGER_FUNCS,
 ];
@@ -348,6 +367,74 @@ export const checks = [
     params: [WRITE_RPCS],
   },
 
+  {
+    group: "関数",
+    name: "回答RPC submit_answer が存在する",
+    expected: 1,
+    sql: `select count(*)::int from pg_proc p
+            join pg_namespace n on n.oid = p.pronamespace
+           where n.nspname='public' and p.proname = any($1)`,
+    params: [ANSWER_RPCS],
+  },
+  {
+    group: "関数",
+    name: "submit_answer は authenticated から実行できる（ゲスト含む）",
+    expected: 1,
+    sql: `select count(*)::int from pg_proc p
+            join pg_namespace n on n.oid = p.pronamespace
+           where n.nspname='public' and p.proname = any($1)
+             and has_function_privilege('authenticated', p.oid, 'EXECUTE')`,
+    params: [ANSWER_RPCS],
+  },
+  {
+    group: "関数",
+    name: "submit_answer は anon から実行できない",
+    expected: 0,
+    sql: `select count(*)::int from pg_proc p
+            join pg_namespace n on n.oid = p.pronamespace
+           where n.nspname='public' and p.proname = any($1)
+             and has_function_privilege('anon', p.oid, 'EXECUTE')`,
+    params: [ANSWER_RPCS],
+  },
+  {
+    group: "関数",
+    name: "集計トリガー2本が設置されている",
+    expected: 2,
+    sql: `select count(*)::int from pg_trigger t
+            join pg_class c on c.oid = t.tgrelid
+            join pg_namespace n on n.oid = c.relnamespace
+           where n.nspname='public'
+             and not t.tgisinternal
+             and t.tgname = any($1)`,
+    params: [STATS_TRIGGERS],
+  },
+  {
+    group: "関数",
+    name: "集計トリガー関数は anon/authenticated から実行できない",
+    expected: 0,
+    sql: `select count(*)::int from pg_proc p
+            join pg_namespace n on n.oid = p.pronamespace
+           where n.nspname='public' and p.proname = any($1)
+             and (has_function_privilege('anon', p.oid, 'EXECUTE')
+               or has_function_privilege('authenticated', p.oid, 'EXECUTE'))`,
+    params: [STATS_TRIGGERS],
+  },
+
+  // ──────────────────────── 通常フィードと AI の分離 ────────────────────────
+  //
+  // spec 13 Step 8 の終了条件「AI作品が通常フィードに出ない」。
+  // 実際に出ないことは smoke:answer が確かめる。ここでは
+  // 絞り込みの式そのものが消えていないことを見る。
+  {
+    group: "フィード",
+    name: "通常フィード（p_division = null）が AI 部門を除いている",
+    expected: 1,
+    sql: `select count(*)::int from pg_proc p
+            join pg_namespace n on n.oid = p.pronamespace
+           where n.nspname='public' and p.proname='get_public_works'
+             and p.prosrc like '%w.division <> ''ai''%'`,
+  },
+
   // ──────────────────────── 投稿は登録ユーザーだけ ────────────────────────
   //
   // spec C3 / D27-1。Postgres のロールでは匿名ゲストと登録ユーザーを
@@ -482,6 +569,36 @@ export const checks = [
            where n.nspname='public' and p.proname = any($1)
              and p.prosrc like '%''prompt_id''%'`,
     params: [WRITE_RPCS],
+  },
+  {
+    group: "漏洩",
+    name: "submit_answer も prompt_id を JSON キーに出さない",
+    expected: 0,
+    sql: `select count(*)::int from pg_proc p
+            join pg_namespace n on n.oid = p.pronamespace
+           where n.nspname='public' and p.proname = any($1)
+             and p.prosrc like '%''prompt_id''%'`,
+    params: [ANSWER_RPCS],
+  },
+  {
+    group: "漏洩",
+    name: "prompt_cards（＝答え）に触れる関数が3本のまま",
+    // 内訳は complete_draft（書く）／ get_my_prompt（本人のお題）／
+    // get_my_answer（回答済み本人へ正解を返す）の3本だけ。
+    //
+    // submit_answer はここに入らない。正解の組み立てはせず、
+    // 最後に get_my_answer を呼ぶだけだからで、それが狙いどおりであることを
+    // この数で確かめている。4本目が増えたら、それが新しい漏洩経路になりうる。
+    expected: 3,
+    sql: `select count(*)::int from pg_proc p
+            join pg_namespace n on n.oid = p.pronamespace
+           where n.nspname='public'
+             and p.prosrc like '%public.prompt_cards%'`,
+    detailSql: `select p.proname from pg_proc p
+                  join pg_namespace n on n.oid = p.pronamespace
+                 where n.nspname='public'
+                   and p.prosrc like '%public.prompt_cards%'
+                 order by p.proname`,
   },
   {
     group: "漏洩",
@@ -661,6 +778,64 @@ export const diagnostics = [
             join public.works w on w.prompt_id = p.id
            where p.status <> 'submitted'`,
   },
+
+  // --- Step 10 / 11 で足した4本 ---------------------------------------------
+  {
+    id: "A19",
+    label: "作者が自分の作品に回答している（D28 違反）",
+    // submit_answer の検査3を通っていれば発生しない。
+    sql: `select a.id::text from public.answers a
+            join public.works w on w.id = a.work_id
+           where a.user_id = w.user_id`,
+  },
+  {
+    id: "A20",
+    label: "user_stats が実データと合わない",
+    sql: `select us.user_id::text from public.user_stats us
+           where us.total_answers <> (
+                   select count(*) from public.answers a
+                    where a.user_id = us.user_id)
+              or us.total_items <> (
+                   select count(*) from public.answer_items ai
+                     join public.answers a on a.id = ai.answer_id
+                    where a.user_id = us.user_id)
+              or us.total_correct_items <> (
+                   select count(*) from public.answer_items ai
+                     join public.answers a on a.id = ai.answer_id
+                    where a.user_id = us.user_id and ai.is_correct)`,
+  },
+  {
+    id: "A21",
+    label: "work_slot_stats が実データと合わない",
+    sql: `select st.work_id::text from public.work_slot_stats st
+           where st.attempts <> (
+                   select count(*) from public.answer_items ai
+                     join public.answers a on a.id = ai.answer_id
+                    where a.work_id = st.work_id
+                      and ai.card_slot_key = st.card_slot_key)
+              or st.corrects <> (
+                   select count(*) from public.answer_items ai
+                     join public.answers a on a.id = ai.answer_id
+                    where a.work_id = st.work_id
+                      and ai.card_slot_key = st.card_slot_key
+                      and ai.is_correct)`,
+  },
+  {
+    id: "A22",
+    label: "user_slot_stats が実データと合わない",
+    sql: `select uss.user_id::text from public.user_slot_stats uss
+           where uss.attempts <> (
+                   select count(*) from public.answer_items ai
+                     join public.answers a on a.id = ai.answer_id
+                    where a.user_id = uss.user_id
+                      and ai.card_slot_key = uss.card_slot_key)
+              or uss.corrects <> (
+                   select count(*) from public.answer_items ai
+                     join public.answers a on a.id = ai.answer_id
+                    where a.user_id = uss.user_id
+                      and ai.card_slot_key = uss.card_slot_key
+                      and ai.is_correct)`,
+  },
 ];
 
 /**
@@ -738,6 +913,19 @@ export const roleProbes = [
     label: "anon → update_work",
     sql: `select public.update_work('00000000-0000-0000-0000-000000000000'::uuid)`,
   },
+  {
+    role: "anon",
+    mode: "denied",
+    label: "anon → submit_answer",
+    sql: `select public.submit_answer(
+            '00000000-0000-0000-0000-000000000000'::uuid, '[]'::jsonb)`,
+  },
+  ...STATS_TRIGGERS.map((fn) => ({
+    role: "authenticated",
+    mode: "denied",
+    label: `authenticated → ${fn}（トリガー専用）`,
+    sql: `select public.${fn}()`,
+  })),
   ...INTERNAL_FUNCS.map((fn) => ({
     role: "authenticated",
     mode: "denied",

@@ -3,309 +3,52 @@
  * smoke-work.mjs ／ 作品投稿の一連の流れを、ブラウザと同じ道筋で通す
  *
  * ゲストでお題を引く → 昇格して登録 → 画像を選ぶ → アップロード →
- * 作品情報を入れる → create_work → 作品詳細、までを2人ぶん動かし、
+ * 作品情報を入れる → create_work → 作品詳細、までを動かし、
  * **非公開作品と他人の下書きが漏れないこと**を実際に確かめる。
- *
- * 【どうやってボタンを押しているか】
- *   Next.js の Server Action は JavaScript が無効でも動くように、
- *   form の中に $ACTION_ID_... という hidden 項目を置く。
- *   その項目を含めて POST すれば、ブラウザでボタンを押したのと同じことになる。
- *   画像も multipart/form-data で一緒に送れる。
  *
  * 【いちばん大事な確認】
  *   1. 匿名ゲストのままでは投稿できない（spec C3 / D27-1）
  *   2. 昇格しても uid が変わらず、ゲストのときのお題で投稿できる（11-2）
  *   3. 下書きは本人にしか見えない（他人・未サインインからは 404）
- *   4. 作品ページに、そのお題の答え（タグ名）が1文字も出ていない
+ *   4. 作品ページの、出題（4択）の外にお題の答えが出ていない
+ *      （正解は4択の1つとして必ず出るので「文字が無いこと」では確かめられない。
+ *        どれが正解か見分けられないことは smoke:answer が確かめる）
  *
  * 【前提】
  *   ・別のターミナルで npm run dev を動かしておくこと
- *   ・Supabase の Authentication → Email で **Confirm email が OFF** であること
- *     （ON だと登録が確認メール待ちになり、この流れは途中で止まる。
- *       /auth/v1/settings の mailer_autoconfirm で自動判定し、
- *       OFF でなければ理由を出して終了する）
+ *   ・Supabase の Authentication → Email で Confirm email が OFF であること
+ *     （自動で確かめ、ON なら理由を出して終了する）
  *
  * 【秘密は使わない】
  *   SUPABASE_SECRET_KEY は読まない。画面と同じ経路だけを通す。
  *
  * 【残るデータ】
  *   **消えない。** 登録ユーザー2人と、そのお題・作品・画像が残る。
- *
  *   works.user_id は profiles を ON DELETE RESTRICT で参照しているため、
  *   作品を持つユーザーは削除できない。手で消すには先に作品を消す必要があり、
  *   それはデータの削除にあたるのでこのスクリプトには入れない。
- *   （開発用プロジェクトなので、たまるようなら手で片付ける）
  *
  * 【使い方】
  *   npm run smoke:work
  */
 
-import { readFileSync } from "node:fs";
-import { deflateSync } from "node:zlib";
+import {
+  accountUserId,
+  drawPrompt,
+  finish,
+  forms,
+  makePng,
+  must,
+  register,
+  requireAutoConfirm,
+  section,
+  session,
+  submitWork,
+  textOf,
+  textOutsideQuiz,
+} from "./_smoke-http.mjs";
 
-const BASE = process.env.SMOKE_BASE_URL ?? "http://localhost:3000";
-
-// ── 判定 ──────────────────────────────────────────────
-let bad = 0;
-const must = (ok, label, extra = "") => {
-  console.log(`  ${ok ? "✓" : "✗"} ${label}${extra ? "  " + extra : ""}`);
-  if (!ok) bad += 1;
-};
-const section = (t) => console.log(`\n${t}`);
-
-// ── 前提の確認：メール確認が OFF になっているか ─────────────
-//
-// ON のままだと登録直後にセッションが返らず、この流れは通らない。
-// 「投稿できない」のか「登録できていないだけ」なのか分からなくなるので、
-// 先に切り分けておく。
-
-function readEnvLocal() {
-  const out = {};
-  try {
-    const text = readFileSync(new URL("../.env.local", import.meta.url), "utf8");
-    for (const line of text.split("\n")) {
-      const m = /^\s*([A-Z0-9_]+)\s*=\s*(.*?)\s*$/.exec(line);
-      if (m) out[m[1]] = m[2].replace(/^['"]|['"]$/g, "");
-    }
-  } catch {
-    // 無ければ下で弾く
-  }
-  return out;
-}
-
-const env = readEnvLocal();
-const SUPABASE_URL = process.env.NEXT_PUBLIC_SUPABASE_URL ?? env.NEXT_PUBLIC_SUPABASE_URL;
-const PUBLISHABLE_KEY =
-  process.env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY ?? env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY;
-
-if (!SUPABASE_URL || !PUBLISHABLE_KEY) {
-  console.error(".env.local に NEXT_PUBLIC_SUPABASE_URL と ...PUBLISHABLE_KEY が必要です。");
-  process.exit(1);
-}
-
-{
-  const res = await fetch(`${SUPABASE_URL}/auth/v1/settings`, {
-    headers: { apikey: PUBLISHABLE_KEY },
-  });
-  const settings = await res.json();
-  if (!settings.mailer_autoconfirm) {
-    console.error(
-      [
-        "Supabase の Confirm email が ON になっています。",
-        "",
-        "この検査は画面の登録フローをそのまま通すため、確認メールの受信が挟まると進めません。",
-        "対処: ダッシュボード → Authentication → Sign In / Providers → Email",
-        "      → Confirm email を OFF にしてから、もう一度実行してください。",
-      ].join("\n"),
-    );
-    process.exit(1);
-  }
-}
-
-// ── ブラウザ1つぶんのセッション（Cookie を別々に持つ）─────────────
-function session(name) {
-  const jar = new Map();
-
-  const cookieHeader = () => [...jar.entries()].map(([k, v]) => `${k}=${v}`).join("; ");
-
-  const store = (res) => {
-    for (const c of res.headers.getSetCookie?.() ?? []) {
-      const [pair] = c.split(";");
-      const i = pair.indexOf("=");
-      if (i > 0) jar.set(pair.slice(0, i).trim(), pair.slice(i + 1).trim());
-    }
-  };
-
-  async function get(path) {
-    const res = await fetch(BASE + path, {
-      headers: { cookie: cookieHeader() },
-      redirect: "manual",
-    });
-    store(res);
-    if (res.status >= 300 && res.status < 400) {
-      return get(res.headers.get("location").replace(BASE, ""));
-    }
-    return { html: await res.text(), status: res.status, path };
-  }
-
-  async function post(path, fields, file) {
-    const body = new FormData();
-    for (const [k, v] of Object.entries(fields)) body.append(k, v);
-    if (file) body.append(file.field, new Blob([file.bytes], { type: file.type }), file.name);
-
-    const res = await fetch(BASE + path, {
-      method: "POST",
-      headers: { cookie: cookieHeader() },
-      body,
-      redirect: "manual",
-    });
-    store(res);
-    const loc = res.headers.get("location");
-    if (loc) return get(loc.replace(BASE, ""));
-    return { html: await res.text(), status: res.status, path };
-  }
-
-  return { name, get, post };
-}
-
-/** form 要素を切り出して、action id と hidden 項目を取り出す */
-function forms(html) {
-  const out = [];
-  const re = /<form\b[\s\S]*?<\/form>/g;
-  let m;
-  while ((m = re.exec(html))) {
-    const frag = m[0];
-    const actionId = /name="(\$ACTION_ID_[a-f0-9]+)"/.exec(frag)?.[1];
-    const fields = {};
-    for (const im of frag.matchAll(/<input[^>]*name="([^"$][^"]*)"[^>]*value="([^"]*)"[^>]*>/g)) {
-      fields[im[1]] = im[2];
-    }
-    const text = frag.replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim();
-    out.push({ actionId, fields, text, frag });
-  }
-  return out;
-}
-
-function textOf(html) {
-  return html
-    .replace(/<script[\s\S]*?<\/script>/g, "")
-    .replace(/<[^>]+>/g, " ")
-    .replace(/\s+/g, " ")
-    .trim();
-}
-
-/** /account に出ている「ID: ...」を取り出す。昇格で変わらないことの確認に使う */
-function accountUserId(html) {
-  return /ID:\s*([0-9a-f-]{36})/.exec(textOf(html))?.[1] ?? null;
-}
-
-// ── 検査用の PNG を組み立てる ────────────────────────────
-//
-// 画像ライブラリを入れずに済ませたいので、最小の PNG を手で作る。
-// 幅・高さを引数で変えられるようにしてあるのは、
-// works.image_width / image_height が実物から数えられているかを
-// 出力側で確かめるため。
-
-const CRC_TABLE = (() => {
-  const t = new Int32Array(256);
-  for (let n = 0; n < 256; n += 1) {
-    let c = n;
-    for (let k = 0; k < 8; k += 1) c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1;
-    t[n] = c;
-  }
-  return t;
-})();
-
-function crc32(buf) {
-  let c = 0xffffffff;
-  for (const b of buf) c = CRC_TABLE[(c ^ b) & 0xff] ^ (c >>> 8);
-  return (c ^ 0xffffffff) >>> 0;
-}
-
-function chunk(type, data) {
-  const len = Buffer.alloc(4);
-  len.writeUInt32BE(data.length);
-  const body = Buffer.concat([Buffer.from(type, "ascii"), data]);
-  const crc = Buffer.alloc(4);
-  crc.writeUInt32BE(crc32(body));
-  return Buffer.concat([len, body, crc]);
-}
-
-function makePng(width, height) {
-  const ihdr = Buffer.alloc(13);
-  ihdr.writeUInt32BE(width, 0);
-  ihdr.writeUInt32BE(height, 4);
-  ihdr[8] = 8; // ビット深度
-  ihdr[9] = 2; // カラータイプ 2 = RGB
-
-  // 各行は「フィルタ種別1バイト + RGB×幅」
-  const raw = Buffer.alloc(height * (1 + width * 3));
-  for (let y = 0; y < height; y += 1) {
-    const rowStart = y * (1 + width * 3);
-    raw[rowStart] = 0;
-    for (let x = 0; x < width; x += 1) {
-      const at = rowStart + 1 + x * 3;
-      raw[at] = (x * 7) % 256;
-      raw[at + 1] = (y * 11) % 256;
-      raw[at + 2] = 160;
-    }
-  }
-
-  return Buffer.concat([
-    Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
-    chunk("IHDR", ihdr),
-    chunk("IDAT", deflateSync(raw)),
-    chunk("IEND", Buffer.alloc(0)),
-  ]);
-}
-
-// ── お題を1つ引いて確定する（/play を通す）─────────────────────
-async function drawPrompt(s, modeKey) {
-  let page = await s.get("/play");
-
-  const startForm = forms(page.html).find((f) => /ドラフトを始める/.test(f.text));
-  if (!startForm?.actionId) throw new Error("/play に開始フォームが見つかりません");
-
-  page = await s.post("/play", {
-    [startForm.actionId]: "",
-    modeKey,
-    timeLimitSeconds: "3600",
-  });
-
-  // 「めくる」ボタンが無くなるまで押し続ける
-  for (let guard = 0; guard < 12; guard += 1) {
-    const f = forms(page.html).find((x) => x.fields.candidateIndex !== undefined);
-    if (!f) break;
-    page = await s.post("/play", { [f.actionId]: "", ...f.fields });
-  }
-
-  const completeForm = forms(page.html).find((f) => /このお題で確定する/.test(f.text));
-  if (!completeForm) throw new Error("確定ボタンが出ませんでした");
-
-  page = await s.post("/play", { [completeForm.actionId]: "", ...completeForm.fields });
-
-  const promptId = /^\/prompt\/([0-9a-f-]{36})/.exec(page.path)?.[1];
-  if (!promptId) throw new Error(`確定お題ページへ移動しませんでした: ${page.path}`);
-
-  // 答え（タグ名）を控える。あとで作品ページに出ていないことを確かめる。
-  const answers = [
-    ...page.html.matchAll(/<span class="text-lg font-bold">([^<]+)<\/span>/g),
-  ].map((m) => m[1].trim());
-
-  return { promptId, answers };
-}
-
-/** /account の登録フォームを送る。ゲストなら昇格、未サインインなら新規作成 */
-async function register(s, label) {
-  const email = `dpq-smoke-${label}-${process.pid}-${Math.floor(Math.random() * 1e6)}@example.com`;
-  const password = `smoke-${Math.random().toString(36).slice(2)}A1!`;
-
-  const page = await s.get("/account");
-  const form = forms(page.html).find(
-    (f) => /登録する/.test(f.text) && !/サインインする/.test(f.text),
-  );
-  if (!form?.actionId) throw new Error("/account に登録フォームが見つかりません");
-
-  const after = await s.post("/account", { [form.actionId]: "", email, password });
-  return { email, password, page: after };
-}
-
-/** 投稿フォームを送る。戻り値は移動先のページ */
-async function submitWork(s, promptId, fields, png) {
-  const page = await s.get(`/works/new?promptId=${promptId}`);
-  const form = forms(page.html).find((f) => f.fields.promptId !== undefined);
-  if (!form?.actionId) throw new Error("/works/new に投稿フォームが見つかりません");
-
-  return s.post(
-    `/works/new?promptId=${promptId}`,
-    { [form.actionId]: "", promptId, ...fields },
-    { field: "image", bytes: png, name: "smoke.png", type: "image/png" },
-  );
-}
-
-// ════════════════════════════════════════════════════════
-//  ここから本番
-// ════════════════════════════════════════════════════════
+await requireAutoConfirm();
 
 const author = session("author");
 const stranger = session("stranger");
@@ -377,9 +120,9 @@ must(
 
 // 答えが1つも出ていないこと
 {
-  const t = textOf(page.html);
-  const leaked = original.answers.filter((a) => a && t.includes(a));
-  must(leaked.length === 0, "作品ページにお題の答えが出ていない", leaked.join(" "));
+  const outside = textOutsideQuiz(page.html);
+  const leaked = original.answerLabels.filter((a) => a && outside.includes(a));
+  must(leaked.length === 0, "作品ページの、出題の外に答えが出ていない", leaked.join(" "));
   must(!/prompt_id|promptId/.test(page.html), "HTML に prompt_id が出ていない");
 }
 
@@ -441,9 +184,16 @@ for (const [s, label] of [
 {
   const res = await visitor.get(`/works/${publicWorkId}`);
   must(res.status === 200, "公開作品は未サインインでも見える", `実際 ${res.status}`);
-  const t = textOf(res.html);
-  const leaked = original.answers.filter((a) => a && t.includes(a));
-  must(leaked.length === 0, "訪問者にもお題の答えが出ていない", leaked.join(" "));
+
+  // 【ここは「文字が無いこと」では確かめられない】
+  //   正解のタグは4択のうちの1つとして必ず出るため。
+  //   要件は「どれが正解か分からないこと」なので、
+  //   出題の外に答えが出ていないことを見る。
+  //   どれが正解か見分けられないことは smoke:answer が別途確かめる。
+  const outside = textOutsideQuiz(res.html);
+  const leaked = original.answerLabels.filter((a) => a && outside.includes(a));
+  must(leaked.length === 0, "訪問者の画面で、出題の外に答えが出ていない", leaked.join(" "));
+  must(!/is_correct|correct_tag_id|correct_label/.test(res.html), "正解の印が HTML に無い");
 }
 
 // 存在しないIDも同じ 404（他人の下書きと区別がつかない）
@@ -460,8 +210,7 @@ section("5. 下書きを公開する");
   res = await author.post(`/works/${draftWorkId}`, { [form.actionId]: "", ...form.fields });
 
   // 「下書き」という語だけで見ると、作者向けの「下書きに戻す」ボタンに当たる。
-  // 本人限定表示（OwnerOnlyView）から公開表示（PublicView）へ切り替わったことを、
-  // 両者にしか出ない文言で見分ける。
+  // 本人限定表示から公開表示へ切り替わったことを、両者にしか出ない文言で見分ける。
   must(!/この作品は下書きです/.test(textOf(res.html)), "公開後は下書きの説明が消える");
   must(/下書きに戻す/.test(textOf(res.html)), "公開表示になり、下書きに戻すボタンが出る");
 
@@ -515,5 +264,4 @@ section("8. 画像が公開URLから取れる");
   }
 }
 
-console.log(bad === 0 ? "\n=== すべて期待どおり ===" : `\n=== ${bad}件 失敗 ===`);
-process.exit(bad === 0 ? 0 : 1);
+finish();

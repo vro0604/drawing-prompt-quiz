@@ -16,6 +16,7 @@
     "smoke:draft": "node scripts/smoke-draft.mjs",
     "smoke:play": "node scripts/smoke-play.mjs",
     "smoke:work": "node scripts/smoke-work.mjs",
+    "smoke:answer": "node scripts/smoke-answer.mjs",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {

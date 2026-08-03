@@ -3,6 +3,8 @@ import Link from "next/link";
 import { notFound } from "next/navigation";
 import { getCurrentUser } from "@/features/auth/session";
 import { formatDuration } from "@/features/draft/types";
+import { fetchMyAnswer, fetchWorkQuiz } from "@/features/quiz/rpc";
+import type { MyAnswer, WorkQuiz } from "@/features/quiz/types";
 import { fetchMyWork, fetchWorkDetail, workImageUrl } from "@/features/work/rpc";
 import {
   divisionLabel,
@@ -10,6 +12,7 @@ import {
   type MyWork,
   type WorkDetail,
 } from "@/features/work/types";
+import { AnswerResult, AuthorNotice, QuizForm, SlotStats } from "./_quiz";
 import { publishWorkAction, unpublishWorkAction } from "./actions";
 
 /**
@@ -126,7 +129,15 @@ function MetaList({
 }
 
 /** 公開されている作品の表示 */
-function PublicView({ work }: { work: WorkDetail }) {
+function PublicView({
+  work,
+  quiz,
+  myAnswer,
+}: {
+  work: WorkDetail;
+  quiz: WorkQuiz | null;
+  myAnswer: MyAnswer | null;
+}) {
   return (
     <>
       <header className="space-y-2">
@@ -155,13 +166,19 @@ function PublicView({ work }: { work: WorkDetail }) {
         createdAt={work.created_at}
       />
 
-      <div className={`${box} space-y-2 text-sm`}>
-        <p className="font-bold">この絵のお題を当てるクイズ</p>
-        <p className="text-black/60 dark:text-white/60">
-          クイズと回答は Step 10 で実装します。いまは回答 {work.answers_count} 件・
-          いいね {work.likes_count} 件・保存 {work.saves_count} 件を数えているだけです。
-        </p>
-      </div>
+      {/* クイズ。出す形は3通りしかない。
+            作者      → 回答できない案内（D28）
+            回答済み  → 結果（ここで初めて正解が出る）
+            それ以外  → 回答フォーム（正解を含まない） */}
+      {quiz === null ? null : quiz.is_author ? (
+        <AuthorNotice />
+      ) : myAnswer ? (
+        <AnswerResult answer={myAnswer} />
+      ) : (
+        <QuizForm quiz={quiz} />
+      )}
+
+      <SlotStats stats={work.slot_stats} />
 
       {work.is_author ? (
         <form action={unpublishWorkAction}>
@@ -213,6 +230,9 @@ function OwnerOnlyView({ work }: { work: MyWork }) {
         createdAt={work.created_at}
       />
 
+      {/* 下書きでも、過去に公開していれば回答が付いている可能性がある */}
+      <SlotStats stats={work.slot_stats} />
+
       {!work.is_published && !work.deleted_at && work.review_status === "ok" ? (
         <form action={publishWorkAction} className="space-y-3">
           <input type="hidden" name="workId" value={work.id} />
@@ -256,6 +276,19 @@ export default async function WorkPage({
   // どちらでも取れないなら、存在しないのと同じ扱い（D40）。
   if (!publicWork && !myWork) notFound();
 
+  // 公開されている作品にだけクイズが付く。
+  //
+  // 回答済みかどうかは get_work_quiz が answered_by_me で教えてくれるので、
+  // 結果を取りに行くのはそのときだけ。未回答の人に余分な問い合わせをしない
+  // （そして get_my_answer は未回答なら null しか返さない）。
+  let quiz: WorkQuiz | null = null;
+  let myAnswer: MyAnswer | null = null;
+
+  if (publicWork) {
+    quiz = await fetchWorkQuiz(id);
+    if (quiz?.answered_by_me) myAnswer = await fetchMyAnswer(id);
+  }
+
   return (
     <main className="mx-auto w-full max-w-3xl space-y-8 p-6 sm:p-10">
       {error ? (
@@ -265,12 +298,15 @@ export default async function WorkPage({
       ) : null}
 
       {publicWork ? (
-        <PublicView work={publicWork} />
+        <PublicView work={publicWork} quiz={quiz} myAnswer={myAnswer} />
       ) : myWork ? (
         <OwnerOnlyView work={myWork} />
       ) : null}
 
-      <footer className="border-t border-black/10 pt-6 text-sm dark:border-white/10">
+      <footer className="flex flex-wrap gap-x-4 gap-y-2 border-t border-black/10 pt-6 text-sm dark:border-white/10">
+        <Link href="/works" className="underline">
+          作品一覧へ
+        </Link>
         <Link href="/play" className="underline">
           お題を引く画面へ
         </Link>

@@ -1242,6 +1242,16 @@ URL: `/u/[handle]`
 お題確定 → 画像アップロード → `create_work` → 作品詳細まで通る。
 検証は `npm run smoke:work`。
 
+**Step 8 は完了**（`20260803041246_feed_ai_separation.sql` ＋ `/works`）。
+`get_public_works` の絞り込みを差し替え、**`p_division` が null のとき AI 部門を除く**
+ようにした。3C の時点では null が全部門を指しており、Step 8 の終了条件
+「AI作品が通常フィードに出ない」を満たせなかったための修正。
+分離は SQL 側で行う（画面で取ってから捨てると1ページの件数がばらつく）。
+
+**Step 10 / 11 は完了**（`20260803041353_answer_rpc_and_stats.sql` ＋ `/works/[id]`）。
+`submit_answer` と集計トリガー2本。作品ページで4択に答えると採点結果と正解が出て、
+`works.answers_count` と集計3表が動く。検証は `npm run smoke:answer`。
+
 Step 7 に伴い **Step 6 の最小版を先取りした**（`/account`）。
 `create_work` は登録ユーザーだけを通す（C3 / D27-1）ため、
 登録の手段が無いと投稿までブラウザで到達できないため。

@@ -103,8 +103,9 @@ npm run db:privs     # 誰がどの関数を呼べるかを一覧（読むだけ
 | 関数 | `search_path` 固定、PUBLIC に EXECUTE が残っていない、公開／本人用／書き込みの切り分け |
 | 登録必須 | `create_work` / `update_work` と Storage の追加ポリシーが JWT の `is_anonymous` を見ている |
 | Storage | `works` バケットが公開読み取り・5MiB・画像3種、ポリシー4本、`anon` に書き込みが無い |
-| 漏洩 | `prompt_id` を返さない、`get_work_quiz` が `is_correct` に触れない、`weight` を読まない |
-| 診断 | Step 3E の A1〜A18（すべて0行なら正常） |
+| フィード | 通常フィード（`p_division = null`）が AI 部門を除いている |
+| 漏洩 | `prompt_id` を返さない、`get_work_quiz` が `is_correct` に触れない、`weight` を読まない、<br>`prompt_cards`（＝答え）に触れる関数が3本のまま |
+| 診断 | Step 3E の A1〜A22（すべて0行なら正常） |
 | 実地 | `anon` / `authenticated` に成りすまして、実際に読めない／呼べないことを確認 |
 
 「登録必須」の2項目だけ毛色が違う。ほかは権限や構造を見ているが、ここは
