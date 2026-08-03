@@ -120,6 +120,46 @@ let quiz;
   must(!/is_correct/.test(res.html), "HTML に is_correct が出ていない");
   must(!/correct_tag_id|correct_label/.test(res.html), "HTML に正解タグの項目が無い");
   must(/回答する/.test(res.html), "回答ボタンが出ている");
+
+  // --- 選択肢のタグが1つのお題の中で重複しないこと ---------------------------
+  //
+  // 【なぜこれが漏洩の検査になるか】
+  //   ハズレは、そのお題の正解タグを**全枠ぶん**除いて選ばれる。
+  //   だからタグ X が問Aの正解なら、X は問Bのハズレには絶対に出ない。
+  //
+  //   裏を返すと、X が2つの問の選択肢に出ていれば
+  //   **X はどちらの問でも不正解だと確定する**。
+  //   絵を見ずに候補を1つ消せてしまい、4択が実質3択になる。
+  //
+  //   これは画面の出し方では防げない。生成の時点で作らないしかないので、
+  //   出来上がった選択肢を数えて確かめる。
+  const allChoices = quiz.flatMap((q) => q.choices.map((c) => c.tagId));
+  const distinct = new Set(allChoices);
+
+  must(quiz.length === 3, "標準モードは3問", `${quiz.length}問`);
+  must(allChoices.length === 12, "3問で12選択肢", `${allChoices.length}`);
+  must(
+    distinct.size === 12,
+    "12選択肢のタグがすべて異なる（重複ゼロ）",
+    `distinct=${distinct.size}`,
+  );
+
+  // 正解タグが、その問以外の選択肢に出ていないこと。
+  // 上の distinct=12 が成り立てば自動的に満たされるが、
+  // 「何を守っているのか」が読み取れるように明示して見る。
+  for (const q of quiz) {
+    const correctLabel = original.answers.get(q.slotLabel);
+    const elsewhere = quiz
+      .filter((other) => other.name !== q.name)
+      .flatMap((other) => other.choices)
+      .filter((c) => c.label === correctLabel);
+
+    must(
+      elsewhere.length === 0,
+      `「${q.slotLabel}」の正解が他の問の選択肢に出ていない`,
+      elsewhere.length ? `${elsewhere.length}件` : "",
+    );
+  }
 }
 
 // ── 4. 答えを知っている側が全問正解する ────────────────

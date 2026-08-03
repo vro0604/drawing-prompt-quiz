@@ -102,6 +102,15 @@ export const STORAGE_POLICIES = [
 /** 外部へ公開しない内部ヘルパー */
 export const INTERNAL_FUNCS = ["draft_generate_candidates", "draft_state_json"];
 
+/**
+ * 検証のための目印を返すだけの関数。
+ *
+ * quiz_choice_dedupe_cutoff は「選択肢の重複を禁止した時点の
+ * quiz_choices.id」を返す。診断 A23 が、修正後に作られたクイズだけを
+ * 厳格に見るために使う。外から呼ぶ必要はない。
+ */
+export const META_FUNCS = ["quiz_choice_dedupe_cutoff"];
+
 /** トリガー関数など、外から呼ばれないもの */
 export const TRIGGER_FUNCS = [
   "handle_new_user",
@@ -125,6 +134,7 @@ export const ALL_FUNCS = [
   ...WRITE_RPCS,
   ...ANSWER_RPCS,
   ...INTERNAL_FUNCS,
+  ...META_FUNCS,
   ...TRIGGER_FUNCS,
 ];
 
@@ -418,6 +428,54 @@ export const checks = [
              and (has_function_privilege('anon', p.oid, 'EXECUTE')
                or has_function_privilege('authenticated', p.oid, 'EXECUTE'))`,
     params: [STATS_TRIGGERS],
+  },
+
+  // ─────────────────────── 選択肢のタグを重複させない ───────────────────────
+  //
+  // 同じタグが2つの問に出ると、そのタグは**どちらの問でも不正解だと確定する**
+  // （ハズレはお題の正解タグを全枠ぶん除いて選ばれるため）。
+  // 4択が実質3択になるだけでなく、絵を見ずに候補を消せてしまう。
+  //
+  // 実際に重複していないことは診断 A23 と smoke:answer が見る。
+  // ここでは、防いでいる仕掛けが定義から消えていないことを確かめる。
+  {
+    group: "選択肢",
+    name: "complete_draft がプール単位でハズレを配っている",
+    expected: 1,
+    sql: `select count(*)::int from pg_proc p
+            join pg_namespace n on n.oid = p.pronamespace
+           where n.nspname='public' and p.proname='complete_draft'
+             and p.prosrc like '%seq_in_pool%'`,
+  },
+  {
+    group: "選択肢",
+    name: "complete_draft が重複を検算して失敗させる",
+    expected: 1,
+    sql: `select count(*)::int from pg_proc p
+            join pg_namespace n on n.oid = p.pronamespace
+           where n.nspname='public' and p.proname='complete_draft'
+             and p.prosrc like '%QUIZ_CHOICES_DUPLICATE%'
+             and p.prosrc like '%QUIZ_CHOICES_INSUFFICIENT%'`,
+  },
+  {
+    group: "選択肢",
+    name: "重複禁止の境目を返す関数がある（診断 A23 が使う）",
+    expected: 1,
+    sql: `select count(*)::int from pg_proc p
+            join pg_namespace n on n.oid = p.pronamespace
+           where n.nspname='public' and p.proname = any($1)`,
+    params: [META_FUNCS],
+  },
+  {
+    group: "選択肢",
+    name: "その関数は anon/authenticated から実行できない",
+    expected: 0,
+    sql: `select count(*)::int from pg_proc p
+            join pg_namespace n on n.oid = p.pronamespace
+           where n.nspname='public' and p.proname = any($1)
+             and (has_function_privilege('anon', p.oid, 'EXECUTE')
+               or has_function_privilege('authenticated', p.oid, 'EXECUTE'))`,
+    params: [META_FUNCS],
   },
 
   // ──────────────────────── 通常フィードと AI の分離 ────────────────────────
@@ -836,6 +894,64 @@ export const diagnostics = [
                       and ai.card_slot_key = uss.card_slot_key
                       and ai.is_correct)`,
   },
+  {
+    id: "A23",
+    label: "選択肢のタグが重複しているお題（重複禁止の適用後に作られたぶん）",
+    // 同じタグが2つの問に出ると、そのタグはどちらでも不正解だと確定する。
+    //
+    // **既存クイズは作り直さない方針**（回答済みの selected_tag_id が
+    // 存在しない選択肢を指しうるため）。だから適用前のぶんは対象外にする。
+    // 対象外にしたぶんの件数は notices の legacy 側で別途表示する。
+    //
+    // 境目を id で見るのは、時計のずれや「ファイル名の日時 ≠ 適用時刻」で
+    // 判定が揺れないようにするため。1つのお題の選択肢は1トランザクションで
+    // まとめて入るので、お題が境目をまたぐこともない。
+    sql: `select qq.prompt_id::text
+            from public.quiz_questions qq
+            join public.quiz_choices qc on qc.question_id = qq.id
+           where qc.id > public.quiz_choice_dedupe_cutoff()
+           group by qq.prompt_id
+          having count(distinct qc.tag_id) <> count(*)`,
+  },
+];
+
+/**
+ * 合否をつけずに数だけ見せる項目。
+ *
+ * 「0 であってほしいが、いまは 0 でないことが正しい」ものを置く。
+ * checks に混ぜると常に失敗し、本当の失敗が埋もれてしまう。
+ */
+export const notices = [
+  {
+    label: "選択肢が重複しているお題（重複禁止より前に作られたぶん・legacy）",
+    sql: `select count(*)::int from (
+            select qq.prompt_id
+              from public.quiz_questions qq
+              join public.quiz_choices qc on qc.question_id = qq.id
+             where qc.id <= public.quiz_choice_dedupe_cutoff()
+             group by qq.prompt_id
+            having count(distinct qc.tag_id) <> count(*)
+          ) x`,
+    note:
+      "既存クイズは作り直さないため、この件数は 0 になりません（意図した状態）。" +
+      "回答済みの selected_tag_id が、存在しない選択肢を指すのを避けるためです。",
+  },
+  {
+    label: "重複禁止より前に作られたお題の総数",
+    sql: `select count(distinct qq.prompt_id)::int
+            from public.quiz_questions qq
+            join public.quiz_choices qc on qc.question_id = qq.id
+           where qc.id <= public.quiz_choice_dedupe_cutoff()`,
+    note: "上の件数はこのうちの何件か、という見かたをします。",
+  },
+  {
+    label: "重複禁止のあとに作られたお題の総数",
+    sql: `select count(distinct qq.prompt_id)::int
+            from public.quiz_questions qq
+            join public.quiz_choices qc on qc.question_id = qq.id
+           where qc.id > public.quiz_choice_dedupe_cutoff()`,
+    note: "こちらは診断 A23 が 0 件であることを厳格に見ています。",
+  },
 ];
 
 /**
@@ -924,6 +1040,12 @@ export const roleProbes = [
     role: "authenticated",
     mode: "denied",
     label: `authenticated → ${fn}（トリガー専用）`,
+    sql: `select public.${fn}()`,
+  })),
+  ...META_FUNCS.map((fn) => ({
+    role: "authenticated",
+    mode: "denied",
+    label: `authenticated → ${fn}（検証用）`,
     sql: `select public.${fn}()`,
   })),
   ...INTERNAL_FUNCS.map((fn) => ({

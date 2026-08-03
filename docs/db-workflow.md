@@ -17,6 +17,7 @@ supabase/
 scripts/
   _db-target.sh      接続先の決めかた（共通部分）
   db-status.sh       履歴の確認（読むだけ）
+  db-verify-keychain.sh  キーチェーンのパスワードで db:verify を実行（macOS）
   db-baseline.sh     001〜007 を「適用済み」として履歴へ登録（1回だけ）
   db-deploy.sh       dry-run → push
   db-verify.mjs      構造・権限・漏洩経路・診断の自動検証
@@ -104,9 +105,18 @@ npm run db:privs     # 誰がどの関数を呼べるかを一覧（読むだけ
 | 登録必須 | `create_work` / `update_work` と Storage の追加ポリシーが JWT の `is_anonymous` を見ている |
 | Storage | `works` バケットが公開読み取り・5MiB・画像3種、ポリシー4本、`anon` に書き込みが無い |
 | フィード | 通常フィード（`p_division = null`）が AI 部門を除いている |
+| 選択肢 | `complete_draft` がプール単位でハズレを配り、重複を検算して失敗させる |
 | 漏洩 | `prompt_id` を返さない、`get_work_quiz` が `is_correct` に触れない、`weight` を読まない、<br>`prompt_cards`（＝答え）に触れる関数が3本のまま |
-| 診断 | Step 3E の A1〜A22（すべて0行なら正常） |
+| 診断 | Step 3E の A1〜A23（すべて0行なら正常） |
+| 参考 | 合否に数えない件数。修正前クイズの重複数（legacy）など |
 | 実地 | `anon` / `authenticated` に成りすまして、実際に読めない／呼べないことを確認 |
+
+**`[参考]` は合否に数えない。** 「0 であってほしいが、いまは 0 でないことが
+正しい」ものを置く場所。診断に混ぜると常に失敗し、本当の失敗が埋もれる。
+
+いまここに出るのは、選択肢の重複禁止（`20260803045329_quiz_choice_dedupe.sql`）
+より前に作られたクイズの重複件数。既存クイズは作り直さない方針なので
+0 にはならない。診断 A23 は適用後に作られたぶんだけを厳格に見る。
 
 「登録必須」の2項目だけ毛色が違う。ほかは権限や構造を見ているが、ここは
 **関数とポリシーの定義文そのもの**を見ている。匿名ゲストと登録ユーザーは
@@ -124,6 +134,36 @@ Postgres 側では同じ `authenticated` ロールなので、この区別は
 ```bash
 export SUPABASE_DB_URL='postgresql://...'   # Supabase → Connect からコピー
 ```
+
+### 毎回貼らずに済ませる（macOS）
+
+`npm run db:verify:keychain` を使うと、接続文字列を手入力せずに検証できる。
+
+```bash
+# 初回だけ。データベースのパスワードをキーチェーンへ入れる
+security add-generic-password \
+  -s drawing-prompt-quiz-supabase-db-password \
+  -a "$USER" -w
+
+# 以降はこれだけ
+npm run db:verify:keychain
+```
+
+やっていることは3つ。
+
+1. 接続先（パスワード以外）を `supabase/.temp/pooler-url` から読む
+   （`supabase link` が作る。**パスワードは入っていない**）
+2. パスワードをキーチェーンから取り出し、接続文字列を組み立てる
+3. `db-verify.mjs` の**プロセスにだけ**渡し、終わったら変数を消す
+
+パスワードも接続文字列も画面に出さず、ファイルにも書かず、
+シェルへ export もしない。スクリプトを抜けた時点で残らない。
+
+入れる値は Supabase ダッシュボード → Project Settings → Database の
+**データベースのパスワード**（接続文字列全体ではない）。
+
+初回の実行時に「security がキーチェーンにアクセスしようとしています」と
+聞かれることがある。許可すると次回から聞かれない。
 
 **`.env.local` や `.env.example` に書かないこと。** `.env*` は Git 管理外だが、
 DBの完全な権限を持つ文字列を平文でディスクに残さない方針とする。

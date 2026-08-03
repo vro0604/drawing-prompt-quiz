@@ -24,7 +24,7 @@
 
 import { createInterface } from "node:readline";
 import pg from "pg";
-import { checks, diagnostics, roleProbes } from "./db-checks.mjs";
+import { checks, diagnostics, notices, roleProbes } from "./db-checks.mjs";
 
 const GREEN = "\x1b[32m";
 const RED = "\x1b[31m";
@@ -145,6 +145,24 @@ async function main() {
       line(res.rowCount === 0, `${d.id} ${d.label}`, `${res.rowCount}件`);
     } catch (err) {
       line(false, `${d.id} ${d.label}`, `クエリ失敗: ${scrub(err.message)}`);
+    }
+  }
+
+  // ───────────── 2-b. 参考（合否をつけない）─────────────
+  //
+  // 「0 であってほしいが、いまは 0 でないことが正しい」ものを出す。
+  // 診断に混ぜると常に失敗し、本当の失敗が埋もれてしまう。
+  if (notices.length > 0) {
+    console.log(`\n${BOLD}[参考] 合否には数えない${RESET}`);
+    for (const n of notices) {
+      try {
+        const res = await client.query(n.sql);
+        const value = res.rows.length ? Object.values(res.rows[0])[0] : "-";
+        console.log(`  ・${n.label}: ${BOLD}${value}${RESET}`);
+        if (n.note) console.log(`      ${DIM}${n.note}${RESET}`);
+      } catch (err) {
+        console.log(`  ・${n.label}: ${RED}取得できません${RESET} ${DIM}${scrub(err.message)}${RESET}`);
+      }
     }
   }
 
