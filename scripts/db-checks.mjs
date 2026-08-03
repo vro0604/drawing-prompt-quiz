@@ -205,41 +205,120 @@ export const FUNCTION_PRIV_SQL = `
 /**
  * 表の権限を grantee 別に並べる。
  *
- * 【なぜ information_schema を使わないか】
- *   column_privileges は SELECT / INSERT / UPDATE / REFERENCES の4種しか
- *   見えず、**DELETE や TRUNCATE だけを配られていても現れない**。
- *   さらに表単位の grant を全列に展開して見せるため、
- *   「表に付いているのか、列に付いているのか」が読み取れない。
+ * 【aclexplode に空配列を渡さない】← 以前ここで落ちていた
+ *   aclexplode は **1次元の配列しか受け付けない**。
+ *   `'{}'::aclitem[]` は「要素数0」ではなく「**次元数0**」の配列なので、
+ *   coalesce の逃げ道に使うと `ACL arrays must be one-dimensional` になる。
  *
- *   relacl（表単位）と attacl（列単位）を別々に展開すれば、
- *   誰に・何が・どちらの単位で付いているかがそのまま出る。
+ *   関数側（FUNCTION_PRIV_SQL）が acldefault() を使って無事なのは、
+ *   あちらが常に1次元を返すため。表と列には同じ手が使えない
+ *   （列の既定 ACL は空なので、同じ問題に戻る）。
+ *
+ *   そこで **null の行はそもそも渡さない**。relacl / attacl が null なら
+ *   「既定のまま」＝ PUBLIC / anon / authenticated には何も付いていない
+ *   ので、数えなくてよい。
+ *
+ * 【as materialized を付ける理由】
+ *   FROM に置いた集合返し関数は、WHERE より先に評価されることがある。
+ *   `where relacl is not null` と書いても、条件が後回しになれば
+ *   null の行を aclexplode へ渡してしまう。
+ *   materialized なら CTE がそこで確定するので、順序が入れ替わらない。
+ *
+ * 【relacl と attacl をつながない】
+ *   型は同じでも意味が違う（表に付いた権限と、列に付いた権限）。
+ *   配列として結合すると出所が分からなくなる。別々に展開して UNION ALL する。
+ *
+ *   information_schema.column_privileges を使わないのも同じ理由。
+ *   あちらは SELECT / INSERT / UPDATE / REFERENCES の4種しか見えず
+ *   （**DELETE や TRUNCATE だけを配られていても現れない**）、
+ *   さらに表単位の grant を全列へ展開して見せる。
  *
  * 【PUBLIC は grantee = 0】
  *   ACL を文字列で照合すると 'anon=arwd/' にも '=arwd/' が含まれて
  *   取り違えるので、必ず oid で見る（D34 と同じ理由）。
+ *   0::regrole::text は '-' になるので PUBLIC と読み替える。
  */
+const TABLE_ACL_CTE = `
+  with rel as materialized (
+    select c.relname, c.relacl
+      from pg_class c
+      join pg_namespace n on n.oid = c.relnamespace
+     where n.nspname = 'public'
+       and c.relname = any($1)
+       and c.relacl is not null
+  ),
+  col as materialized (
+    select c.relname, at.attname, at.attacl
+      from pg_attribute at
+      join pg_class c on c.oid = at.attrelid
+      join pg_namespace n on n.oid = c.relnamespace
+     where n.nspname = 'public'
+       and c.relname = any($1)
+       and at.attacl is not null
+  )
+`;
+
+/** 利用者向けのロール（PUBLIC / anon / authenticated）だけを対象にする条件 */
+const USER_GRANTEES = `(0, 'anon'::regrole::oid, 'authenticated'::regrole::oid)`;
+
+/** PUBLIC / anon / authenticated に付いている権限の件数（表単位＋列単位） */
+export const TABLE_USER_PRIV_COUNT_SQL = `
+  ${TABLE_ACL_CTE}
+  select (
+      (select count(*) from rel r, aclexplode(r.relacl) a
+        where a.grantee in ${USER_GRANTEES})
+    + (select count(*) from col c, aclexplode(c.attacl) a
+        where a.grantee in ${USER_GRANTEES})
+  )::int
+`;
+
+/** 権限を1件ずつ並べる（合否には使わず、目で見るためのもの） */
 export const TABLE_PRIV_SQL = `
-  select c.relname                                              as table_name,
-         '表単位'                                                as scope,
-         '-'                                                    as column_name,
+  ${TABLE_ACL_CTE}
+  select r.relname                                                as table_name,
+         '表単位'                                                  as scope,
+         '-'                                                      as column_name,
          coalesce(nullif(a.grantee::regrole::text, '-'), 'PUBLIC') as grantee,
          a.privilege_type
-    from pg_class c
-    join pg_namespace n on n.oid = c.relnamespace,
-         aclexplode(coalesce(c.relacl, '{}'::aclitem[])) a
-   where n.nspname = 'public' and c.relname = any($1)
+    from rel r, aclexplode(r.relacl) a
   union all
   select c.relname,
          '列単位',
-         at.attname,
+         c.attname,
          coalesce(nullif(a.grantee::regrole::text, '-'), 'PUBLIC'),
          a.privilege_type
-    from pg_attribute at
-    join pg_class c on c.oid = at.attrelid
-    join pg_namespace n on n.oid = c.relnamespace,
-         aclexplode(coalesce(at.attacl, '{}'::aclitem[])) a
-   where n.nspname = 'public' and c.relname = any($1)
+    from col c, aclexplode(c.attacl) a
   order by 1, 2, 4, 3, 5
+`;
+
+/**
+ * 既定権限（今後作られる表・関数などに自動で付く権限）を並べる。
+ *
+ * **所有者ロールごとに別の行になる。** Supabase は postgres と
+ * supabase_admin の両方に既定を置くため、片方だけ落としてももう片方が残る。
+ * どちらの行なのかが分からないと直しようがないので owner_role を必ず出す。
+ *
+ * defaclacl は行が存在する時点で必ず中身があるので、
+ * ここは空配列を渡す心配が無い。
+ */
+export const DEFAULT_ACL_SQL = `
+  select pg_get_userbyid(d.defaclrole)                            as owner_role,
+         coalesce(n.nspname, '(全スキーマ)')                        as schema,
+         case d.defaclobjtype
+           when 'r' then '表'
+           when 'f' then '関数'
+           when 'S' then '順序'
+           when 'T' then '型'
+           when 'n' then 'スキーマ'
+           else d.defaclobjtype::text
+         end                                                      as object_type,
+         coalesce(nullif(a.grantee::regrole::text, '-'), 'PUBLIC') as grantee,
+         a.privilege_type
+    from pg_default_acl d
+    left join pg_namespace n on n.oid = d.defaclnamespace,
+         aclexplode(d.defaclacl) a
+   where n.nspname = 'public' or d.defaclnamespace = 0
+   order by 1, 2, 3, 4, 5
 `;
 
 export const checks = [
@@ -312,23 +391,7 @@ export const checks = [
     //
     // PUBLIC（grantee = 0）も対象に入れる。付いていればどのロールからも読める。
     expected: 0,
-    sql: `select (
-            (select count(*)
-               from pg_class c
-               join pg_namespace n on n.oid = c.relnamespace,
-                    aclexplode(coalesce(c.relacl, '{}'::aclitem[])) a
-              where n.nspname='public' and c.relname = any($1)
-                and a.grantee in (0, 'anon'::regrole::oid,
-                                     'authenticated'::regrole::oid))
-            + (select count(*)
-                 from pg_attribute at
-                 join pg_class c on c.oid = at.attrelid
-                 join pg_namespace n on n.oid = c.relnamespace,
-                      aclexplode(coalesce(at.attacl, '{}'::aclitem[])) a
-                where n.nspname='public' and c.relname = any($1)
-                  and a.grantee in (0, 'anon'::regrole::oid,
-                                       'authenticated'::regrole::oid))
-          )::int`,
+    sql: TABLE_USER_PRIV_COUNT_SQL,
     params: [SEALED_TABLES],
     detailSql: TABLE_PRIV_SQL,
     detailParams: [SEALED_TABLES],
@@ -782,7 +845,7 @@ export const checks = [
   // ─────────────────────── 旧IDの保護・通報・削除（Step 15）───────────────────
   {
     group: "削除通報",
-    name: "handle_history に権限もポリシーも無い",
+    name: "handle_history に PUBLIC / anon / authenticated の権限が0件",
     // 「誰が昔どの ID だったか」は本人が明かすまで見せない（P5 / D62）。
     // 遮断表の一括検査にも含めているが、狙いが分かるように単独でも見る。
     //
@@ -796,28 +859,24 @@ export const checks = [
     //   PUBLIC に付いていればどのロールからも読める。
     //   ACL を文字列で照合すると 'anon=arwd/' にも '=arwd/' が含まれて
     //   取り違えるので、grantee の oid で判定する（D34 と同じ理由）。
+    // **権限とポリシーを1つの数にまとめない。** 別々の守りなので、
+    // まとめるとどちらが破れたのか分からない。ポリシーは次の項目で見る。
     expected: 0,
-    sql: `select (
-            (select count(*)
-               from pg_class c
-               join pg_namespace n on n.oid = c.relnamespace,
-                    aclexplode(coalesce(c.relacl, '{}'::aclitem[])) a
-              where n.nspname='public' and c.relname='handle_history'
-                and a.grantee in (0, 'anon'::regrole::oid,
-                                     'authenticated'::regrole::oid))
-            + (select count(*)
-                 from pg_attribute at
-                 join pg_class c on c.oid = at.attrelid
-                 join pg_namespace n on n.oid = c.relnamespace,
-                      aclexplode(coalesce(at.attacl, '{}'::aclitem[])) a
-                where n.nspname='public' and c.relname='handle_history'
-                  and a.grantee in (0, 'anon'::regrole::oid,
-                                       'authenticated'::regrole::oid))
-            + (select count(*) from pg_policies
-                where schemaname='public' and tablename='handle_history')
-          )::int`,
+    sql: TABLE_USER_PRIV_COUNT_SQL,
+    params: [["handle_history"]],
     detailSql: TABLE_PRIV_SQL,
     detailParams: [["handle_history"]],
+  },
+  {
+    group: "削除通報",
+    name: "handle_history に RLS ポリシーが0本",
+    expected: 0,
+    sql: `select count(*)::int from pg_policies
+           where schemaname='public' and tablename='handle_history'`,
+    detailSql: `select policyname, cmd, roles::text as roles
+                  from pg_policies
+                 where schemaname='public' and tablename='handle_history'
+                 order by policyname`,
   },
   {
     group: "削除通報",
@@ -880,17 +939,46 @@ export const checks = [
   },
   {
     group: "削除通報",
-    name: "今後 public に作る表へ権限が自動で付かない",
+    name: "この工程が表を作るロールの既定権限に、利用者向けの権限が無い",
     // 今回の取りこぼしは「書き忘れると権限が付く」構造から生まれた。
     // 既定を逆にして、書き忘れても付かないようにしてある。
+    //
+    // 【なぜロールを絞るのか】
+    //   ALTER DEFAULT PRIVILEGES は**ロールごと**の設定で、
+    //   pg_default_acl には所有者ロールぶんの行が並ぶ。Supabase は
+    //   postgres と supabase_admin の両方に既定を置くため、
+    //   片方を落としてももう片方が残る。
+    //
+    //   ただし**残った行が危ないとは限らない**。既定が効くのは
+    //   「そのロールが表を作ったとき」だけなので、この工程が使わない
+    //   内部ロールの行を数えても、防げるものは1つも増えない。
+    //   数えれば必ず失敗し続け、本当の失敗が埋もれる。
+    //
+    //   そこで **実際にこの工程の表を持っているロール**だけを見る。
+    //   基準には handle_history を使う。Step 15 の migration が作った表で、
+    //   その所有者がまさに「migration が表を作るロール」。
+    //
+    //   残りの行がどのロールのものかは [一覧] にすべて出す。
+    //   数だけでは「本当に危ないのか、対象外の行なのか」が分からない（D66）。
     expected: 0,
-    sql: `select count(*)::int from pg_default_acl d
-            join pg_namespace n on n.oid = d.defaclnamespace
-           where n.nspname='public' and d.defaclobjtype='r'
+    sql: `select count(*)::int
+            from pg_default_acl d
+            left join pg_namespace n on n.oid = d.defaclnamespace
+           -- スキーマを指定せずに設定された既定（defaclnamespace = 0）も
+           -- public に効くので、取りこぼさないよう両方見る
+           where (n.nspname = 'public' or d.defaclnamespace = 0)
+             and d.defaclobjtype = 'r'
+             and d.defaclrole = (
+                   select c.relowner
+                     from pg_class c
+                     join pg_namespace n2 on n2.oid = c.relnamespace
+                    where n2.nspname = 'public'
+                      and c.relname = 'handle_history')
              and exists (
-               select 1 from aclexplode(d.defaclacl) a
-                where a.grantee in (0, 'anon'::regrole::oid,
-                                       'authenticated'::regrole::oid))`,
+                   select 1 from aclexplode(d.defaclacl) a
+                    where a.grantee in (0, 'anon'::regrole::oid,
+                                           'authenticated'::regrole::oid))`,
+    detailSql: DEFAULT_ACL_SQL,
   },
   {
     group: "削除通報",
@@ -1641,19 +1729,30 @@ export const listings = [
       "security definer の RPC 以外からは1行も見えない。",
   },
   {
-    label: "今後 public に作る表の既定権限",
-    sql: `select coalesce(nullif(a.grantee::regrole::text, '-'), 'PUBLIC') as grantee,
-                 a.privilege_type
-            from pg_default_acl d
-            join pg_namespace n on n.oid = d.defaclnamespace,
-                 aclexplode(d.defaclacl) a
-           where n.nspname='public' and d.defaclobjtype='r'
-             and a.grantee in (0, 'anon'::regrole::oid,
-                                  'authenticated'::regrole::oid)
-           order by 1, 2`,
+    label: "public スキーマの既定権限（所有者ロール別・すべて）",
+    sql: DEFAULT_ACL_SQL,
+    note:
+      "既定権限は**ロールごと**の設定。効くのは「そのロールがオブジェクトを" +
+      "作ったとき」だけなので、この工程が使わない内部ロール" +
+      "（supabase_admin など）の行が残っていても、こちらの守りには影響しない。" +
+      "見るべきは、migration が表を作るロール（handle_history の所有者）の行。" +
+      "そこに PUBLIC / anon / authenticated が出ていたら異常。",
     emptyNote:
-      "0行が正常。Supabase の既定は新しい表へ ALL を自動で配るので、" +
-      "それを打ち消してある（20260803221747）。書き忘れても権限が付かない。",
+      "0行なら、Supabase の既定（新しいオブジェクトへ ALL を自動で配る）が" +
+      "すべて打ち消されている状態。",
+  },
+  {
+    label: "この工程の表を持っているロール（既定権限を見る基準）",
+    sql: `select pg_get_userbyid(c.relowner) as owner_role,
+                 count(*)::int              as tables
+            from pg_class c
+            join pg_namespace n on n.oid = c.relnamespace
+           where n.nspname = 'public' and c.relkind = 'r'
+           group by 1
+           order by 2 desc`,
+    note:
+      "ここに出るロールが表を作る。上の一覧のうち、このロールの行だけが" +
+      "こちらの守りに関係する。",
   },
 ];
 
