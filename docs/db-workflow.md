@@ -11,17 +11,19 @@ VS Code のターミナルからコマンドで反映・検証する。
 supabase/
   config.toml        CLI の設定（project_id を持つ。秘密は入っていない）
   migrations/        ← CLI が管理する。ここに置いたものだけが db:deploy で適用される
-  applied/           ← 001〜007。SQL Editor で適用済み。**二度と実行しない**
-  pending/           ← まだマイグレーション化していない下書き
+  applied/           ← 001〜007 の本体SQL。SQL Editor で適用済み。参照用
+  rollback/          ← 取り消し用SQL。db push の対象外。手で流す
   seed/              シードデータ（未使用）
 scripts/
+  _db-target.sh      接続先の決めかた（共通部分）
   db-status.sh       履歴の確認（読むだけ）
+  db-baseline.sh     001〜007 を「適用済み」として履歴へ登録（1回だけ）
   db-deploy.sh       dry-run → push
   db-verify.mjs      構造・権限・漏洩経路・診断の自動検証
   db-checks.mjs      検証項目の定義（項目を足すときはここだけ編集）
 ```
 
-**`supabase/applied/` の17ファイルを `migrations/` へ戻してはいけない。**
+**`supabase/applied/` と `supabase/rollback/` のファイルを `migrations/` へ戻してはいけない。**
 戻すと `db push` が再実行しようとし、`create table` が「already exists」で
 止まる（データは消えないが、以降の反映が全部止まる）。
 
@@ -29,24 +31,46 @@ scripts/
 
 ## 初回だけ必要な準備
 
-ターミナルで**本人が**実行する。トークンやパスワードは
-ファイル・ログ・Git のどこにも残さない。チャットにも貼らない。
+### なぜ db pull を使わないか
+
+`supabase db pull` は差分計算に Docker を使う。Mac の負荷を増やしたくないため、
+**Docker を必要としない baseline + repair 方式**で同期する。
+
+やっていることは同じ「いまのリモートを基準として記録する」だが、
+基準の中身をリモートから取り出す代わりに、**手元の適用済みSQLから組み立てる**。
+001〜007 の本体SQLがすべて `supabase/applied/` に残っているから成立する。
+
+### 手順
 
 ```bash
-# 1. Supabase にログイン（ブラウザが開く）
-npx supabase login
+# 1. 接続文字列をこのターミナルの間だけ設定する
+#    Supabase ダッシュボード → 上部の Connect → Session pooler の URI
+export SUPABASE_DB_URL='postgresql://...'
 
-# 2. プロジェクトに紐づける（DBパスワードを聞かれる）
-npm run db:link
+# 2. 001〜007 を「適用済み」として履歴へ登録する（1回だけ）
+npm run db:baseline
 
-# 3. いまのリモートDBを基準として取り込む
-#    supabase/migrations/<日時>_remote_schema.sql が作られ、
-#    「適用済み」としてリモートの履歴表にも記録される
-npx supabase db pull
+# 3. 新しいマイグレーションだけを適用する
+npm run db:deploy
+
+# 4. 自動検証
+npm run db:verify
 ```
 
-`db pull` の後は必ず `npm run db:status` で
-Local と Remote の版が一致していることを確かめる。
+`db:baseline` が行うのは `supabase migration repair --status applied` だけ。
+**履歴表に1行入れるだけで、既存の表・データ・権限には一切触れない。**
+
+### login / link を使う場合
+
+`SUPABASE_DB_URL` を設定しない場合は `--linked` が使われる。
+
+```bash
+npx supabase login   # トークンは macOS のキーチェーンへ入る
+npm run db:link      # DBパスワードを聞かれる
+```
+
+ただしキーチェーンは別プロセスから読めないことがあるため、
+うまくいかないときは `SUPABASE_DB_URL` の経路を使う。
 
 ---
 
@@ -57,6 +81,8 @@ npm run db:status    # 何が適用されるかを見る（DBは変更しない�
 npm run db:deploy    # dry-run を表示 → 問題なければ push
 npm run db:verify    # 構造・権限・漏洩経路・診断を自動判定
 ```
+
+`db:baseline` は初回の1回だけ。2回目以降は実行不要（実行しても害はない）。
 
 ### db:deploy が守っていること
 
@@ -114,5 +140,7 @@ npm run db:verify
 |---|---|
 | `supabase db reset --linked` | リモートDBを作り直す。**データが全部消える** |
 | `db push --include-all` | `applied/` を戻した場合などに古いSQLを巻き込む |
-| `applied/` のファイルを `migrations/` へ移す | 再実行されて反映が止まる |
+| `applied/` `rollback/` のファイルを `migrations/` へ移す | 再実行されて反映が止まる |
+| 基準マイグレーションへ verify / rollback SQL を混ぜる | rollback には `drop table` が入っている。**新環境で表が消える** |
 | 接続文字列やアクセストークンをファイルに書く | 漏れたらDBを自由にされる |
+| `supabase db pull` | Docker が必要。方針に反する（baseline + repair を使う） |

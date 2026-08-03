@@ -1,5 +1,5 @@
 -- ============================================================================
--- 008_draft_rpcs.sql  ／ Step 4: 最小タグ投入 ＋ ドラフトRPC
+-- draft_rpcs ／ Step 4: 最小タグ投入 ＋ ドラフトRPC
 -- ============================================================================
 --
 -- 【このファイルがやること】
@@ -18,14 +18,15 @@
 --     Step 6 で実装する。ここでは開示しない
 --
 -- 【実行方法】
---   Supabase ダッシュボード → SQL Editor → New query → 全部貼って Run
---   全体が begin / commit で囲まれているため、途中で失敗すれば何も残らない。
+--   npm run db:deploy （dry-run のあと push される）
+--   CLI がファイル全体を1つのトランザクションで実行するため、
+--   途中で失敗すれば何も残らない。
 --
 -- 【前提】
---   007_read_rpcs.sql まで実行済み。
+--   baseline_applied_schema（001〜007 相当）が適用済みであること。
 --
 -- 【取り消し】
---   008_draft_rpcs_rollback.sql を実行する。
+--   supabase/rollback/008_draft_rpcs_rollback.sql を SQL Editor で実行する。
 --   **タグ46件も消える**ため、実行前に必ず注意書きを読むこと。
 --
 --
@@ -94,7 +95,6 @@
 -- ============================================================================
 
 
-begin;
 
 
 -- ============================================================================
@@ -880,4 +880,3 @@ grant execute on function public.get_current_draft()          to authenticated;
 grant execute on function public.abandon_draft(uuid)          to authenticated;
 
 
-commit;

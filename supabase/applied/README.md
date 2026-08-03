@@ -1,11 +1,9 @@
-# applied ／ 適用済みSQL（再実行しない）
+# applied ／ 適用済みSQL（再実行しない・参照用）
 
-001〜007 は Supabase の SQL Editor から手動で適用済み。
-CLI 運用へ移行したあとも履歴として残すが、**二度と実行しない**。
+001〜007 は Supabase の SQL Editor から手動で適用した本体SQL。
+CLI 運用へ移行したあとも「何をどう作ったか」の記録として残す。
 
-`supabase/migrations/` へ戻すと `db push` が再実行しようとし、
-`create table` が「already exists」で止まって以降の反映が全部止まる。
-（データが消えることはないが、復旧に手間がかかる）
+**このフォルダのファイルは db push の対象外**（`supabase/migrations/` にないため）。
 
 | ファイル | Step | 内容 |
 |---|---|---|
@@ -17,5 +15,16 @@ CLI 運用へ移行したあとも履歴として残すが、**二度と実行�
 | 006_likes_saves_reports.sql | 3B-3b | likes / saves / reports |
 | 007_read_rpcs.sql | 3C | 取得系RPC 13本 |
 
-`*_rollback.sql` は取り消し用、`*_verify.sql` は当時の手動検証用。
-検証は `npm run db:verify` に統合済みなので、verify ファイルは参照用。
+`*_verify.sql` は当時の手動検証用。検証は `npm run db:verify` に統合済みで、
+いまは参照用として残しているだけ。
+
+## この7本と基準マイグレーションの関係
+
+`supabase/migrations/<日時>_baseline_applied_schema.sql` は、
+**この7本の本体SQLを適用順に結合したもの**（rollback と verify は含めない）。
+各ファイルの先頭 `begin;` と末尾 `commit;` だけを取り除き、
+それ以外は1文字も変えていない。
+
+基準マイグレーションはリモートでは実行されない。
+`supabase migration repair --status applied` で履歴に登録するだけ。
+実際に実行されるのは、新しい環境を1から作り直すときだけ。
