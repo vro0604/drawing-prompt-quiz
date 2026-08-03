@@ -1,0 +1,285 @@
+import Image from "next/image";
+import Link from "next/link";
+import { fetchRankings } from "@/features/ranking/rpc";
+import {
+  RANKING_FEEDS,
+  RANKING_PAGE_SIZE,
+  RANKING_TYPES,
+  TIME_BUCKETS,
+  accuracyPercent,
+  resolveRankingFeed,
+  resolveRankingType,
+  resolveTimeBucket,
+  timeBucketLabel,
+  type RankingItem,
+} from "@/features/ranking/types";
+import { divisionLabel } from "@/features/work/types";
+import { workImageUrl } from "@/features/work/rpc";
+
+/**
+ * /rankings ／ ランキング（3種 × 2系統）。
+ *
+ * 【並べ替えを画面でやらない】
+ *   上位20件を取ってから並べ替えても「全体の上位」にはならない。
+ *   絞り込みも順位付けも、件数を数える前に SQL 側で済ませる
+ *   （/works の一覧が AI を SQL 側で除いているのと同じ理由）。
+ *
+ * 【いいねの数を2つ出している】
+ *   順位に使うのは**作者本人のいいねを除いた数**（D57）。
+ *   カードに出している「いいね」は表示用の総数で、こちらには本人のぶんも
+ *   含まれる。両者が食い違うのは自作にいいねが付いているときだけなので、
+ *   食い違うときだけ内訳を添える。
+ *
+ * 【未サインインでも見られる】
+ *   get_rankings は anon にも実行権限がある（spec 10 の権限表）。
+ *   ページを開いただけで匿名アカウントを作らせない。
+ *
+ * Next.js 16 では searchParams が Promise なので await が必要。
+ */
+
+export const metadata = {
+  title: "ランキング",
+};
+
+const card =
+  "rounded-2xl border border-black/10 bg-white/60 p-6 dark:border-white/15 dark:bg-white/5";
+
+type Current = { type: string; feed: string; time: string; page: number };
+
+/** 現在の選択を保ったまま、一部だけ差し替えたリンク先を作る */
+function hrefWith(current: Current, patch: Partial<Current>) {
+  const next = { ...current, ...patch };
+  const params = new URLSearchParams();
+  if (next.type !== RANKING_TYPES[0].value) params.set("type", next.type);
+  if (next.feed !== RANKING_FEEDS[0].value) params.set("feed", next.feed);
+  if (next.type === "duration" && next.time !== TIME_BUCKETS[0].value) {
+    params.set("time", next.time);
+  }
+  if (next.page > 1) params.set("page", String(next.page));
+  const query = params.toString();
+  return query ? `/rankings?${query}` : "/rankings";
+}
+
+/** 順位に使った票数と、表示用の総数が食い違うときだけ内訳を出す */
+function LikeCounts({ item }: { item: RankingItem }) {
+  if (item.likes_count === item.ranking_likes_count) {
+    return <>いいね {item.likes_count}</>;
+  }
+  return (
+    <>
+      いいね {item.likes_count}
+      <span className="text-black/35 dark:text-white/35">
+        （順位に数えたのは {item.ranking_likes_count}）
+      </span>
+    </>
+  );
+}
+
+function RankingRow({ item, type }: { item: RankingItem; type: string }) {
+  const percent = accuracyPercent(item.accuracy);
+
+  return (
+    <li className="flex items-start gap-4 border-b border-black/10 py-4 last:border-b-0 dark:border-white/10">
+      <div className="w-10 shrink-0 pt-1 text-center">
+        <span className="text-xl font-bold tabular-nums">{item.rank}</span>
+      </div>
+
+      <Link
+        href={`/works/${item.id}`}
+        className="group flex min-w-0 flex-1 items-start gap-4"
+      >
+        <div className="h-20 w-20 shrink-0 overflow-hidden rounded-xl bg-black/[0.03] dark:bg-white/5">
+          <Image
+            src={workImageUrl(item.image_path)}
+            alt={item.title}
+            width={item.image_width}
+            height={item.image_height}
+            className="h-20 w-20 object-cover transition group-hover:scale-[1.03]"
+            sizes="80px"
+          />
+        </div>
+
+        <div className="min-w-0 flex-1 space-y-1">
+          <p className="truncate text-sm font-bold group-hover:underline">{item.title}</p>
+          <p className="truncate text-xs text-black/50 dark:text-white/50">
+            {item.author_display_name}
+            {item.author_handle ? `（@${item.author_handle}）` : ""}
+          </p>
+          <p className="text-xs text-black/40 dark:text-white/40">
+            {divisionLabel(item.division)}・{timeBucketLabel(item.time_limit_bucket)}・回答{" "}
+            {item.answers_count}・<LikeCounts item={item} />
+          </p>
+        </div>
+      </Link>
+
+      {type === "accuracy" && percent !== null ? (
+        <div className="w-20 shrink-0 pt-1 text-right">
+          <span className="text-lg font-bold tabular-nums">{percent}%</span>
+          <span className="block text-[11px] text-black/40 dark:text-white/40">伝達率</span>
+        </div>
+      ) : null}
+    </li>
+  );
+}
+
+export default async function RankingsPage({
+  searchParams,
+}: {
+  searchParams: Promise<{ type?: string; feed?: string; time?: string; page?: string }>;
+}) {
+  const {
+    type: rawType,
+    feed: rawFeed,
+    time: rawTime,
+    page: rawPage,
+  } = await searchParams;
+
+  const type = resolveRankingType(rawType);
+  const feed = resolveRankingFeed(rawFeed);
+  const bucket = resolveTimeBucket(rawTime);
+
+  const parsedPage = Number.parseInt(rawPage ?? "1", 10);
+  const page = Number.isFinite(parsedPage) && parsedPage > 0 ? parsedPage : 1;
+
+  const current: Current = {
+    type: type.value,
+    feed: feed.value,
+    time: bucket.value,
+    page,
+  };
+
+  const items = await fetchRankings({
+    type: type.value,
+    feed: feed.value,
+    // 区分で絞るのは時間別のときだけ。ほかの種類では DB 側も見ない
+    timeBucket: type.value === "duration" ? bucket.value : null,
+    limit: RANKING_PAGE_SIZE,
+    offset: (page - 1) * RANKING_PAGE_SIZE,
+  });
+
+  const hasNext = items.length === RANKING_PAGE_SIZE;
+
+  return (
+    <main className="mx-auto w-full max-w-3xl space-y-8 p-6 sm:p-10">
+      <header className="space-y-2">
+        <h1 className="text-2xl font-bold">ランキング</h1>
+        <p className="text-sm text-black/55 dark:text-white/55">
+          反応を集めた作品と、お題がよく伝わった作品です。
+        </p>
+      </header>
+
+      {/* --- 種類 ------------------------------------------------------------- */}
+      <nav className="flex flex-wrap gap-2">
+        {RANKING_TYPES.map((t) => (
+          <Link
+            key={t.value}
+            href={hrefWith(current, { type: t.value, page: 1 })}
+            className={
+              t.value === type.value
+                ? "rounded-full bg-black px-4 py-2 text-xs font-bold text-white dark:bg-white dark:text-black"
+                : "rounded-full border border-black/15 px-4 py-2 text-xs font-bold hover:bg-black/[0.04] dark:border-white/20 dark:hover:bg-white/10"
+            }
+          >
+            {t.label}
+          </Link>
+        ))}
+      </nav>
+
+      {/* --- 部門 ------------------------------------------------------------- */}
+      <div className="flex flex-wrap items-center gap-x-4 gap-y-2 text-xs">
+        <span className="text-black/45 dark:text-white/45">部門</span>
+        {RANKING_FEEDS.map((f) => (
+          <Link
+            key={f.value}
+            href={hrefWith(current, { feed: f.value, page: 1 })}
+            className={
+              f.value === feed.value
+                ? "font-bold underline"
+                : "text-black/50 underline hover:text-black/80 dark:text-white/50 dark:hover:text-white/80"
+            }
+          >
+            {f.label}
+          </Link>
+        ))}
+      </div>
+
+      {/* --- 時間区分（時間別のときだけ）-------------------------------------- */}
+      {type.value === "duration" ? (
+        <div className="flex flex-wrap items-center gap-x-4 gap-y-2 text-xs">
+          <span className="text-black/45 dark:text-white/45">制限時間</span>
+          {TIME_BUCKETS.map((b) => (
+            <Link
+              key={b.value}
+              href={hrefWith(current, { time: b.value, page: 1 })}
+              className={
+                b.value === bucket.value
+                  ? "font-bold underline"
+                  : "text-black/50 underline hover:text-black/80 dark:text-white/50 dark:hover:text-white/80"
+              }
+            >
+              {b.label}
+            </Link>
+          ))}
+        </div>
+      ) : null}
+
+      <p className="rounded-xl bg-black/[0.03] px-4 py-3 text-xs text-black/55 dark:bg-white/5 dark:text-white/55">
+        {type.note}
+      </p>
+
+      {/* --- 一覧 ------------------------------------------------------------- */}
+      {items.length === 0 ? (
+        <div className={card}>
+          <p className="text-sm">
+            {type.value === "accuracy"
+              ? "まだ順位を出せる作品がありません。伝達率は、回答が5人以上集まった作品から並びます。"
+              : page > 1
+                ? "このページには作品がありません。"
+                : "まだ作品がありません。"}
+          </p>
+          <p className="pt-3 text-sm">
+            <Link href="/works" className="underline">
+              作品一覧へ
+            </Link>
+          </p>
+        </div>
+      ) : (
+        <ul>
+          {items.map((item) => (
+            <RankingRow key={item.id} item={item} type={type.value} />
+          ))}
+        </ul>
+      )}
+
+      {/* --- ページ送り ------------------------------------------------------- */}
+      {page > 1 || hasNext ? (
+        <div className="flex items-center justify-between border-t border-black/10 pt-6 text-sm dark:border-white/10">
+          {page > 1 ? (
+            <Link href={hrefWith(current, { page: page - 1 })} className="underline">
+              ← 前のページ
+            </Link>
+          ) : (
+            <span />
+          )}
+          <span className="text-xs text-black/40 dark:text-white/40">{page} ページ目</span>
+          {hasNext ? (
+            <Link href={hrefWith(current, { page: page + 1 })} className="underline">
+              次のページ →
+            </Link>
+          ) : (
+            <span />
+          )}
+        </div>
+      ) : null}
+
+      <footer className="flex flex-wrap gap-4 border-t border-black/10 pt-6 text-sm dark:border-white/10">
+        <Link href="/works" className="underline">
+          作品一覧へ
+        </Link>
+        <Link href="/play" className="underline">
+          お題を引く画面へ
+        </Link>
+      </footer>
+    </main>
+  );
+}

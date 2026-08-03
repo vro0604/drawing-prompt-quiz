@@ -235,8 +235,14 @@ export function makePng(width, height) {
 
 // ── 画面の流れ（複数のスクリプトで使うもの）─────────────────
 
-/** お題を1つ引いて確定する。答え（枠 → タグ）も控えて返す */
-export async function drawPrompt(s, modeKey) {
+/**
+ * お題を1つ引いて確定する。答え（枠 → タグ）も控えて返す。
+ *
+ * timeLimitSeconds は時間別ランキングの区分を作り分けるために渡せる。
+ * 空文字は「無制限」（/play の選択肢と同じ値）。既定の 3600 は、
+ * 先に書いた検査の前提を変えないため。
+ */
+export async function drawPrompt(s, modeKey, timeLimitSeconds = "3600") {
   let page = await s.get("/play");
 
   const startForm = forms(page.html).find((f) => /ドラフトを始める/.test(f.text));
@@ -245,7 +251,7 @@ export async function drawPrompt(s, modeKey) {
   page = await s.post("/play", {
     [startForm.actionId]: "",
     modeKey,
-    timeLimitSeconds: "3600",
+    timeLimitSeconds,
   });
 
   // 「めくる」ボタンが無くなるまで押し続ける
@@ -302,6 +308,34 @@ export async function submitWork(s, promptId, fields, png) {
     { [form.actionId]: "", promptId, ...fields },
     { field: "image", bytes: png, name: "smoke.png", type: "image/png" },
   );
+}
+
+/**
+ * 作品のクイズに1回答える。
+ *
+ * answers は drawPrompt が返した「枠のラベル → タグのラベル」。
+ * correct を false にすると、正解以外を選んで全問外す。
+ *
+ * 【同じセッションで2回呼ばない】
+ *   1つの作品には1回しか答えられない（UNIQUE(work_id, user_id)）。
+ *   回答者を増やしたいときはセッションを分ける。
+ */
+export async function answerWork(s, workId, answers, { correct = true } = {}) {
+  const res = await s.get(`/works/${workId}`);
+  const parsed = parseQuiz(res.html);
+  const form = forms(res.html).find((f) => /回答する/.test(f.text));
+  if (!form?.actionId) throw new Error(`/works/${workId} に回答フォームがありません`);
+
+  const fields = { [form.actionId]: "", workId };
+  for (const q of parsed) {
+    const correctLabel = answers.get(q.slotLabel);
+    const pick = correct
+      ? (q.choices.find((c) => c.label === correctLabel) ?? q.choices[0])
+      : (q.choices.find((c) => c.label !== correctLabel) ?? q.choices[0]);
+    fields[q.name] = pick.tagId;
+  }
+
+  return s.post(`/works/${workId}`, fields);
 }
 
 /**

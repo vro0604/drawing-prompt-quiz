@@ -45,6 +45,7 @@ export const PUBLIC_RPCS = [
   "get_work_detail",
   "get_work_quiz",
   "get_public_saves",
+  "get_rankings",
 ];
 
 /** 本人だけの取得系RPC */
@@ -335,8 +336,8 @@ export const checks = [
   },
   {
     group: "関数",
-    name: "公開4本は anon から実行できる",
-    expected: 4,
+    name: "公開5本は anon から実行できる",
+    expected: 5,
     sql: `select count(*)::int from pg_proc p
             join pg_namespace n on n.oid = p.pronamespace
            where n.nspname='public' and p.proname = any($1)
@@ -551,6 +552,90 @@ export const checks = [
             join pg_namespace n on n.oid = p.pronamespace
            where n.nspname='public' and p.proname='get_public_works'
              and p.prosrc like '%w.division <> ''ai''%'`,
+  },
+
+  // ──────────────────────────── ランキング ────────────────────────────
+  //
+  // spec 13 Step 13。実際の並びは smoke:ranking が見る。
+  // ここでは、順位の公平さを支えている条件が定義から消えていないことを確かめる。
+  {
+    group: "ランキング",
+    name: "get_rankings が存在する",
+    expected: 1,
+    sql: `select count(*)::int from pg_proc p
+            join pg_namespace n on n.oid = p.pronamespace
+           where n.nspname='public' and p.proname='get_rankings'`,
+  },
+  {
+    group: "ランキング",
+    name: "順位の票数から作者本人のいいねを除いている",
+    // 自作へのいいねは禁じていない（D56）。表示用の総数はそれでよいが、
+    // 順位に数えると投稿者が自分で1票ぶん押し上げられる。
+    // works.likes_count ではなく likes 表を数え直しているのはそのため。
+    expected: 1,
+    sql: `select count(*)::int from pg_proc p
+            join pg_namespace n on n.oid = p.pronamespace
+           where n.nspname='public' and p.proname='get_rankings'
+             and p.prosrc like '%l.user_id <> w.user_id%'
+             and p.prosrc like '%public.likes%'`,
+  },
+  {
+    group: "ランキング",
+    name: "公開3条件（公開中・審査OK・未削除）で絞っている",
+    // ここが緩むと、下書きや削除済み作品の存在がランキング経由で漏れる。
+    expected: 1,
+    sql: `select count(*)::int from pg_proc p
+            join pg_namespace n on n.oid = p.pronamespace
+           where n.nspname='public' and p.proname='get_rankings'
+             and p.prosrc like '%w.is_published%'
+             and p.prosrc like '%w.review_status = ''ok''%'
+             and p.prosrc like '%w.deleted_at is null%'`,
+  },
+  {
+    group: "ランキング",
+    name: "伝達率は回答5人以上の作品だけを対象にしている",
+    // R6。ブラウザのデータを消せば新しいゲストになれるので、
+    // 1人しか答えていない作品が 100% で1位に出ないようにする下限。
+    expected: 1,
+    sql: `select count(*)::int from pg_proc p
+            join pg_namespace n on n.oid = p.pronamespace
+           where n.nspname='public' and p.proname='get_rankings'
+             and p.prosrc like '%w.answers_count >= 5%'`,
+  },
+  {
+    group: "ランキング",
+    name: "時間区分4つが定義されている",
+    expected: 1,
+    sql: `select count(*)::int from pg_proc p
+            join pg_namespace n on n.oid = p.pronamespace
+           where n.nspname='public' and p.proname='get_rankings'
+             and p.prosrc like '%''short''%'
+             and p.prosrc like '%''medium''%'
+             and p.prosrc like '%''long''%'
+             and p.prosrc like '%''unlimited''%'`,
+  },
+  {
+    group: "ランキング",
+    name: "同点のときも id まで並べ切っている",
+    // 最後まで一意に決まらないと、開くたびに順位が入れ替わり、
+    // ページ送りで同じ作品が二度出たり一度も出なかったりする。
+    // 空白の入れかたに左右されないよう、詰めてから照合する。
+    expected: 1,
+    sql: `select count(*)::int from pg_proc p
+            join pg_namespace n on n.oid = p.pronamespace
+           where n.nspname='public' and p.proname='get_rankings'
+             and regexp_replace(p.prosrc, '\\s+', ' ', 'g')
+                 like '%b.created_at desc, b.id desc%'`,
+  },
+  {
+    group: "ランキング",
+    name: "お題の制限時間を秒のまま返していない",
+    // 区分の文字（short など）だけを返す。prompts への結合は関数の中だけ（D23）。
+    expected: 0,
+    sql: `select count(*)::int from pg_proc p
+            join pg_namespace n on n.oid = p.pronamespace
+           where n.nspname='public' and p.proname='get_rankings'
+             and pg_get_function_result(p.oid) ilike '%time_limit_seconds%'`,
   },
 
   // ──────────────────────── 投稿は登録ユーザーだけ ────────────────────────
@@ -989,6 +1074,29 @@ export const diagnostics = [
            group by qq.prompt_id
           having count(distinct qc.tag_id) <> count(*)`,
   },
+  {
+    id: "A24",
+    label: "伝達率の2つの数え方が食い違う作品",
+    // ランキングの伝達率は work_slot_stats（枠ごとの集計）を足して出す。
+    // 仕様上の定義は「correct_count の合計 ÷ 回答項目数の合計」で、
+    // 両者は同じ値になるはず。**軽いほうを使う代わりに、一致を見張る。**
+    //
+    // A21 は work_slot_stats と answer_items を突き合わせるが、
+    // answers.correct_count 側は見ていない。ここで3つを閉じる。
+    sql: `select w.id::text from public.works w
+           where coalesce((select sum(st.corrects)::bigint
+                             from public.work_slot_stats st
+                            where st.work_id = w.id), 0)
+                 <> coalesce((select sum(a.correct_count)::bigint
+                                from public.answers a
+                               where a.work_id = w.id), 0)
+              or coalesce((select sum(st.attempts)::bigint
+                             from public.work_slot_stats st
+                            where st.work_id = w.id), 0)
+                 <> (select count(*) from public.answer_items ai
+                       join public.answers a on a.id = ai.answer_id
+                      where a.work_id = w.id)`,
+  },
 ];
 
 /**
@@ -1067,6 +1175,24 @@ export const roleProbes = [
     mode: "allowed",
     label: "anon → get_public_saves",
     sql: `select * from public.get_public_saves('00000000-0000-0000-0000-000000000000',5,0)`,
+  },
+  {
+    role: "anon",
+    mode: "allowed",
+    label: "anon → get_rankings（人気）",
+    sql: `select * from public.get_rankings('popular','normal',null,5,0)`,
+  },
+  {
+    role: "anon",
+    mode: "allowed",
+    label: "anon → get_rankings（伝達率）",
+    sql: `select * from public.get_rankings('accuracy','normal',null,5,0)`,
+  },
+  {
+    role: "anon",
+    mode: "allowed",
+    label: "anon → get_rankings（時間別・AI部門）",
+    sql: `select * from public.get_rankings('duration','ai','short',5,0)`,
   },
   ...OWNER_RPCS.map((fn) => ({
     role: "anon",

@@ -19,6 +19,7 @@
     "smoke:work": "node scripts/smoke-work.mjs",
     "smoke:answer": "node scripts/smoke-answer.mjs",
     "smoke:social": "node scripts/smoke-social.mjs",
+    "smoke:ranking": "node scripts/smoke-ranking.mjs",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {

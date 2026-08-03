@@ -125,7 +125,12 @@ export default async function WorksPage({
   return (
     <main className="mx-auto w-full max-w-5xl space-y-8 p-6 sm:p-10">
       <header className="space-y-2">
-        <h1 className="text-2xl font-bold">作品一覧</h1>
+        <div className="flex flex-wrap items-baseline justify-between gap-x-6 gap-y-2">
+          <h1 className="text-2xl font-bold">作品一覧</h1>
+          <Link href="/rankings" className="text-sm underline">
+            ランキングを見る
+          </Link>
+        </div>
         <p className="text-sm text-black/55 dark:text-white/55">
           絵だけを見て、描き手が引いたお題を当ててみてください。回答はゲストのままでもできます。
         </p>
