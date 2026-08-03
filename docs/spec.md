@@ -1481,6 +1481,12 @@ handle は 001 が列権限から外してあるため、この関数が唯一�
 共有カード2種。**削除は論理削除で、行は消さない**（D63）。
 検証は `npm run smoke:report`。
 
+このあと **権限の取りこぼしを1本で直した**（`20260803221747_step15_privilege_fix.sql`）。
+`handle_history` に Supabase の既定権限が付いたままだった（D66）。
+同時に、今後 public に作る表へ権限が自動で付かないよう既定を反転させたので、
+**次からは書き忘れても権限が付かない**。権限検査そのものにも3つの誤りが
+あり、`db-checks.mjs` 側で直した（D66）。`db:verify:keychain` は全項目通過。
+
 **Step 14 は完了**（`20260803210859_profile_public_rpcs.sql` ＋ `/u/[handle]` ＋ `/saves`）。
 公開プロフィール・公開設定3つ・お気に入り一覧・回答履歴。
 RPC は `get_public_profile` / `get_user_works` / `get_saved_works` /
