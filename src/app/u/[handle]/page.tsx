@@ -1,8 +1,9 @@
 import Image from "next/image";
 import Link from "next/link";
-import { notFound } from "next/navigation";
+import { notFound, permanentRedirect } from "next/navigation";
 import { SavedList } from "@/app/_saved-list";
 import {
+  fetchHandleRedirect,
   fetchPublicAnswers,
   fetchPublicProfile,
   fetchSavedWorks,
@@ -55,7 +56,22 @@ export async function generateMetadata({
 }) {
   const { handle } = await params;
   const profile = await fetchPublicProfile(handle);
-  return { title: profile ? `${profile.display_name}（@${profile.handle}）` : "プロフィール" };
+
+  if (!profile) return { title: "プロフィール" };
+
+  return {
+    title: `${profile.display_name}（@${profile.handle}）`,
+    description: profile.bio ?? `${profile.display_name} さんの作品とお題の記録。`,
+    // 正本はいまの ID。旧ID の URL はページ側で移すので、
+    // 検索やSNSに旧ID が残らない
+    alternates: { canonical: `/u/${profile.handle}` },
+    openGraph: {
+      type: "profile",
+      title: `${profile.display_name}（@${profile.handle}）`,
+      description: profile.bio ?? `${profile.display_name} さんの作品とお題の記録。`,
+      url: `/u/${profile.handle}`,
+    },
+  };
 }
 
 /** 枠ごとの正答率。挑戦0回は「—」にする（0% と区別する） */
@@ -229,8 +245,27 @@ export default async function ProfilePage({
   const { tab: rawTab } = await searchParams;
 
   const profile = await fetchPublicProfile(handle);
-  // 存在しない ID と、まだ handle を決めていない人を区別しない（D40）
-  if (!profile) notFound();
+
+  // いまの ID で見つからないときだけ、旧ID かどうかを調べる（P5）。
+  //
+  // 【なぜ301（恒久）で移すのか】
+  //   ID を変えたら古い URL は二度と別人のものにならない（旧ID は
+  //   他人に渡さない）。恒久的な移動なので、検索エンジンにも
+  //   新しい URL を覚えてもらってよい。
+  //
+  // 【旧ID を残さない】
+  //   移した先で描画するので、ページの canonical も共有カードも
+  //   いまの ID になる。旧ID は URL のやり取りにしか現れない。
+  if (!profile) {
+    const current = await fetchHandleRedirect(handle);
+    if (current) {
+      permanentRedirect(
+        rawTab ? `/u/${current}?tab=${rawTab}` : `/u/${current}`,
+      );
+    }
+    // 存在しない ID と、まだ handle を決めていない人を区別しない（D40）
+    notFound();
+  }
 
   // 公開設定の切れているタブは、そもそも一覧に載せない。
   // 本人には自分の設定が切れていても出す（自分の持ち物は常に見られる）。

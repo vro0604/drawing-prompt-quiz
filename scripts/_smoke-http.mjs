@@ -141,6 +141,23 @@ function readEnvLocal() {
 }
 
 /**
+ * 作品画像の公開URL。
+ *
+ * **画面の HTML から拾わない。** 一覧も作品ページも next/image を通すので、
+ * src は /_next/image?url=... の形になっていて、Storage の URL そのものは
+ * そのままの形で現れない。取り違えたまま fetch すると、消えていなくても
+ * 400 が返り、「消えている」と誤って判定してしまう。
+ *
+ * パスの形は spec 8-6 の {user_id}/{work_id}.{拡張子}。
+ */
+export function workImageUrl(userId, workId, ext = "png") {
+  const env = { ...readEnvLocal(), ...process.env };
+  const base = env.NEXT_PUBLIC_SUPABASE_URL;
+  if (!base) throw new Error(".env.local に NEXT_PUBLIC_SUPABASE_URL がありません");
+  return `${base}/storage/v1/object/public/works/${userId}/${workId}.${ext}`;
+}
+
+/**
  * メール確認が OFF になっているか確かめる。
  *
  * ON のままだと登録直後にセッションが返らず、投稿まで進めない。

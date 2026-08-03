@@ -5,11 +5,15 @@ import { revalidatePath } from "next/cache";
 import { ensureUserId } from "@/features/auth/session";
 import { callSubmitAnswer } from "@/features/quiz/rpc";
 import type { AnswerSelection } from "@/features/quiz/types";
+import { callCreateReport } from "@/features/report/rpc";
 import {
+  callDeleteWork,
+  callMarkWorkImageDeleted,
   callPublishWork,
   callToggleLike,
   callToggleSave,
   callUnpublishWork,
+  removeWorkImage,
 } from "@/features/work/rpc";
 
 /**
@@ -143,4 +147,108 @@ export async function submitAnswerAction(form: FormData): Promise<void> {
 
   revalidatePath(`/works/${workId}`);
   redirect(`/works/${workId}`);
+}
+
+/**
+ * 作品を削除する。**取り返しがつきにくい操作**なので、確認画面から呼ぶ。
+ *
+ * 【誤操作を防ぐ】
+ *   確認画面で作品タイトルの再入力を求め、一致しないときは何もしない。
+ *   照合をここで行うのは、DB に渡す前に止めるため（DB 側は
+ *   「本人か」しか見ない。タイトルは画面の都合であって、
+ *   データの正しさの条件ではない）。
+ *
+ * 【順序】
+ *   1. delete_work … 公開から外し、deleted_at を立てる（DB）
+ *   2. Storage から画像を消す
+ *   3. mark_work_image_deleted … 消せたことを記録する
+ *
+ *   2 と 3 が失敗しても作品は削除済みのままで、公開へは戻らない
+ *   （update_work が deleted_at を見て断る）。残るのは容量の問題だけで、
+ *   Step 16 の掃除が「deleted_at はあるが image_deleted_at が無い」
+ *   作品を拾って再試行する。
+ *
+ *   だから 2 と 3 の失敗はここで握りつぶす。ここで例外にすると、
+ *   **削除は成功しているのに画面には失敗と出る**という、
+ *   いちばん誤解を生む結果になる。
+ */
+export async function deleteWorkAction(form: FormData): Promise<void> {
+  const workId = str(form, "workId");
+  const typedTitle = str(form, "confirmTitle").trim();
+  const actualTitle = str(form, "expectedTitle").trim();
+
+  if (typedTitle === "" || typedTitle !== actualTitle) {
+    redirect(
+      `/works/${workId}/delete?error=${encodeURIComponent(
+        "作品タイトルが一致しません。削除していません。",
+      )}`,
+    );
+  }
+
+  let imagePath: string | null = null;
+
+  try {
+    const result = await callDeleteWork(workId);
+    imagePath = result.image_path;
+  } catch (e) {
+    redirect(
+      `/works/${workId}/delete?error=${encodeURIComponent(
+        e instanceof Error ? e.message : String(e),
+      )}`,
+    );
+  }
+
+  // ここから先の失敗は握りつぶす（上記の理由）。
+  //
+  // **消せたときだけ印を付ける。** 消せていないのに記録すると、
+  // Step 16 の掃除がその作品を対象から外し、消し残しが永久に残る。
+  if (imagePath) {
+    try {
+      const removed = await removeWorkImage(imagePath);
+      if (removed) await callMarkWorkImageDeleted(workId);
+    } catch {
+      // 消し残しは Step 16 の掃除が拾う
+    }
+  }
+
+  revalidatePath("/works");
+  revalidatePath("/rankings");
+  revalidatePath(`/works/${workId}`);
+  redirect("/works?notice=" + encodeURIComponent("作品を削除しました。"));
+}
+
+/**
+ * 作品を通報する。
+ *
+ * **ゲストも送れる**（spec 8-4）。通報は「見つけた人が知らせる」行為で、
+ * 登録を求めると、いちばん多くの作品を見ている層からの報告が届かなくなる。
+ *
+ * 未サインインの場合はここでゲストが発行される（ensureUserId）。
+ * create_report は anon から呼べないため、この一手が要る。
+ */
+export async function createReportAction(form: FormData): Promise<void> {
+  const workId = str(form, "workId");
+  const reason = str(form, "reason");
+  const detail = str(form, "detail").trim();
+
+  try {
+    await ensureUserId();
+    await callCreateReport({
+      workId,
+      reason,
+      detail: detail === "" ? null : detail,
+    });
+  } catch (e) {
+    redirect(
+      `/works/${workId}/report?error=${encodeURIComponent(
+        e instanceof Error ? e.message : String(e),
+      )}`,
+    );
+  }
+
+  redirect(
+    `/works/${workId}?notice=${encodeURIComponent(
+      "報告を受け付けました。ご協力ありがとうございます。",
+    )}`,
+  );
 }

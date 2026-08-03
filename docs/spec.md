@@ -368,7 +368,10 @@ MVPでは、その場合に「匿名の記録は引き継げません」と明�
 | `/account` | プロフィール・公開設定 | **不可** | 実装済み（spec の `/me/settings` はこの場所に置いた） |
 | `/login` | 登録・ログイン | 可 | |
 | `/auth/callback` | 認証コールバック | — | Route Handler |
-| `/works/[id]/opengraph-image` | OGP画像生成 | 可 | |
+| `/works/[id]/delete` | 削除の確認 | **不可** | 実装済み。作品タイトルの再入力を求める |
+| `/works/[id]/report` | 通報 | 可 | 実装済み。ゲストのまま送れる |
+| `/works/[id]/opengraph-image` | 作品の共有カード | 可 | 実装済み。**答えを載せない** |
+| `/u/[handle]/opengraph-image` | プロフィールの共有カード | 可 | 実装済み。旧IDは残さない |
 
 ---
 
@@ -1005,6 +1008,10 @@ DBの制約では表現できないため、RPC側で必ず検査する。
 | `promote_anonymous(handle, display_name)` | 匿名 → 新規アカウント昇格の仕上げ |
 | `update_my_profile(handle, display_name, bio, links)` | ID・表示名・自己紹介・外部リンク。**予約語は配らない**（D59） |
 | `update_my_visibility(stats, history, saves)` | 公開設定3つ。登録ユーザーのみ |
+| `get_handle_redirect(handle)` | 旧ID → いまの ID。旧ID でなければ null（12-3） |
+| `create_report(work_id, reason, detail)` | 通報。ゲストも可。公開中の作品だけ（12-4） |
+| `delete_work(work_id)` | 論理削除。行は消さず、消すべき画像のパスを返す（12-5） |
+| `mark_work_image_deleted(work_id)` | 画像を消せたことの記録。掃除の再試行対象から外す |
 
 ### 9-3. テーブル別ポリシー
 
@@ -1271,6 +1278,80 @@ is_published = true  かつ  review_status = 'ok'  かつ  deleted_at is null
 （`get_rankings` は `saves` を読まない）。逆に、お気に入り一覧は
 `likes` を読まない。
 
+### 12-3. ID（handle）の扱い（Step 15・実装済み）
+
+URL は `/u/{handle}`（D59）。**手放した ID は他人に渡さない**（D62）。
+
+| 決まり | 中身 |
+|---|---|
+| 予約語 | `admin` `official` などと、アプリのページ名。関数の中の配列で持つ |
+| 旧ID | `handle_history` 表に控える。他人は取れない。**本人は取り戻せる** |
+| 旧IDのURL | `/u/{旧ID}` は `/u/{いまのID}` へ301で移す |
+| 変更の間隔 | 30日に1回。**初回の設定は数えない**（打ち間違いを直せるように） |
+| 漏らさないもの | 存在しない ID と非公開のプロフィールは、どちらも 404 |
+
+`handle_history` は権限もポリシーも与えない12個目の遮断表。
+「誰が昔どの ID だったか」は本人が明かすまで見せない。
+
+### 12-4. 通報（Step 15・実装済み）
+
+`create_report(work_id, reason, detail)`。
+
+| 誰が | 送れるか |
+|---|---|
+| 未サインイン | ✕（関数に `anon` の実行権限が無い。押した瞬間にゲストが発行される） |
+| ゲスト | **○**（spec 8-4 の「匿名も可」） |
+| 登録ユーザー | ○ |
+
+投稿やいいねと違ってゲストにも許すのは、通報が「権利の主張」ではなく
+「見つけた人が知らせる」行為だから。登録を求めると、いちばん多くの作品を
+見ている層からの報告が届かなくなる。
+
+- **対象は公開中の作品だけ。** 非公開・削除済み・存在しない、のどれでも
+  同じ文言で断る（作品IDの総当たりで下書きの存在を調べさせない。D40）
+- 同じ作品への2回目は表の UNIQUE が拒む
+- 24時間で10件まで（この関数が数える）
+- 返すのは受け付けたことだけ。**通報の総数は返さない**
+- **CAPTCHA は未導入**。ゲストは作り直せるので、この制限だけでは
+  大量投稿を止めきれない（公開前必須課題 P6）
+
+### 12-5. 作品の非公開化と削除（Step 15・実装済み）
+
+| 操作 | 何が起きるか |
+|---|---|
+| 非公開化 | `is_published = false`。**画像は残る。いつでも公開に戻せる** |
+| 削除 | `is_published = false` ＋ `deleted_at`。**行は消さない**（D63） |
+
+削除の順序は **「隠してから消す」**。
+
+```
+1. delete_work        公開から外し deleted_at を立てる（DB）
+2. Storage から画像を消す                              （アプリ）
+3. mark_work_image_deleted  消せたときだけ印を付ける   （DB）
+```
+
+2 か 3 が失敗しても作品は削除済みのままで、公開へは戻らない
+（`update_work` が `deleted_at` を見て断る）。消し残しは
+`works.image_deleted_at` が null のまま残るので、Step 16 の掃除が
+`deleted_at is not null and image_deleted_at is null` を拾って再試行する。
+
+**画面には確認を挟む。** `/works/[id]/delete` で作品タイトルの再入力を求める。
+
+**既知の限界**：Storage の公開URLは CDN を通るため、一度表示された画像は
+**削除後も最大1時間ほどキャッシュから配られる**（実測で確認）。
+削除の確認画面にその旨を書いている。急ぐ場合の手段は用意していない。
+
+### 12-6. 共有カード（OGP）（Step 15・実装済み）
+
+`/works/[id]/opengraph-image` と `/u/[handle]/opengraph-image`。
+
+- **お題の答えを一切載せない。** 共有カードを取りに来るのは SNS の
+  クローラーで、そこに「誰がログインしているか」という概念が無い。
+  作品ページのように「回答済みの人にだけ出す」判断ができないため
+- 公開中・審査OK・未削除の作品にだけ作る。それ以外は
+  **タイトルも画像も出さない**当たり障りのないカードにする
+- プロフィールは canonical をいまの ID にする。旧IDで来たら引き直して描く
+
 ### 12-2. ランキング仕様（Step 13・実装済み）
 
 URL: `/rankings`。取得は `get_rankings` 1本。**順位を保存する表は作らない**
@@ -1353,8 +1434,8 @@ ranking_likes_count = count(*) from likes
 | 12 | いいね・保存（登録必須） | 匿名では押せない |
 | 13 | ランキング（3種×2系統） | 人気は登録ユーザーのいいねのみ。作者本人のいいねは順位に数えない |
 | 14 | ポートフォリオページ＋公開設定＋**お気に入り作品一覧**（12-1） | 既定で成績・履歴・保存が非公開 |
-| 15 | 共有OGP／通報／削除・非公開 | |
-| 16 | Vercelデプロイ／匿名ユーザー掃除Cron／CAPTCHA／**孤児お題の掃除（P4）** | 本番で一連の流れが通る |
+| 15 | **P5 の解消**／共有OGP／通報／削除・非公開 | 旧IDが他人に渡らない。削除しても行は消えない |
+| 16 | Vercelデプロイ／匿名ユーザー掃除Cron／CAPTCHA（P6）／<br>**孤児お題の掃除（P4）**／**画像の消し残しの掃除（12-5）** | 本番で一連の流れが通る |
 
 **Step 4 は完了**（`20260803013522_draft_rpcs.sql` ＋ `/play` ＋ `/prompt/[id]`）。
 最小タグ46件、ドラフトRPC 6本、モード選択からお題確定までの画面が通る。
@@ -1387,6 +1468,14 @@ handle は 001 が列権限から外してあるため、この関数が唯一�
 **Step 12 は完了**（`20260803051913_reaction_rpcs.sql` ＋ `/works/[id]`）。
 `toggle_like` / `toggle_save` とカウンタ同期トリガー2本。
 登録ユーザーだけが押せる（D7 / D56）。検証は `npm run smoke:social`。
+
+**Step 15 は完了**（`20260803213330_step15_handle_history_report_delete.sql`）。
+旧IDの保護（P5 の解消）・共有OGP・通報・非公開化・削除。
+表1つ（`handle_history`）と列2つ（`profiles.handle_updated_at` /
+`works.image_deleted_at`）、RPC 4本を追加し、`update_my_profile` を差し替えた。
+画面は `/works/[id]/delete`（確認画面）と `/works/[id]/report`、
+共有カード2種。**削除は論理削除で、行は消さない**（D63）。
+検証は `npm run smoke:report`。
 
 **Step 14 は完了**（`20260803210859_profile_public_rpcs.sql` ＋ `/u/[handle]` ＋ `/saves`）。
 公開プロフィール・公開設定3つ・お気に入り一覧・回答履歴。

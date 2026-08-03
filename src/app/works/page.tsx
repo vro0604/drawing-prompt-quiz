@@ -101,9 +101,19 @@ function WorkCard({ work }: { work: PublicWorkListItem }) {
 export default async function WorksPage({
   searchParams,
 }: {
-  searchParams: Promise<{ tab?: string; sort?: string; page?: string }>;
+  searchParams: Promise<{
+    tab?: string;
+    sort?: string;
+    page?: string;
+    notice?: string;
+  }>;
 }) {
-  const { tab: rawTab, sort: rawSort, page: rawPage } = await searchParams;
+  const {
+    tab: rawTab,
+    sort: rawSort,
+    page: rawPage,
+    notice,
+  } = await searchParams;
 
   const tab = resolveTab(rawTab);
   const sort = resolveSort(rawSort);
@@ -135,6 +145,12 @@ export default async function WorksPage({
           絵だけを見て、描き手が引いたお題を当ててみてください。回答はゲストのままでもできます。
         </p>
       </header>
+
+      {notice ? (
+        <p className="rounded-xl bg-emerald-500/10 px-4 py-3 text-sm whitespace-pre-wrap text-emerald-700 dark:text-emerald-300">
+          {notice}
+        </p>
+      ) : null}
 
       {/* --- 部門タブ --------------------------------------------------------- */}
       <nav className="flex flex-wrap gap-2">

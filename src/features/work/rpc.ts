@@ -171,6 +171,50 @@ export async function callToggleSave(
   return data as { work_id: string; saved: boolean; saves_count: number };
 }
 
+/** delete_work の戻り値。image_path は「これから消すべきファイル」 */
+export type DeleteWorkResult = {
+  work_id: string;
+  image_path: string;
+  deleted_at: string;
+  /** すでに削除済みだった（今回の操作では何も変えていない） */
+  already: boolean;
+};
+
+/**
+ * 作品を削除する。**行は消さない**（論理削除）。
+ *
+ * DB がやるのは `is_published = false` と `deleted_at` を立てることだけで、
+ * 画像ファイルには触れない。消すべきパスを受け取って、**そのあとに**
+ * アプリ側が Storage から消す。
+ *
+ * 順序が逆だと、画像が消えたのに作品が公開されたままの時間が生まれる。
+ * 画像の削除に失敗しても作品は削除済みのままで、公開へは戻らない
+ * （update_work が deleted_at を見て断る）。
+ */
+export async function callDeleteWork(workId: string): Promise<DeleteWorkResult> {
+  const supabase = await createSupabaseServerClient();
+  const { data, error } = await supabase.rpc("delete_work", { p_work_id: workId });
+
+  if (error) throw new Error(readableRpcError(error.message));
+  return data as DeleteWorkResult;
+}
+
+/**
+ * 画像を Storage から消せたことを記録する。
+ *
+ * **失敗しても呼び出し側で握りつぶす。** 印が付かなくても作品は
+ * 削除済みのままで、残るのは容量の問題だけ。Step 16 の掃除が
+ * 「deleted_at はあるが image_deleted_at が無い」作品を拾って再試行する。
+ */
+export async function callMarkWorkImageDeleted(workId: string): Promise<void> {
+  const supabase = await createSupabaseServerClient();
+  const { error } = await supabase.rpc("mark_work_image_deleted", {
+    p_work_id: workId,
+  });
+
+  if (error) throw new Error(readableRpcError(error.message));
+}
+
 /**
  * 画像を Storage へ置く。パスは spec 8-6 の {user_id}/{work_id}.{ext}。
  *
@@ -191,19 +235,24 @@ export async function uploadWorkImage(
 }
 
 /**
- * 置いた画像を消す。作品の作成に失敗したときの後始末（R10）。
+ * 置いた画像を消す。作品の作成に失敗したときの後始末（R10）と、
+ * 作品の削除（Step 15）の両方で使う。
  *
- * **ここでは例外を投げない。** 呼ばれるのは既に別の失敗を処理している
- * 最中なので、掃除の失敗で元の原因を隠してしまわないようにする。
- * 消し損ねると孤児ファイルが残るが、それは容量の問題であって
- * 利用者に見える不具合ではない。
+ * **例外を投げず、消せたかどうかを返す。** 呼ばれるのは既に別の失敗を
+ * 処理している最中か、DB 側の削除が済んだあとなので、掃除の失敗で
+ * 元の処理を巻き戻したくない。
+ *
+ * **返り値は必ず見ること。** 消せていないのに「消した」と記録すると、
+ * Step 16 の掃除が対象から外してしまい、消し残しが永久に残る。
  */
-export async function removeWorkImage(path: string): Promise<void> {
+export async function removeWorkImage(path: string): Promise<boolean> {
   try {
     const supabase = await createSupabaseServerClient();
-    await supabase.storage.from(WORKS_BUCKET).remove([path]);
+    const { error } = await supabase.storage.from(WORKS_BUCKET).remove([path]);
+    return !error;
   } catch {
     // 後始末の失敗は握りつぶす（上記の理由）
+    return false;
   }
 }
 

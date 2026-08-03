@@ -21,6 +21,7 @@
     "smoke:social": "node scripts/smoke-social.mjs",
     "smoke:ranking": "node scripts/smoke-ranking.mjs",
     "smoke:profile": "node scripts/smoke-profile.mjs",
+    "smoke:report": "node scripts/smoke-report.mjs",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {

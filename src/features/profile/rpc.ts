@@ -94,6 +94,24 @@ export async function fetchPublicProfile(handle: string): Promise<PublicProfile 
   return (data as PublicProfile | null) ?? null;
 }
 
+/**
+ * 旧ID を、いまの ID に読み替える。旧ID でなければ null。
+ *
+ * ID を変えると古い ID は他人が取れなくなり（P5）、古い URL は
+ * いまのページへ移す。**存在しない ID と、公開されていない人を
+ * 区別しない**（どちらも null）。区別すると、ID の総当たりで
+ * 誰が登録しているかを調べられる（D40）。
+ */
+export async function fetchHandleRedirect(handle: string): Promise<string | null> {
+  const supabase = await createSupabaseServerClient();
+  const { data, error } = await supabase.rpc("get_handle_redirect", {
+    p_handle: handle,
+  });
+
+  if (error) throw new Error(readableRpcError(error.message));
+  return (data as string | null) ?? null;
+}
+
 /** その人の公開作品。列は get_public_works と同じなのでカードを使い回せる */
 export async function fetchUserWorks(params: {
   userId: string;

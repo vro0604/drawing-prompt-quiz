@@ -50,9 +50,39 @@ import {
  * Next.js 16 では params / searchParams が Promise なので await が必要。
  */
 
-export const metadata = {
-  title: "作品",
-};
+/**
+ * 共有カードの文言。
+ *
+ * **公開されている作品だけ**にタイトルを出す。get_work_detail は
+ * 下書き・審査中・削除済みには null を返すので、本人以外はもちろん、
+ * 本人が共有したときも下書きのタイトルは外へ出ない。
+ *
+ * **お題も答えもここには来ない**（D23）。
+ */
+export async function generateMetadata({
+  params,
+}: {
+  params: Promise<{ id: string }>;
+}) {
+  const { id } = await params;
+  const work = await fetchWorkDetail(id);
+
+  if (!work) return { title: "作品" };
+
+  const description = `${work.author.display_name} さんの作品。絵だけを見て、引かれたお題を当ててみてください。`;
+
+  return {
+    title: work.title,
+    description,
+    alternates: { canonical: `/works/${work.id}` },
+    openGraph: {
+      type: "article",
+      title: work.title,
+      description,
+      url: `/works/${work.id}`,
+    },
+  };
+}
 
 const box =
   "rounded-2xl border border-black/10 bg-white/60 p-6 dark:border-white/15 dark:bg-white/5";
@@ -254,16 +284,39 @@ function PublicView({
       <SlotStats stats={work.slot_stats} />
 
       {work.is_author ? (
-        <form action={unpublishWorkAction}>
-          <input type="hidden" name="workId" value={work.id} />
-          <button
-            type="submit"
-            className="rounded-xl border border-black/20 px-6 py-3 text-sm font-bold hover:bg-black/[0.04] dark:border-white/25 dark:hover:bg-white/10"
+        <div className="space-y-3 border-t border-black/10 pt-6 dark:border-white/10">
+          <form action={unpublishWorkAction}>
+            <input type="hidden" name="workId" value={work.id} />
+            <button
+              type="submit"
+              className="rounded-xl border border-black/20 px-6 py-3 text-sm font-bold hover:bg-black/[0.04] dark:border-white/25 dark:hover:bg-white/10"
+            >
+              下書きに戻す（他の人から見えなくする）
+            </button>
+          </form>
+          <p className="text-xs text-black/45 dark:text-white/45">
+            下書きに戻しても画像は残ります。いつでも公開に戻せます。
+          </p>
+          <p className="text-sm">
+            {/* 削除は確認画面を挟む。ここから直接は消さない */}
+            <Link
+              href={`/works/${work.id}/delete`}
+              className="text-rose-700 underline dark:text-rose-300"
+            >
+              この作品を削除する
+            </Link>
+          </p>
+        </div>
+      ) : (
+        <p className="border-t border-black/10 pt-6 text-xs dark:border-white/10">
+          <Link
+            href={`/works/${work.id}/report`}
+            className="text-black/45 underline dark:text-white/45"
           >
-            下書きに戻す（他の人から見えなくする）
-          </button>
-        </form>
-      ) : null}
+            この作品を報告する
+          </Link>
+        </p>
+      )}
     </>
   );
 }
@@ -320,6 +373,18 @@ function OwnerOnlyView({ work }: { work: MyWork }) {
           </p>
         </form>
       ) : null}
+
+      {/* 削除済みの作品には出さない（もう消せるものが無い） */}
+      {!work.deleted_at ? (
+        <p className="border-t border-black/10 pt-6 text-sm dark:border-white/10">
+          <Link
+            href={`/works/${work.id}/delete`}
+            className="text-rose-700 underline dark:text-rose-300"
+          >
+            この作品を削除する
+          </Link>
+        </p>
+      ) : null}
     </>
   );
 }
@@ -329,10 +394,10 @@ export default async function WorkPage({
   searchParams,
 }: {
   params: Promise<{ id: string }>;
-  searchParams: Promise<{ error?: string }>;
+  searchParams: Promise<{ error?: string; notice?: string }>;
 }) {
   const { id } = await params;
-  const { error } = await searchParams;
+  const { error, notice } = await searchParams;
 
   // まず公開の経路で引く。ここで取れたものは誰が見ても同じ。
   const publicWork = await fetchWorkDetail(id);
@@ -370,6 +435,12 @@ export default async function WorkPage({
       {error ? (
         <p className="rounded-xl bg-rose-500/10 px-4 py-3 text-sm whitespace-pre-wrap text-rose-700 dark:text-rose-300">
           {error}
+        </p>
+      ) : null}
+
+      {notice ? (
+        <p className="rounded-xl bg-emerald-500/10 px-4 py-3 text-sm whitespace-pre-wrap text-emerald-700 dark:text-emerald-300">
+          {notice}
         </p>
       ) : null}
 

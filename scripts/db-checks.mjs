@@ -10,7 +10,7 @@
  *   rpc     … 指定のロールで関数を呼び、成功／権限エラーを判定すること
  */
 
-/** 誰も直接読めない11表 */
+/** 誰も直接読めない12表 */
 export const SEALED_TABLES = [
   "draft_candidates",
   "prompt_cards",
@@ -23,6 +23,9 @@ export const SEALED_TABLES = [
   "likes",
   "saves",
   "reports",
+  // Step 15。手放した ID の控え。「誰が昔どの ID だったか」は
+  // 本人が明かすまで見せる必要が無い（P5 / D62）
+  "handle_history",
 ];
 
 /** anon / authenticated が列権限を持つ10表 */
@@ -50,6 +53,7 @@ export const PUBLIC_RPCS = [
   "get_user_works",
   "get_saved_works",
   "get_public_answers",
+  "get_handle_redirect",
 ];
 
 /** 本人だけの取得系RPC */
@@ -84,7 +88,14 @@ export const DRAFT_RPCS = [
  *   JWT の is_anonymous を見て弾いている。下の rpcSourceChecks で
  *   その一行が消えていないことを確かめる。
  */
-export const WRITE_RPCS = ["create_work", "update_work"];
+export const WRITE_RPCS = [
+  "create_work",
+  "update_work",
+  // Step 15。論理削除と、画像を消せたことの記録。
+  // 投稿と同じく登録ユーザー限定（ゲストはそもそも作品を持てない）
+  "delete_work",
+  "mark_work_image_deleted",
+];
 
 /**
  * 回答の書き込みRPC（authenticated のみ）。
@@ -195,13 +206,13 @@ export const checks = [
   // ───────────────────────────── 構造 ─────────────────────────────
   {
     group: "構造",
-    name: "public スキーマの表が21個",
-    expected: 21,
+    name: "public スキーマの表が22個",
+    expected: 22,
     sql: `select count(*)::int from pg_tables where schemaname = 'public'`,
   },
   {
     group: "構造",
-    name: "遮断11表がすべて存在する",
+    name: "遮断12表がすべて存在する",
     expected: SEALED_TABLES.length,
     sql: `select count(*)::int from pg_tables
            where schemaname = 'public' and tablename = any($1)`,
@@ -209,8 +220,8 @@ export const checks = [
   },
   {
     group: "構造",
-    name: "21表すべてで RLS が有効",
-    expected: 21,
+    name: "22表すべてで RLS が有効",
+    expected: 22,
     sql: `select count(*)::int from pg_class c
             join pg_namespace n on n.oid = c.relnamespace
            where n.nspname = 'public' and c.relkind = 'r' and c.relrowsecurity`,
@@ -243,7 +254,7 @@ export const checks = [
   // ───────────────────────────── 権限 ─────────────────────────────
   {
     group: "権限",
-    name: "遮断11表に anon/authenticated の権限が0件",
+    name: "遮断12表に anon/authenticated の権限が0件",
     expected: 0,
     sql: `select count(*)::int from information_schema.column_privileges
            where table_schema = 'public'
@@ -253,7 +264,7 @@ export const checks = [
   },
   {
     group: "権限",
-    name: "遮断11表に RLS ポリシーが0本",
+    name: "遮断12表に RLS ポリシーが0本",
     expected: 0,
     sql: `select count(*)::int from pg_policies
            where schemaname = 'public' and tablename = any($1)`,
@@ -345,8 +356,8 @@ export const checks = [
   },
   {
     group: "関数",
-    name: "公開9本は anon から実行できる",
-    expected: 9,
+    name: "公開10本は anon から実行できる",
+    expected: 10,
     sql: `select count(*)::int from pg_proc p
             join pg_namespace n on n.oid = p.pronamespace
            where n.nspname='public' and p.proname = any($1)
@@ -376,8 +387,8 @@ export const checks = [
   },
   {
     group: "関数",
-    name: "書き込みRPC 2本が存在する",
-    expected: 2,
+    name: "書き込みRPC 4本が存在する",
+    expected: 4,
     sql: `select count(*)::int from pg_proc p
             join pg_namespace n on n.oid = p.pronamespace
            where n.nspname='public' and p.proname = any($1)`,
@@ -385,8 +396,8 @@ export const checks = [
   },
   {
     group: "関数",
-    name: "書き込みRPC 2本は authenticated から実行できる",
-    expected: 2,
+    name: "書き込みRPC 4本は authenticated から実行できる",
+    expected: 4,
     sql: `select count(*)::int from pg_proc p
             join pg_namespace n on n.oid = p.pronamespace
            where n.nspname='public' and p.proname = any($1)
@@ -395,7 +406,7 @@ export const checks = [
   },
   {
     group: "関数",
-    name: "書き込みRPC 2本は anon から実行できない",
+    name: "書き込みRPC 4本は anon から実行できない",
     expected: 0,
     sql: `select count(*)::int from pg_proc p
             join pg_namespace n on n.oid = p.pronamespace
@@ -692,6 +703,149 @@ export const checks = [
              and p.prosrc like '%p.is_anonymous = false%'`,
   },
 
+  // ─────────────────────── 旧IDの保護・通報・削除（Step 15）───────────────────
+  {
+    group: "削除通報",
+    name: "handle_history に権限もポリシーも無い",
+    // 「誰が昔どの ID だったか」は本人が明かすまで見せない（P5 / D62）。
+    // 遮断表の一括検査にも含めているが、狙いが分かるように単独でも見る。
+    expected: 0,
+    sql: `select (
+            (select count(*) from information_schema.column_privileges
+              where table_schema='public' and table_name='handle_history'
+                and grantee in ('anon','authenticated'))
+            + (select count(*) from pg_policies
+                where schemaname='public' and tablename='handle_history')
+          )::int`,
+  },
+  {
+    group: "削除通報",
+    name: "他人が手放した ID を配らない",
+    expected: 1,
+    sql: `select count(*)::int from pg_proc p
+            join pg_namespace n on n.oid = p.pronamespace
+           where n.nspname='public' and p.proname='update_my_profile'
+             and p.prosrc like '%HANDLE_RETIRED%'
+             and p.prosrc like '%public.handle_history%'`,
+  },
+  {
+    group: "削除通報",
+    name: "ID の変更が30日に1回に制限されている",
+    expected: 1,
+    sql: `select count(*)::int from pg_proc p
+            join pg_namespace n on n.oid = p.pronamespace
+           where n.nspname='public' and p.proname='update_my_profile'
+             and p.prosrc like '%HANDLE_TOO_SOON%'
+             and p.prosrc like '%interval ''30 days''%'`,
+  },
+  {
+    group: "削除通報",
+    name: "handle_updated_at を利用者が直接書き換えられない",
+    // 直接書けると30日制限の基準を自分でずらせる。
+    // 001 が配った6列に足していないことを確かめる。
+    expected: 0,
+    sql: `select count(*)::int from information_schema.column_privileges
+           where table_schema='public' and table_name='profiles'
+             and column_name='handle_updated_at'
+             and grantee in ('anon','authenticated')`,
+  },
+  {
+    group: "削除通報",
+    name: "削除は公開から外すのが先（行は消さない）",
+    // is_published=false と deleted_at を同時に立てる。
+    // delete 文が入っていたら、それは行を消しているということ。
+    expected: 1,
+    sql: `select count(*)::int from pg_proc p
+            join pg_namespace n on n.oid = p.pronamespace
+           where n.nspname='public' and p.proname='delete_work'
+             and p.prosrc like '%is_published = false%'
+             and p.prosrc like '%deleted_at   = now()%'
+             and p.prosrc not like '%delete from%'`,
+  },
+  {
+    group: "削除通報",
+    name: "削除済みの作品は公開へ戻せない",
+    // 画像の削除に失敗しても、作品だけが公開へ戻ることがないようにする。
+    expected: 1,
+    sql: `select count(*)::int from pg_proc p
+            join pg_namespace n on n.oid = p.pronamespace
+           where n.nspname='public' and p.proname='update_work'
+             and p.prosrc like '%WORK_DELETED%'`,
+  },
+  {
+    group: "削除通報",
+    name: "画像の消し残しを見つけられる列がある",
+    // Step 16 の掃除が「deleted_at はあるが image_deleted_at が無い」
+    // 作品を拾って再試行する。
+    expected: 1,
+    sql: `select count(*)::int from information_schema.columns
+           where table_schema='public' and table_name='works'
+             and column_name='image_deleted_at'`,
+  },
+  {
+    group: "削除通報",
+    name: "画像を消せた印は削除済みの作品にしか付かない",
+    expected: 1,
+    sql: `select count(*)::int from pg_proc p
+            join pg_namespace n on n.oid = p.pronamespace
+           where n.nspname='public' and p.proname='mark_work_image_deleted'
+             and p.prosrc like '%w.deleted_at is not null%'`,
+  },
+  {
+    group: "削除通報",
+    name: "通報の対象は公開中の作品だけ",
+    // 非公開・削除済み・存在しない、を同じ文言で断る（D40）。
+    expected: 1,
+    sql: `select count(*)::int from pg_proc p
+            join pg_namespace n on n.oid = p.pronamespace
+           where n.nspname='public' and p.proname='create_report'
+             and p.prosrc like '%REPORT_TARGET_NOT_FOUND%'
+             and p.prosrc like '%w.is_published%'
+             and p.prosrc like '%w.review_status = ''ok''%'
+             and p.prosrc like '%w.deleted_at is null%'`,
+  },
+  {
+    group: "削除通報",
+    name: "通報にレート制限がある",
+    expected: 1,
+    sql: `select count(*)::int from pg_proc p
+            join pg_namespace n on n.oid = p.pronamespace
+           where n.nspname='public' and p.proname='create_report'
+             and p.prosrc like '%REPORT_RATE_LIMITED%'
+             and p.prosrc like '%REPORT_ALREADY_SENT%'`,
+  },
+  {
+    group: "削除通報",
+    name: "通報はゲストも送れる（is_anonymous を見ない）",
+    // 通報は「見つけた人が知らせる」行為なので登録を求めない（spec 8-4）。
+    // 投稿RPCと条件が逆なので、見ていないことを確かめる。
+    expected: 0,
+    sql: `select count(*)::int from pg_proc p
+            join pg_namespace n on n.oid = p.pronamespace
+           where n.nspname='public' and p.proname='create_report'
+             and p.prosrc like '%is_anonymous%'`,
+  },
+  {
+    group: "削除通報",
+    name: "通報の件数を外へ返していない",
+    // 「何件集まると何が起きるか」を外から測らせない。
+    expected: 0,
+    sql: `select count(*)::int from pg_proc p
+            join pg_namespace n on n.oid = p.pronamespace
+           where n.nspname='public' and p.proname='create_report'
+             and p.prosrc like '%''report_count''%'`,
+  },
+  {
+    group: "削除通報",
+    name: "旧ID の読み替えは公開プロフィールにだけ向く",
+    expected: 1,
+    sql: `select count(*)::int from pg_proc p
+            join pg_namespace n on n.oid = p.pronamespace
+           where n.nspname='public' and p.proname='get_handle_redirect'
+             and p.prosrc like '%p.is_anonymous = false%'
+             and p.prosrc like '%p.handle is not null%'`,
+  },
+
   {
     group: "ランキング",
     name: "get_rankings が存在する",
@@ -780,8 +934,11 @@ export const checks = [
   // 定義文そのものに条件式が残っていることを確かめる。
   {
     group: "登録必須",
-    name: "書き込みRPC 2本が JWT の is_anonymous を見ている",
-    expected: 2,
+    name: "書き込みRPCのうち3本が JWT の is_anonymous を見ている",
+    // mark_work_image_deleted だけは見ない。**削除済みの自分の作品にしか
+    // 印を付けられない**ので、そこへ到達できる時点で登録ユーザーである
+    // （ゲストは作品を持てない）。二重に見ても意味が無い。
+    expected: 3,
     sql: `select count(*)::int from pg_proc p
             join pg_namespace n on n.oid = p.pronamespace
            where n.nspname='public' and p.proname = any($1)
@@ -1235,6 +1392,31 @@ export const diagnostics = [
                        join public.answers a on a.id = ai.answer_id
                       where a.work_id = w.id)`,
   },
+  {
+    id: "A25",
+    label: "削除済みなのに公開されたままの作品",
+    // delete_work は is_published=false と deleted_at を同時に立てる。
+    // 片方だけの行があるなら、削除の順序が崩れているということ。
+    sql: `select w.id::text from public.works w
+           where w.deleted_at is not null and w.is_published`,
+  },
+  {
+    id: "A26",
+    label: "いま現役の ID が、手放した控えにも残っている",
+    // 取り戻した ID の控えは消している。両方に居る行があると
+    // 「いまの ID なのに旧IDでもある」という二重の状態になり、
+    // 旧ID の読み替えが自分自身を指す。
+    sql: `select h.handle from public.handle_history h
+            join public.profiles p on p.handle = h.handle`,
+  },
+  {
+    id: "A27",
+    label: "画像を消した印があるのに削除されていない作品",
+    // 掃除の対象から外れているのに、作品はまだ生きている状態。
+    // 画像だけが欠けた作品になる。
+    sql: `select w.id::text from public.works w
+           where w.image_deleted_at is not null and w.deleted_at is null`,
+  },
 ];
 
 /**
@@ -1329,6 +1511,12 @@ export const roleProbes = [
   {
     role: "anon",
     mode: "allowed",
+    label: "anon → get_handle_redirect",
+    sql: `select public.get_handle_redirect('no-such-handle')`,
+  },
+  {
+    role: "anon",
+    mode: "allowed",
     label: "anon → get_user_works",
     sql: `select * from public.get_user_works(
             '00000000-0000-0000-0000-000000000000','original','new',5,0)`,
@@ -1395,6 +1583,26 @@ export const roleProbes = [
     mode: "denied",
     label: "anon → update_work",
     sql: `select public.update_work('00000000-0000-0000-0000-000000000000'::uuid)`,
+  },
+  {
+    role: "anon",
+    mode: "denied",
+    label: "anon → delete_work",
+    sql: `select public.delete_work('00000000-0000-0000-0000-000000000000'::uuid)`,
+  },
+  {
+    role: "anon",
+    mode: "denied",
+    label: "anon → mark_work_image_deleted",
+    sql: `select public.mark_work_image_deleted(
+            '00000000-0000-0000-0000-000000000000'::uuid)`,
+  },
+  {
+    role: "anon",
+    mode: "denied",
+    label: "anon → create_report（未サインインは送れない）",
+    sql: `select public.create_report(
+            '00000000-0000-0000-0000-000000000000'::uuid, 'spam', null)`,
   },
   {
     role: "anon",
