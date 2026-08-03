@@ -70,6 +70,25 @@ export const DRAFT_RPCS = [
   "abandon_draft",
 ];
 
+/**
+ * 作品の書き込みRPC（authenticated のみ）。
+ *
+ * 【権限だけでは守り切れない点】
+ *   匿名ゲストも登録ユーザーも Postgres 側では同じ authenticated ロールになる。
+ *   「投稿は登録必須」は grant では表現できないので、関数の中で
+ *   JWT の is_anonymous を見て弾いている。下の rpcSourceChecks で
+ *   その一行が消えていないことを確かめる。
+ */
+export const WRITE_RPCS = ["create_work", "update_work"];
+
+/** storage.objects に張った works バケット用のポリシー */
+export const STORAGE_POLICIES = [
+  "works_objects_read_public",
+  "works_objects_insert_own",
+  "works_objects_update_own",
+  "works_objects_delete_own",
+];
+
 /** 外部へ公開しない内部ヘルパー */
 export const INTERNAL_FUNCS = ["draft_generate_candidates", "draft_state_json"];
 
@@ -85,6 +104,7 @@ export const ALL_FUNCS = [
   ...PUBLIC_RPCS,
   ...OWNER_RPCS,
   ...DRAFT_RPCS,
+  ...WRITE_RPCS,
   ...INTERNAL_FUNCS,
   ...TRIGGER_FUNCS,
 ];
@@ -298,6 +318,138 @@ export const checks = [
                or has_function_privilege('authenticated', p.oid, 'EXECUTE'))`,
     params: [INTERNAL_FUNCS],
   },
+  {
+    group: "関数",
+    name: "書き込みRPC 2本が存在する",
+    expected: 2,
+    sql: `select count(*)::int from pg_proc p
+            join pg_namespace n on n.oid = p.pronamespace
+           where n.nspname='public' and p.proname = any($1)`,
+    params: [WRITE_RPCS],
+  },
+  {
+    group: "関数",
+    name: "書き込みRPC 2本は authenticated から実行できる",
+    expected: 2,
+    sql: `select count(*)::int from pg_proc p
+            join pg_namespace n on n.oid = p.pronamespace
+           where n.nspname='public' and p.proname = any($1)
+             and has_function_privilege('authenticated', p.oid, 'EXECUTE')`,
+    params: [WRITE_RPCS],
+  },
+  {
+    group: "関数",
+    name: "書き込みRPC 2本は anon から実行できない",
+    expected: 0,
+    sql: `select count(*)::int from pg_proc p
+            join pg_namespace n on n.oid = p.pronamespace
+           where n.nspname='public' and p.proname = any($1)
+             and has_function_privilege('anon', p.oid, 'EXECUTE')`,
+    params: [WRITE_RPCS],
+  },
+
+  // ──────────────────────── 投稿は登録ユーザーだけ ────────────────────────
+  //
+  // spec C3 / D27-1。Postgres のロールでは匿名ゲストと登録ユーザーを
+  // 区別できないため、この防御は「関数の中の1行」と「ポリシーの中の1行」
+  // だけで成り立っている。消えても表面上は動いてしまうので、
+  // 定義文そのものに条件式が残っていることを確かめる。
+  {
+    group: "登録必須",
+    name: "書き込みRPC 2本が JWT の is_anonymous を見ている",
+    expected: 2,
+    sql: `select count(*)::int from pg_proc p
+            join pg_namespace n on n.oid = p.pronamespace
+           where n.nspname='public' and p.proname = any($1)
+             and p.prosrc like '%is_anonymous%'
+             and p.prosrc like '%auth.jwt()%'`,
+    params: [WRITE_RPCS],
+  },
+  {
+    group: "登録必須",
+    name: "Storage への追加ポリシーも is_anonymous を見ている",
+    expected: 1,
+    sql: `select count(*)::int from pg_policies
+           where schemaname='storage' and tablename='objects'
+             and policyname='works_objects_insert_own'
+             and with_check like '%is_anonymous%'`,
+  },
+  {
+    group: "登録必須",
+    name: "書き込みRPCが profiles.is_anonymous で判定していない",
+    // 表の値ではなく JWT で判定する（spec 9-1）。
+    // profiles を参照していれば、その経路が混ざっている疑いがある。
+    expected: 0,
+    sql: `select count(*)::int from pg_proc p
+            join pg_namespace n on n.oid = p.pronamespace
+           where n.nspname='public' and p.proname = any($1)
+             and p.prosrc like '%public.profiles%'`,
+    params: [WRITE_RPCS],
+  },
+
+  // ───────────────────────────── Storage ─────────────────────────────
+  {
+    group: "Storage",
+    name: "works バケットが存在し、公開読み取りである",
+    expected: 1,
+    sql: `select count(*)::int from storage.buckets
+           where id='works' and public`,
+  },
+  {
+    group: "Storage",
+    name: "works バケットの上限が 5MiB",
+    expected: 5242880,
+    sql: `select file_size_limit::int from storage.buckets where id='works'`,
+  },
+  {
+    group: "Storage",
+    name: "works バケットが画像3種しか受け付けない",
+    expected: 3,
+    sql: `select coalesce(array_length(allowed_mime_types, 1), 0)::int
+            from storage.buckets where id='works'`,
+  },
+  {
+    group: "Storage",
+    name: "画像以外の MIME が許可されていない",
+    expected: 0,
+    sql: `select count(*)::int from storage.buckets b,
+                unnest(coalesce(b.allowed_mime_types, '{}'::text[])) m
+           where b.id='works'
+             and m not in ('image/jpeg','image/png','image/webp')`,
+  },
+  {
+    group: "Storage",
+    name: "works 用ポリシーが4本ある",
+    expected: 4,
+    sql: `select count(*)::int from pg_policies
+           where schemaname='storage' and tablename='objects'
+             and policyname = any($1)`,
+    params: [STORAGE_POLICIES],
+  },
+  {
+    group: "Storage",
+    name: "追加・更新・削除は自分のフォルダに限られている",
+    expected: 3,
+    sql: `select count(*)::int from pg_policies
+           where schemaname='storage' and tablename='objects'
+             and policyname in ('works_objects_insert_own',
+                                'works_objects_update_own',
+                                'works_objects_delete_own')
+             and coalesce(qual, '') || coalesce(with_check, '')
+                 like '%foldername%'`,
+  },
+  {
+    group: "Storage",
+    name: "storage.objects へ anon の書き込みポリシーが無い",
+    // anon（未サインイン）に許してよいのは読み取りだけ。
+    expected: 0,
+    sql: `select count(*)::int from pg_policies
+           where schemaname='storage' and tablename='objects'
+             and policyname = any($1)
+             and cmd <> 'SELECT'
+             and 'anon' = any(roles)`,
+    params: [STORAGE_POLICIES],
+  },
 
   // ───────────────────────── 漏洩経路の封鎖 ─────────────────────────
   {
@@ -317,6 +469,19 @@ export const checks = [
             join pg_namespace n on n.oid = p.pronamespace
            where n.nspname='public' and p.proname like 'get\\_%'
              and p.prosrc like '%''prompt_id''%'`,
+  },
+  {
+    group: "漏洩",
+    name: "書き込みRPCも prompt_id を JSON キーに出さない",
+    // create_work は引数で prompt_id を受け取るが、返り値には含めない（D23）。
+    // 列名としての prompt_id は出てよいので、JSON キーの形
+    // （引用符で囲まれた 'prompt_id'）だけを探す。
+    expected: 0,
+    sql: `select count(*)::int from pg_proc p
+            join pg_namespace n on n.oid = p.pronamespace
+           where n.nspname='public' and p.proname = any($1)
+             and p.prosrc like '%''prompt_id''%'`,
+    params: [WRITE_RPCS],
   },
   {
     group: "漏洩",
@@ -462,6 +627,40 @@ export const diagnostics = [
            where dc.is_chosen
            group by dc.session_id, dc.generation, dc.card_slot_key having count(*) > 1`,
   },
+
+  // --- Step 7 で足した4本 ---------------------------------------------------
+  {
+    id: "A15",
+    label: "image_path が投稿者の領域を指していない作品",
+    // spec 8-6 の {user_id}/{work_id}.{ext} から外れた行。
+    // create_work の検査6を通っていれば発生しない。
+    sql: `select w.id from public.works w
+           where w.image_path !~ ('^' || w.user_id::text || '/' || w.id::text
+                                      || '\\.(jpg|jpeg|png|webp)$')`,
+  },
+  {
+    id: "A16",
+    label: "匿名ゲストが投稿している作品",
+    // spec C3 / D27-1。RPC と Storage ポリシーの両方が破られないと起きない。
+    sql: `select w.id from public.works w
+            join public.profiles pf on pf.id = w.user_id
+           where pf.is_anonymous`,
+  },
+  {
+    id: "A17",
+    label: "作品があるのに未選択カードが未開示のお題",
+    // D8 / §9-4。create_work が開示まで行うので、作品があれば必ず開示済み。
+    sql: `select p.id from public.prompts p
+            join public.works w on w.prompt_id = p.id
+           where p.candidates_revealed_at is null`,
+  },
+  {
+    id: "A18",
+    label: "作品があるのに status が submitted でないお題",
+    sql: `select p.id from public.prompts p
+            join public.works w on w.prompt_id = p.id
+           where p.status <> 'submitted'`,
+  },
 ];
 
 /**
@@ -524,6 +723,21 @@ export const roleProbes = [
             ? `select public.get_current_draft()`
             : `select public.${fn}('00000000-0000-0000-0000-000000000000')`,
   })),
+  {
+    role: "anon",
+    mode: "denied",
+    label: "anon → create_work",
+    sql: `select public.create_work(
+            '00000000-0000-0000-0000-000000000000'::uuid,
+            '00000000-0000-0000-0000-000000000000'::uuid,
+            'title', 'x/y.png', 1, 1, 'original')`,
+  },
+  {
+    role: "anon",
+    mode: "denied",
+    label: "anon → update_work",
+    sql: `select public.update_work('00000000-0000-0000-0000-000000000000'::uuid)`,
+  },
   ...INTERNAL_FUNCS.map((fn) => ({
     role: "authenticated",
     mode: "denied",

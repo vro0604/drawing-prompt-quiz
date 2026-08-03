@@ -14,7 +14,9 @@
     "db:privs": "node scripts/db-privs.mjs",
     "db:link": "npx supabase link --project-ref oyyiutiptsffckujqkvl",
     "smoke:draft": "node scripts/smoke-draft.mjs",
-    "smoke:play": "node scripts/smoke-play.mjs"
+    "smoke:play": "node scripts/smoke-play.mjs",
+    "smoke:work": "node scripts/smoke-work.mjs",
+    "typecheck": "tsc --noEmit"
   },
   "dependencies": {
     "@supabase/ssr": "^0.12.4",

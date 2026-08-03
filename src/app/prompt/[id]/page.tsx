@@ -58,13 +58,30 @@ export default async function PromptPage({
         ))}
       </ol>
 
-      <div className="rounded-2xl bg-black/[0.03] p-6 text-sm dark:bg-white/5">
+      <div className="space-y-4 rounded-2xl bg-black/[0.03] p-6 text-sm dark:bg-white/5">
         <p className="font-bold">この内容で描いてください。</p>
-        <p className="pt-2 text-black/60 dark:text-white/60">
-          描き終えたら作品を投稿します（投稿画面は未実装）。
-          見た人はこのお題を4択で当てることになります。
+        <p className="text-black/60 dark:text-white/60">
+          描き終えたら作品を投稿します。見た人はこのお題を4択で当てることになります。
           出題されるのは {prompt.cards.length} 枠のうち一部です。
         </p>
+
+        {/* 1つのお題から作れる作品は1件まで（A11 / D17）。
+            投稿済みなら投稿導線ではなく作品へのリンクを出す。 */}
+        {prompt.work_id ? (
+          <Link
+            href={`/works/${prompt.work_id}`}
+            className="inline-block rounded-xl border border-black/20 px-6 py-3 text-sm font-bold hover:bg-black/[0.04] dark:border-white/25 dark:hover:bg-white/10"
+          >
+            投稿した作品を見る
+          </Link>
+        ) : prompt.status === "active" ? (
+          <Link
+            href={`/works/new?promptId=${prompt.id}`}
+            className="inline-block rounded-xl bg-black px-6 py-3 text-sm font-bold text-white hover:opacity-85 dark:bg-white dark:text-black"
+          >
+            このお題で描いた作品を投稿する
+          </Link>
+        ) : null}
       </div>
 
       {prompt.candidates_revealed_at ? (
