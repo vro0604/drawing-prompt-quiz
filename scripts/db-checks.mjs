@@ -698,6 +698,113 @@ export const checks = [
     params: [META_FUNCS],
   },
 
+  // ────────────────────────────── タグマスタ ──────────────────────────────
+  //
+  // spec 13 Step 3D。本番156件。原案は docs/tags-master.md。
+  //
+  // 投入そのものは migration の中で8項目を検算している。ここで見るのは
+  // **投入したあとに崩れていないか**。タグは誰でも増やせてしまう場所で、
+  // 1件足すだけで抽選の均衡もクイズの成立条件も変わる。
+  //
+  // 件数を数えるだけにしないこと。件数が合っていても中身が入れ替われば
+  // 意味が無いので、下限（4-1 の式）と重みの分布も見る。
+  {
+    group: "タグ",
+    name: "有効タグが156件ある",
+    expected: 156,
+    sql: `select count(*)::int from public.tags where is_active`,
+  },
+  {
+    group: "タグ",
+    name: "プール別の件数が 102 / 15 / 24 / 15",
+    expected: 4,
+    sql: `select count(*)::int from (
+            select pool_key from public.tags where is_active
+             group by pool_key
+            having (pool_key = 'motif'   and count(*) = 102)
+                or (pool_key = 'color'   and count(*) =  15)
+                or (pool_key = 'species' and count(*) =  24)
+                or (pool_key = 'genre'   and count(*) =  15)
+          ) t`,
+    detailSql: `select pool_key, count(*)::int as active
+                  from public.tags where is_active
+                 group by pool_key order by pool_key`,
+  },
+  {
+    group: "タグ",
+    name: "pool_key + label の重複が無い",
+    expected: 0,
+    sql: `select count(*)::int from (
+            select pool_key, label from public.tags
+             group by pool_key, label having count(*) > 1
+          ) d`,
+  },
+  {
+    // spec 4-1 の下限。標準モードは motif を 2枠×5 = 10件使い、
+    // クイズは正解2件＋ハズレ6件を重複なしで要求する。
+    // どちらか一方でも割ると、お題の確定が失敗する。
+    group: "タグ",
+    name: "抽選とクイズの下限を全プールが満たす",
+    expected: 0,
+    sql: `select count(*)::int from (
+            select pool_key, count(*) as n from public.tags where is_active
+             group by pool_key
+          ) t
+          where (t.pool_key = 'motif'   and t.n < 10)
+             or (t.pool_key = 'color'   and t.n <  5)
+             or (t.pool_key = 'species' and t.n <  5)
+             or (t.pool_key = 'genre'   and t.n <  5)`,
+    detailSql: `select pool_key, count(*)::int as active
+                  from public.tags where is_active
+                 group by pool_key order by pool_key`,
+  },
+  {
+    // 均一投入をやめた（要件）。全部が同じ重みに戻っていたら、
+    // 誰かが一括更新したということ。
+    group: "タグ",
+    name: "重みが均一ではない",
+    expected: 4,
+    sql: `select count(distinct weight)::int
+            from public.tags where is_active`,
+  },
+  {
+    // 重みの差が開きすぎると「珍しい語はたいていハズレ」が学習できてしまう。
+    // ハズレは重みを見ずに引くため、正解側だけが偏るとこの推測が成立する。
+    group: "タグ",
+    name: "重みの最大が最小の4倍未満（推測を成立させない）",
+    expected: 0,
+    sql: `select count(*)::int from (
+            select max(weight)::numeric / min(weight) as ratio
+              from public.tags where is_active
+          ) r where r.ratio >= 4`,
+    detailSql: `select min(weight)::int as min_weight,
+                       max(weight)::int as max_weight
+                  from public.tags where is_active`,
+  },
+  {
+    // 停止したタグが混ざっていないこと。156件ちょうどで、
+    // is_active = false の行はいまのところ1件も無い。
+    group: "タグ",
+    name: "停止中のタグが無い",
+    expected: 0,
+    sql: `select count(*)::int from public.tags where not is_active`,
+    detailSql: `select pool_key, label, weight from public.tags
+                 where not is_active order by pool_key, label`,
+  },
+  {
+    // 参照の宛先が全部いること。外部キーがあるので本来起きないが、
+    // 制約が外れていないことの確認を兼ねる。
+    group: "タグ",
+    name: "お題とクイズが存在しないタグを指していない",
+    expected: 0,
+    sql: `select (
+            (select count(*) from public.prompt_cards pc
+              where not exists (select 1 from public.tags t where t.id = pc.tag_id))
+          + (select count(*) from public.quiz_choices qc
+              where not exists (select 1 from public.tags t where t.id = qc.tag_id))
+          )::int`,
+  },
+
   // ──────────────────────── 通常フィードと AI の分離 ────────────────────────
   //
   // spec 13 Step 8 の終了条件「AI作品が通常フィードに出ない」。
@@ -1700,6 +1807,26 @@ export const notices = [
  * 何も出ないことが正常だと分かるようにする。
  */
 export const listings = [
+  {
+    // 件数の検査は「合っているか」しか言わない。
+    // 内訳と重みの散らばりは、目で見ないと崩れに気づけない。
+    label: "タグの内訳（プール別・重み別）",
+    sql: `select pool_key,
+                 count(*)::int as active,
+                 count(*) filter (where weight = 140)::int as w140_骨格,
+                 count(*) filter (where weight = 100)::int as w100_既定,
+                 count(*) filter (where weight =  70)::int as w70_抑制,
+                 count(*) filter (where weight =  45)::int as w45_希少,
+                 sum(weight)::int as 重み合計
+            from public.tags
+           where is_active
+           group by pool_key
+           order by count(*) desc`,
+    note:
+      "正しい姿は motif 102 / color 15 / species 24 / genre 15 の計156件。" +
+      "重み合計は、標準モード1回でそのタグが候補に並ぶ確率の分母になる" +
+      "（使う件数 × weight ÷ 重み合計）。原案は docs/tags-master.md。",
+  },
   {
     label: "profiles の権限（grantee 別）",
     sql: TABLE_PRIV_SQL,
