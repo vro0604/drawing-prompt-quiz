@@ -335,6 +335,55 @@ set local role authenticated;
 `set_config(..., true)` の第3引数 true はトランザクション内限定の意味で、
 `rollback` すれば設定も行も残らない。
 
+### D35. works / answers / answer_items は完全遮断し、回答履歴は他人へ公開しない
+
+`works` に SELECT 権限を与えないため（D23）、`answers` だけ直接読ませても
+「どの作品への回答か」を辿れず、結局RPCが要る。取得条件を一系統にするため
+両方とも遮断する。`answer_items` は `selected_tag_id` と `is_correct` を
+併せ持つため元から機密。
+
+回答履歴（誰がいつ何に答えたか）は `show_answer_stats` で公開する集計値とは別の
+**個人の行動履歴**であり、MVPでは他人へ公開しない。`get_public_answer_history` は作らない。
+
+- 本人：`get_my_answers` / `get_my_answer`
+- 他人へ見せるもの：`user_stats` / `user_slot_stats` の集計値だけ
+
+### D36. work_slot_stats も直接公開しない
+
+§9-3 では当初「全員 SELECT 可」としていたが、2つの理由で遮断へ変更した。
+
+1. **正しい公開条件が書けない。** 「公開中の作品だけ」を条件にするには RLS の中で
+   `works` を読む必要があるが、`works` には権限が無いため
+   **ポリシーの評価時点で permission denied になる**（ポリシー内の select は
+   呼び出した人の権限で実行される）。
+2. **無条件公開は情報が漏れる。** 作品IDを総当たりすれば
+   「この非公開作品には50件の回答がある」と読めてしまう。
+
+伝達率・枠別正答率は `get_work_detail` / `get_my_work` の返り値に含める。
+
+### D37. user_stats / user_slot_stats は anon からも読める
+
+統計の閲覧に登録も匿名サインインも不要とする（ページ訪問だけで匿名アカウントを
+作らない方針のため）。したがって `authenticated` だけでなく `anon` にも
+SELECT を与える。
+
+| ロール | 見える行 |
+|---|---|
+| `anon` | `is_anonymous = false` かつ `show_answer_stats = true` の人の行 |
+| `authenticated` | 本人の行、または上記の行 |
+
+ポリシーは `profiles` を参照するが、`profiles` には anon にも SELECT 権限があり
+公開プロフィールは anon から読めるため、この参照は成立する（実地検証済み）。
+
+### D38. 集計3表の更新はトリガーに一本化し、3B-3a では作らない
+
+`work_slot_stats` / `user_stats` / `user_slot_stats` には
+INSERT / UPDATE / DELETE をどのロールにも与えない。更新するのは Step 9 の
+回答RPCに付けるトリガーだけ。
+
+トリガーを 3B-3a で先に作っても、回答を入れる手段が無いため動作確認できず、
+Step 9 で作り直しになる。**3B-3a 完了時点で集計3表が空なのは意図した状態**。
+
 ---
 
 ## 公開前の必須課題

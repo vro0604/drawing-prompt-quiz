@@ -390,12 +390,12 @@ prompts               確定したお題                                     ←
 prompt_cards          お題を構成する確定カード【機密】                  ← Step 3B-2b 済
 quiz_questions        出題される3問【機密】                            ← Step 3B-2b 済
 quiz_choices          各問の4択【機密】                                ← Step 3B-2b 済
-works                 投稿作品（prompt_id は非公開列）
-answers               回答（1作品1ユーザー1件）
-answer_items          回答の内訳【機密：正解が推測できるため本人限定】
-work_slot_stats       作品×スロットの正答集計
-user_stats            ユーザーの通算成績
-user_slot_stats       ユーザー×スロットの成績
+works                 投稿作品（prompt_id は非公開列）                  ← Step 3B-3a 済
+answers               回答（1作品1ユーザー1件）                        ← Step 3B-3a 済
+answer_items          回答の内訳【機密：正解が推測できる】              ← Step 3B-3a 済
+work_slot_stats       作品×スロットの正答集計                          ← Step 3B-3a 済
+user_stats            ユーザーの通算成績                               ← Step 3B-3a 済
+user_slot_stats       ユーザー×スロットの成績                          ← Step 3B-3a 済
 likes                 いいね（登録ユーザーのみ・本人のみ閲覧可）
 saves                 保存（登録ユーザーのみ）
 reports               通報【機密】
@@ -664,6 +664,17 @@ quiz_choices(id bigint identity, question_id bigint FK cascade,
 
 ### 8-4. 投稿・回答
 
+実装済み（Step 3B-3a / `supabase/migrations/005_works_answers.sql`）。
+
+**6表とも、集計2表を除いてテーブル権限を一切与えない**（D35 / D36）。
+
+| 表 | anon | authenticated |
+|---|---|---|
+| works / answers / answer_items / work_slot_stats | 権限なし | 権限なし |
+| user_stats / user_slot_stats | SELECT（公開者の行・5列） | SELECT（本人＋公開者の行・5列） |
+
+集計3表は **3B-3a 完了時点では空**。更新トリガーは Step 9 の回答RPCと同時に作る。
+
 **works**
 
 | 列 | 型 | 公開 | 備考 |
@@ -715,29 +726,47 @@ quiz_choices(id bigint identity, question_id bigint FK cascade,
 
 | 列 | 型 |
 |---|---|
-| id | bigint PK |
-| work_id | uuid FK |
-| user_id | uuid FK → profiles（`ON DELETE SET NULL`） |
-| correct_count | int（0〜3） |
+| id | bigint PK（identity） |
+| work_id | uuid FK → works（`ON DELETE CASCADE`） |
+| user_id | uuid **null許容** FK → profiles（`ON DELETE SET NULL`） |
+| correct_count | int（0〜10。上限は `quiz_questions.position` の範囲に合わせた） |
 | created_at | timestamptz |
 
 UNIQUE(work_id, user_id)
+
+**この UNIQUE は `user_id` が null の行には効かない**（Postgres の UNIQUE は NULL 同士を
+重複と見なさないため）。ゲスト掃除で null になった回答が同じ作品に複数残ることは許容する。
+現役ユーザーの重複回答防止としては正しく働く。
+
+**null になった回答の扱い**（論点3-A）
+
+| 集計 | 含める？ |
+|---|---|
+| `works.answers_count` | **含める**（実際に挑戦された回数として正しい） |
+| `work_slot_stats` | **含める** |
+| `user_stats` / `user_slot_stats` | **含めない**（加算先の持ち主がいない） |
 
 **answer_items** 【機密】
 
 | 列 | 型 |
 |---|---|
-| id | bigint PK |
-| answer_id | bigint FK |
-| question_id | bigint FK |
-| slot_key | text |
-| selected_tag_id | bigint FK |
+| id | bigint PK（identity） |
+| answer_id | bigint FK → answers（`ON DELETE CASCADE`） |
+| question_id | bigint FK → quiz_questions（**`ON DELETE RESTRICT`**） |
+| card_slot_key | text FK → card_slots（spec の `slot_key` から改名。他表と統一） |
+| selected_tag_id | bigint FK → tags（RESTRICT） |
 | is_correct | boolean |
+
+UNIQUE(answer_id, question_id)
+
+`question_id` を RESTRICT にしているのは、`quiz_questions` がお題削除で
+CASCADE 消滅するため。ここを CASCADE にすると**お題の削除が回答の内訳まで
+静かに巻き込む**。RESTRICT なら削除が拒否されて気づける。
 
 > **重要**: `answer_items` は `selected_tag_id` と `is_correct` を併せ持つため、
 > 他人の行が読めると **`is_correct = true` の行から正解タグが判明してしまう**。
-> したがって公開設定に関わらず **常に本人のみ SELECT 可**とする。
-> 回答履歴の公開は §8-5 のビューで「作品・日時・正答数」のみを出す。
+> したがって**テーブル権限もポリシーも一切与えない**。本人の分も RPC 経由で返す。
+> 回答履歴は他人へ公開しない（D35）。
 
 **work_slot_stats**
 
@@ -746,6 +775,11 @@ work_slot_stats(work_id, slot_key, attempts int, corrects int)
     PRIMARY KEY(work_id, slot_key)
 ```
 項目別正答率 = `corrects / attempts`。スロットが可変なので works の列にせず別テーブルに置く。
+`corrects between 0 and attempts` を CHECK で保証する。
+
+**直接公開しない**（D36）。公開すると作品IDを総当たりすることで
+**非公開・削除済み作品の存在と回答件数が外から分かってしまう**ため、
+`get_work_detail` / `get_my_work` の返り値に含める形にする。
 
 **user_stats / user_slot_stats**
 
@@ -754,6 +788,18 @@ user_stats(user_id PK, total_answers int, total_items int, total_correct_items i
 user_slot_stats(user_id, slot_key, attempts int, corrects int, PRIMARY KEY(user_id, slot_key))
 ```
 公開時はこの集計テーブルだけを見せる（生の回答行は見せない）。
+
+**`anon`（未ログインの訪問者）からも読める**（D37）。統計の閲覧に登録も匿名サインインも
+不要であり、ページ訪問だけで匿名アカウントを作らないため。
+
+| ロール | 見える行 |
+|---|---|
+| `anon` | `is_anonymous = false` かつ `show_answer_stats = true` の人の行 |
+| `authenticated` | 本人の行、または上記の行 |
+
+**既知の限界**：handle が未設定の登録ユーザーは `profiles` 側のポリシーで見えないため、
+`show_answer_stats = true` でも成績が公開されない。handle は登録時に必ず設定するので
+通常は起きない。
 
 **likes / saves / reports**
 
@@ -959,11 +1005,11 @@ RLSポリシーを作らないことに加えた二重の防御（D20）。
 | **quiz_questions** | **権限なし**（D20） | RPC | × | × |
 | **quiz_choices** | **権限なし** | RPC | × | × |
 | **works** | **権限なし** → 4つの取得RPC経由のみ（D23） | RPC | RPC | × |
-| answers | 本人のみ | RPC | × | × |
-| **answer_items** | **本人のみ（公開設定に関わらず）** | RPC | × | × |
-| work_slot_stats | 全員 | トリガー | トリガー | × |
-| user_stats | 本人 OR `show_answer_stats = true` | トリガー/RPC | トリガー/RPC | × |
-| user_slot_stats | 本人 OR `show_answer_stats = true` | トリガー/RPC | トリガー/RPC | × |
+| **answers** | **権限なし** → `get_my_answers` / `get_my_answer`（本人限定。D35） | RPC | × | × |
+| **answer_items** | **権限なし**（本人の分も RPC 経由） | RPC | × | × |
+| **work_slot_stats** | **権限なし** → `get_work_detail` / `get_my_work` の返り値に含める（D36） | トリガー | トリガー | × |
+| user_stats | 本人 OR `show_answer_stats = true`。**`anon` からも読める**（D37） | トリガー | トリガー | × |
+| user_slot_stats | 本人 OR `show_answer_stats = true`。**`anon` からも読める**（D37） | トリガー | トリガー | × |
 | **likes** | **本人のみ**（D26） | RPC | × | RPC |
 | saves | 本人 OR `show_saved_works = true` | RPC | × | RPC |
 | **reports** | **権限なし** | RPC（匿名可） | × | × |
@@ -971,6 +1017,9 @@ RLSポリシーを作らないことに加えた二重の防御（D20）。
 `works` の SELECT 権限を与えないため、更新も RPC（`update_work`）経由になる（D23）。
 Postgres では `update ... where id = ?` の条件式にも SELECT 権限が必要で、
 直接更新を許すと結局いくつかの列を読ませることになるため、経路を1本に統一する。
+
+集計3表（`work_slot_stats` / `user_stats` / `user_slot_stats`）には
+**INSERT / UPDATE / DELETE をどのロールにも与えない**。書き込むのは Step 9 のトリガーだけ。
 
 ### 9-4. 未選択カードの開示制御
 
@@ -993,9 +1042,10 @@ Postgres では `update ... where id = ?` の条件式にも SELECT 権限が必
 | `works` を直接SELECT | 権限なし → **permission denied**。取得は4つのRPCのみ |
 | **作品からお題への到達** | `prompt_id` をどのRPCも返さない → 辿れない |
 | `tags` から出やすさを推測 | `weight` を返さない → 推測材料にならない |
-| 他人の `answer_items` を直接SELECT | 0件（公開設定に関わらず） |
+| `answers` / `answer_items` を直接SELECT | 権限なし → **permission denied**（本人の分も RPC 経由） |
+| `work_slot_stats` を直接SELECT | 権限なし → **permission denied**。作品IDの総当たりで非公開作品の存在を探れない |
 | 他人の `likes` を直接SELECT | 0件。公開するのは `works.likes_count` のみ |
-| 公開された回答履歴 | 作品・日時・正答数のみ。選択タグは含まれない |
+| 他人の回答履歴 | **MVPでは公開しない**（D35）。他人へ見せるのは `user_stats` / `user_slot_stats` の集計値だけ |
 | ドラフトAPIのレスポンス | 開封した1枚の label のみ |
 | 作品詳細のHTMLソース | 未回答時はお題データを一切埋め込まない |
 | `submit_answer` の連打 | UNIQUE制約＋関数内チェックで既存結果を返すのみ |
@@ -1017,7 +1067,9 @@ Postgres では `update ... where id = ?` の条件式にも SELECT 権限が必
 決め手は3行目。§9-5 で「作品からお題へ辿れないこと」を保証する以上、
 `prompt_id` を含むビューでは要件を満たせない。
 
-`public_answer_history`（回答履歴の公開）も同じ方針で RPC 化する。
+`public_answer_history`（回答履歴の公開）は **MVPでは作らない**（D35）。
+回答履歴は `show_answer_stats` で公開する集計値とは別の個人の行動履歴であり、
+本人だけが `get_my_answers` / `get_my_answer` で取得する。
 最終判断は Step 3C で行う。
 
 ---
@@ -1173,7 +1225,7 @@ URL: `/u/[handle]`
 | ~~**3B-1**~~ ✅ | マスタ5表：`tag_pools` `card_slots` `draft_modes` `draft_mode_slots` `tags`<br>＋RLS＋権限＋マスタ行（タグ本体を除く） | モードと枠の構成を管理画面で確認できる |
 | ~~**3B-2a**~~ ✅ | ドラフト2表：`draft_sessions` `draft_candidates`＋RLS＋権限 | `draft_candidates` が permission denied |
 | ~~**3B-2b**~~ ✅ | 確定お題・クイズ4表：`prompts` `prompt_cards` `quiz_questions` `quiz_choices`<br>＋RLS＋権限 | 機密3表が permission denied |
-| **3B-3a** | 作品・回答・集計6表：`works` `answers` `answer_items`<br>`work_slot_stats` `user_stats` `user_slot_stats`＋RLS＋権限 | `works` が permission denied |
+| ~~**3B-3a**~~ ✅ | 作品・回答・集計6表：`works` `answers` `answer_items`<br>`work_slot_stats` `user_stats` `user_slot_stats`＋RLS＋権限 | `works` が permission denied |
 | **3B-3b** | 反応・通報3表：`likes` `saves` `reports`＋RLS＋権限 | `likes` が他人から0件で返る |
 | **3C** | 公開取得経路の設計確定とレビュー（ビュー vs RPC の最終判断） | 正解へ到達する経路が無いことを §9-5 の表で確認 |
 | **3D** | タグ投入。`docs/tags-master.md` に案を作り**目視確認してから**投入 | 4プールで計156件前後 |
@@ -1206,14 +1258,21 @@ URL: `/u/[handle]`
 | A2 | 選択肢が4件でない問題 | 「何件あるか」は行をまたぐのでCHECKで書けない |
 | A3 | 正解タグが `prompt_cards` の答えと一致しない問題 | 別の表どうしの照合はCHECKで書けない |
 | A4 | `prompt_cards` の件数がモードの枠数と一致しない `prompts` | 同上 |
-| A5 | `status = 'submitted'` なのに `works` が存在しない `prompts` | 同上（3B-3a 以降で有効） |
+| A5 | `status = 'submitted'` なのに `works` が存在しない `prompts` | 同上（3B-3a で実行可能になった） |
+| A6 | `answers.correct_count` が内訳の正解数と一致しない回答 | 行をまたぐ集計はCHECKで書けない |
+| A7 | 内訳の件数が、その作品の問題数と一致しない回答 | 別の表どうしの照合はCHECKで書けない |
+| A8 | `works.answers_count` が `answers` の実件数と一致しない作品 | キャッシュと正本の照合はCHECKで書けない |
+| A9 | `answer_items.card_slot_key` がその問の枠と一致しない | 別の表どうしの照合はCHECKで書けない |
 
 - A1〜A4 は `complete_draft` RPC（Step 5）が作成時に保証する。診断はその**事後確認**。
 - **A5 は掃除対象にしない**。投稿済みのはずの作品が見当たらない状態であり、
   自動削除すると原因調査ができなくなる。必ず手で調べる（P4 と区別する）。
 
-検出クエリの全文は `supabase/migrations/004_prompts_quiz.sql` 末尾のコメントにある。
-3B-3a 以降の表が増えたら、この表へ行を追加していく。
+検出クエリの全文はマイグレーション末尾のコメントにある。
+A1〜A5 は `004_prompts_quiz.sql`、A6〜A9 は `005_works_answers.sql`。
+以降の工程で表が増えたら、この表へ行を追加していく。
+
+**A5 と A8 は掃除対象にしない。** 自動で消すと原因調査ができなくなるため、必ず手で調べる。
 
 ---
 
