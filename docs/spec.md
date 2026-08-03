@@ -906,8 +906,18 @@ Supabase の**新しいキー体系（publishable / secret）**を使う。
 
 ### 9-2. サーバー関数（security definer）
 
-**Step 3 では権限設定だけを行い、関数の中身は各機能の Step で実装する。**
-テストできる画面が無い段階で関数を大量に書かないため。
+**取得系13本は Step 3C で実装済み**（`supabase/migrations/007_read_rpcs.sql`）。
+書き込み系は各機能の Step で実装する。
+
+13本すべて `language sql` / `stable` / `security definer` / `set search_path = ''`。
+実行権限は `revoke all ... from public` のあと、公開4本を `anon, authenticated` へ、
+本人用9本を `authenticated` だけへ与える。
+
+**取得系RPCが守る3原則**
+
+1. `set search_path = ''` を必ず付ける（偽テーブルを読まされないため）
+2. 返す列を1つずつ書く（`select *` を使わない）
+3. 他人のIDにはエラーではなく **null / 0件** を返す（IDの存在を漏らさない）
 
 **ドラフト・お題**
 
@@ -1237,7 +1247,7 @@ URL: `/u/[handle]`
 | ~~**3B-2b**~~ ✅ | 確定お題・クイズ4表：`prompts` `prompt_cards` `quiz_questions` `quiz_choices`<br>＋RLS＋権限 | 機密3表が permission denied |
 | ~~**3B-3a**~~ ✅ | 作品・回答・集計6表：`works` `answers` `answer_items`<br>`work_slot_stats` `user_stats` `user_slot_stats`＋RLS＋権限 | `works` が permission denied |
 | ~~**3B-3b**~~ ✅ | 反応・通報3表：`likes` `saves` `reports`＋RLS＋権限 | `likes` が permission denied |
-| **3C** | 公開取得経路の設計確定とレビュー（ビュー vs RPC の最終判断） | 正解へ到達する経路が無いことを §9-5 の表で確認 |
+| ~~**3C**~~ ✅ | 取得系RPC 13本の実装（`supabase/migrations/007_read_rpcs.sql`） | 正解へ到達する経路が無いことを §9-5 の表で確認 |
 | **3D** | タグ投入。`docs/tags-master.md` に案を作り**目視確認してから**投入 | 4プールで計156件前後 |
 | **3E** | 横断診断ページで全テーブルの状態を確認しコミット | 権限表と実際の設定が一致 |
 
@@ -1275,6 +1285,7 @@ URL: `/u/[handle]`
 | A9 | `answer_items.card_slot_key` がその問の枠と一致しない | 別の表どうしの照合はCHECKで書けない |
 | A10 | `likes` / `saves` の持ち主が匿名ユーザー（登録必須のはず。D7） | 匿名かどうかは `profiles` を見ないと分からない |
 | A11 | `works.likes_count` / `saves_count` が実件数と一致しない作品 | キャッシュと正本の照合はCHECKで書けない |
+| A12 | `security definer` なのに `search_path` が固定されていない関数 | 偽テーブルを読まされる危険。カタログを見ないと分からない |
 
 - A1〜A4 は `complete_draft` RPC（Step 5）が作成時に保証する。診断はその**事後確認**。
 - **A5 は掃除対象にしない**。投稿済みのはずの作品が見当たらない状態であり、
@@ -1282,7 +1293,7 @@ URL: `/u/[handle]`
 
 検出クエリの全文はマイグレーション末尾のコメントにある。
 A1〜A5 は `004_prompts_quiz.sql`、A6〜A9 は `005_works_answers.sql`、
-A10〜A11 は `006_likes_saves_reports.sql`。
+A10〜A11 は `006_likes_saves_reports.sql`、A12 は `007_read_rpcs.sql`。
 以降の工程で表が増えたら、この表へ行を追加していく。
 
 **A5 と A8 は掃除対象にしない。** 自動で消すと原因調査ができなくなるため、必ず手で調べる。
