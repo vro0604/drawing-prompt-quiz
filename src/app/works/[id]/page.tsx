@@ -206,8 +206,16 @@ function PublicView({
       <header className="space-y-2">
         <h1 className="text-2xl font-bold">{work.title}</h1>
         <p className="text-sm text-black/55 dark:text-white/55">
-          {work.author.display_name}
-          {work.author.handle ? `（@${work.author.handle}）` : ""}
+          {/* handle がある人だけ公開プロフィールを持つ（001 の SELECT ポリシー） */}
+          {/* 1つの式にまとめているのは、隣り合う値の境目に React が
+              <!-- --> を挟み、「@handle」が繋がった文字列でなくなるため */}
+          {work.author.handle ? (
+            <Link href={`/u/${work.author.handle}`} className="underline">
+              {`${work.author.display_name}（@${work.author.handle}）`}
+            </Link>
+          ) : (
+            work.author.display_name
+          )}
           {work.is_author ? "・あなたの作品" : ""}
         </p>
       </header>

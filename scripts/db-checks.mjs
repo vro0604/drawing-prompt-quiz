@@ -46,6 +46,10 @@ export const PUBLIC_RPCS = [
   "get_work_quiz",
   "get_public_saves",
   "get_rankings",
+  "get_public_profile",
+  "get_user_works",
+  "get_saved_works",
+  "get_public_answers",
 ];
 
 /** 本人だけの取得系RPC */
@@ -101,7 +105,12 @@ export const ANSWER_RPCS = ["submit_answer"];
  *   update_my_profile … ID の先取りを防ぐ（001 の設計）
  *   toggle_like / toggle_save … 人気ランキングを成立させる（D7 / spec 10）
  */
-export const MEMBER_RPCS = ["update_my_profile", "toggle_like", "toggle_save"];
+export const MEMBER_RPCS = [
+  "update_my_profile",
+  "update_my_visibility",
+  "toggle_like",
+  "toggle_save",
+];
 
 /** いいね・保存の件数を works へ同期するトリガー */
 export const COUNT_TRIGGERS = ["likes_after_change_counts", "saves_after_change_counts"];
@@ -336,8 +345,8 @@ export const checks = [
   },
   {
     group: "関数",
-    name: "公開5本は anon から実行できる",
-    expected: 5,
+    name: "公開9本は anon から実行できる",
+    expected: 9,
     sql: `select count(*)::int from pg_proc p
             join pg_namespace n on n.oid = p.pronamespace
            where n.nspname='public' and p.proname = any($1)
@@ -450,8 +459,8 @@ export const checks = [
 
   {
     group: "関数",
-    name: "登録ユーザー限定RPC 3本が存在する",
-    expected: 3,
+    name: "登録ユーザー限定RPC 4本が存在する",
+    expected: 4,
     sql: `select count(*)::int from pg_proc p
             join pg_namespace n on n.oid = p.pronamespace
            where n.nspname='public' and p.proname = any($1)`,
@@ -459,7 +468,7 @@ export const checks = [
   },
   {
     group: "関数",
-    name: "登録ユーザー限定RPC 3本は anon から実行できない",
+    name: "登録ユーザー限定RPC 4本は anon から実行できない",
     expected: 0,
     sql: `select count(*)::int from pg_proc p
             join pg_namespace n on n.oid = p.pronamespace
@@ -558,6 +567,131 @@ export const checks = [
   //
   // spec 13 Step 13。実際の並びは smoke:ranking が見る。
   // ここでは、順位の公平さを支えている条件が定義から消えていないことを確かめる。
+  // ─────────────────────── 公開プロフィール・お気に入り ───────────────────────
+  //
+  // spec 13 Step 14。実際の見えかたは smoke:profile が見る。
+  // ここでは、公開範囲を決めている条件が定義から消えていないことを確かめる。
+  {
+    group: "公開",
+    name: "公開プロフィール系の関数4本が存在する",
+    expected: 4,
+    sql: `select count(*)::int from pg_proc p
+            join pg_namespace n on n.oid = p.pronamespace
+           where n.nspname='public'
+             and p.proname in ('get_public_profile','get_user_works',
+                               'get_saved_works','get_public_answers')`,
+  },
+  {
+    group: "公開",
+    name: "お気に入りの公開が show_saved_works に従っている",
+    // 他人へ返す条件。ここが消えると、設定を切っている人の
+    // お気に入りが誰にでも見える。
+    expected: 1,
+    sql: `select count(*)::int from pg_proc p
+            join pg_namespace n on n.oid = p.pronamespace
+           where n.nspname='public' and p.proname='get_saved_works'
+             and p.prosrc like '%show_saved_works%'
+             and p.prosrc like '%o.is_anonymous = false%'`,
+  },
+  {
+    group: "公開",
+    name: "他人のお気に入りは公開中の作品だけ",
+    expected: 1,
+    sql: `select count(*)::int from pg_proc p
+            join pg_namespace n on n.oid = p.pronamespace
+           where n.nspname='public' and p.proname='get_saved_works'
+             and p.prosrc like '%w.is_published and w.review_status = ''ok'' and w.deleted_at is null%'`,
+  },
+  {
+    group: "公開",
+    name: "お気に入りのお題は「閲覧者が回答済み」のときだけ添えている",
+    // **この項目と、上の「prompt_cards に触れる関数が4本」は対で見る。**
+    // 本数だけ見ていると、無条件に prompt_cards を読む関数が
+    // 4本目として紛れ込んでも気づけない。
+    //
+    // 条件は get_my_answer と同じ「その閲覧者の answers 行があるか」。
+    // 空白の入れかたに左右されないよう、詰めてから照合する。
+    expected: 1,
+    sql: `select count(*)::int from pg_proc p
+            join pg_namespace n on n.oid = p.pronamespace
+           where n.nspname='public' and p.proname='get_saved_works'
+             and regexp_replace(p.prosrc, '\\s+', ' ', 'g') like
+                 '%case when exists ( select 1 from public.answers a where a.work_id = w.id and a.user_id = (select auth.uid()) ) then%'`,
+  },
+  {
+    group: "公開",
+    name: "お気に入り一覧が likes に触れていない",
+    // お気に入りといいねは別の機能として扱う（spec 12-1）。
+    expected: 0,
+    sql: `select count(*)::int from pg_proc p
+            join pg_namespace n on n.oid = p.pronamespace
+           where n.nspname='public' and p.proname='get_saved_works'
+             and p.prosrc like '%public.likes%'`,
+  },
+  {
+    group: "公開",
+    name: "ランキングが saves に触れていない",
+    expected: 0,
+    sql: `select count(*)::int from pg_proc p
+            join pg_namespace n on n.oid = p.pronamespace
+           where n.nspname='public' and p.proname='get_rankings'
+             and p.prosrc like '%public.saves%'`,
+  },
+  {
+    group: "公開",
+    name: "回答履歴が show_answer_history に従い、選んだタグを返さない",
+    // 他人へ出すのは「作品・日時・正答数」だけ（spec 12-0）。
+    // selected_tag_id と is_correct が揃うと正解が割れる（spec 8-4）。
+    expected: 1,
+    sql: `select count(*)::int from pg_proc p
+            join pg_namespace n on n.oid = p.pronamespace
+           where n.nspname='public' and p.proname='get_public_answers'
+             and p.prosrc like '%show_answer_history%'
+             and p.prosrc not like '%selected_tag_id%'
+             and pg_get_function_result(p.oid) not ilike '%tag%'`,
+  },
+  {
+    group: "公開",
+    name: "回答者としての成績が show_answer_stats に従っている",
+    expected: 1,
+    sql: `select count(*)::int from pg_proc p
+            join pg_namespace n on n.oid = p.pronamespace
+           where n.nspname='public' and p.proname='get_public_profile'
+             and p.prosrc like '%show_answer_stats%'`,
+  },
+  {
+    group: "公開",
+    name: "獲得いいねから作者本人のぶんを除いている",
+    // D57 と同じ考え方。自分で押すだけで数字が増えないようにする。
+    expected: 1,
+    sql: `select count(*)::int from pg_proc p
+            join pg_namespace n on n.oid = p.pronamespace
+           where n.nspname='public' and p.proname='get_public_profile'
+             and p.prosrc like '%l.user_id <> t.id%'`,
+  },
+  {
+    group: "公開",
+    name: "ID の予約語を配らない検査がある",
+    // なりすまし（admin / official など）と、将来 URL を短くしたときの
+    // ページ名との衝突を、両方まとめて押さえている（D59）。
+    expected: 1,
+    sql: `select count(*)::int from pg_proc p
+            join pg_namespace n on n.oid = p.pronamespace
+           where n.nspname='public' and p.proname='update_my_profile'
+             and p.prosrc like '%HANDLE_RESERVED%'
+             and p.prosrc like '%''admin''%'
+             and p.prosrc like '%''official''%'`,
+  },
+  {
+    group: "公開",
+    name: "公開プロフィールは登録済み（is_anonymous = false）の人だけ",
+    expected: 1,
+    sql: `select count(*)::int from pg_proc p
+            join pg_namespace n on n.oid = p.pronamespace
+           where n.nspname='public' and p.proname='get_public_profile'
+             and p.prosrc like '%p.is_anonymous = false%'`,
+  },
+
   {
     group: "ランキング",
     name: "get_rankings が存在する",
@@ -666,13 +800,13 @@ export const checks = [
   },
   {
     group: "登録必須",
-    name: "登録ユーザー限定RPC 3本が JWT の is_anonymous を見ている",
+    name: "登録ユーザー限定RPC 4本が JWT の is_anonymous を見ている",
     // update_my_profile … ID の先取りを防ぐ（001 が handle を列権限から外した意図）
     // toggle_like / toggle_save … 人気ランキングを成立させる（D7）
     //
     // Postgres のロールでは匿名ゲストと登録ユーザーを区別できないので、
     // この防御は関数の中の1行だけで成り立っている。消えても表面上は動く。
-    expected: 3,
+    expected: 4,
     sql: `select count(*)::int from pg_proc p
             join pg_namespace n on n.oid = p.pronamespace
            where n.nspname='public' and p.proname = any($1)
@@ -801,14 +935,18 @@ export const checks = [
   },
   {
     group: "漏洩",
-    name: "prompt_cards（＝答え）に触れる関数が3本のまま",
+    name: "prompt_cards（＝答え）に触れる関数が4本のまま",
     // 内訳は complete_draft（書く）／ get_my_prompt（本人のお題）／
-    // get_my_answer（回答済み本人へ正解を返す）の3本だけ。
+    // get_my_answer（回答済み本人へ正解を返す）／
+    // get_saved_works（回答済みの作品だけお題を添える。Step 14）の4本だけ。
     //
     // submit_answer はここに入らない。正解の組み立てはせず、
     // 最後に get_my_answer を呼ぶだけだからで、それが狙いどおりであることを
-    // この数で確かめている。4本目が増えたら、それが新しい漏洩経路になりうる。
-    expected: 3,
+    // この数で確かめている。5本目が増えたら、それが新しい漏洩経路になりうる。
+    //
+    // **数を増やすのは意図した変更のときだけ。** 下の「回答済み判定」の項目と
+    // 対で見ること（本数が増えても、無条件に読む関数は許さない）。
+    expected: 4,
     sql: `select count(*)::int from pg_proc p
             join pg_namespace n on n.oid = p.pronamespace
            where n.nspname='public'
@@ -1185,6 +1323,33 @@ export const roleProbes = [
   {
     role: "anon",
     mode: "allowed",
+    label: "anon → get_public_profile",
+    sql: `select public.get_public_profile('no-such-handle')`,
+  },
+  {
+    role: "anon",
+    mode: "allowed",
+    label: "anon → get_user_works",
+    sql: `select * from public.get_user_works(
+            '00000000-0000-0000-0000-000000000000','original','new',5,0)`,
+  },
+  {
+    role: "anon",
+    mode: "allowed",
+    label: "anon → get_saved_works",
+    sql: `select * from public.get_saved_works(
+            '00000000-0000-0000-0000-000000000000',5,0)`,
+  },
+  {
+    role: "anon",
+    mode: "allowed",
+    label: "anon → get_public_answers",
+    sql: `select * from public.get_public_answers(
+            '00000000-0000-0000-0000-000000000000',5,0)`,
+  },
+  {
+    role: "anon",
+    mode: "allowed",
     label: "anon → get_rankings（伝達率）",
     sql: `select * from public.get_rankings('accuracy','normal',null,5,0)`,
   },
@@ -1261,6 +1426,12 @@ export const roleProbes = [
     mode: "denied",
     label: "anon → update_my_profile",
     sql: `select public.update_my_profile('taro', null, null, null)`,
+  },
+  {
+    role: "anon",
+    mode: "denied",
+    label: "anon → update_my_visibility",
+    sql: `select public.update_my_visibility(true, true, true)`,
   },
   {
     role: "anon",

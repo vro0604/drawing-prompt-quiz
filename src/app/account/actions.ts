@@ -3,7 +3,12 @@
 import { redirect } from "next/navigation";
 import { revalidatePath } from "next/cache";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
-import { LINK_FIELDS, callUpdateMyProfile } from "@/features/profile/rpc";
+import {
+  LINK_FIELDS,
+  callUpdateMyProfile,
+  callUpdateMyVisibility,
+} from "@/features/profile/rpc";
+import { VISIBILITY_FIELDS } from "@/features/profile/types";
 
 /**
  * /account のボタンから呼ばれる Server Action。
@@ -163,6 +168,35 @@ export async function updateProfileAction(form: FormData): Promise<void> {
   // 一覧や作品ページの投稿者名も変わるので、まとめて描き直させる
   revalidatePath("/works");
   back(undefined, "プロフィールを更新しました。");
+}
+
+/**
+ * 公開設定（3つのチェックボックス）を更新する。
+ *
+ * 【チェックボックスは「外したこと」が届かない】
+ *   HTML のチェックボックスは、入っているときだけ値が送られる。
+ *   だから「入っていない ＝ フォームに無い」で false を作る。
+ *   ここで null（変更しない）に寄せてしまうと、**一度入れた設定を
+ *   二度と外せなくなる**。プロフィールの空欄とは扱いが逆になる。
+ *
+ *   その代わり、この画面は必ず3つとも送る。1つだけ更新する経路を
+ *   作らないので、フォームに無い＝外した、と読んで間違いがない。
+ */
+export async function updateVisibilityAction(form: FormData): Promise<void> {
+  const update: Record<string, boolean> = {};
+  for (const field of VISIBILITY_FIELDS) {
+    update[field.key] = form.get(field.key) !== null;
+  }
+
+  try {
+    await callUpdateMyVisibility(update);
+  } catch (e) {
+    back(e instanceof Error ? e.message : String(e));
+  }
+
+  revalidatePath(PAGE);
+  revalidatePath("/saves");
+  back(undefined, "公開設定を更新しました。");
 }
 
 export async function signOutAction(): Promise<void> {

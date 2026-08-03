@@ -20,6 +20,7 @@
     "smoke:answer": "node scripts/smoke-answer.mjs",
     "smoke:social": "node scripts/smoke-social.mjs",
     "smoke:ranking": "node scripts/smoke-ranking.mjs",
+    "smoke:profile": "node scripts/smoke-profile.mjs",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {

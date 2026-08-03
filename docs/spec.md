@@ -363,8 +363,9 @@ MVPでは、その場合に「匿名の記録は引き継げません」と明�
 | `/works/new` | 投稿フォーム | **不可** | 登録必須 |
 | `/works/[id]` | 作品詳細＋クイズ | 可 | |
 | `/rankings` | ランキング | 可 | `?type=popular|accuracy|duration&feed=normal|ai`<br>時間別のみ `&time=short|medium|long|unlimited`（実装済み） |
-| `/u/[handle]` | ポートフォリオ | 可 | 公開設定に従う |
-| `/me/settings` | プロフィール・公開設定 | **不可** | |
+| `/u/[handle]` | ポートフォリオ | 可 | 公開設定に従う（実装済み）。`?tab=` で切り替え<br>**`/{handle}` にはしない**（ページ名との衝突を避ける。D59） |
+| `/saves` | 自分のお気に入り | **不可** | 実装済み。handle が未設定でも開ける |
+| `/account` | プロフィール・公開設定 | **不可** | 実装済み（spec の `/me/settings` はこの場所に置いた） |
 | `/login` | 登録・ログイン | 可 | |
 | `/auth/callback` | 認証コールバック | — | Route Handler |
 | `/works/[id]/opengraph-image` | OGP画像生成 | 可 | |
@@ -949,6 +950,10 @@ Supabase の**新しいキー体系（publishable / secret）**を使う。
 | `get_my_works()` | 本人 | 自分の作品一覧（非公開・審査中・削除済みも含む） |
 | `get_my_work(work_id)` | 本人 | 自分の作品1件（編集画面用） |
 | `get_rankings(type, feed, time_limit, limit, offset)` | 誰でも | ランキング。制限時間は区分の文字にして返す（12-2） |
+| `get_public_profile(handle)` | 誰でも | 公開プロフィール1件。無ければ null（不在と非公開を区別しない） |
+| `get_user_works(user_id, division, sort, limit, offset)` | 誰でも | その人の公開作品。列は `get_public_works` と同じ |
+| `get_saved_works(user_id, limit, offset)` | 誰でも | お気に入り。本人は常に全部、他人は `show_saved_works` 次第（12-1） |
+| `get_public_answers(user_id, limit, offset)` | 誰でも | 回答履歴。作品・日時・正答数だけ。選んだタグは返さない |
 
 公開取得（`get_public_works` / `get_work_detail`）が返すのは次を**すべて**満たす作品のみ。
 
@@ -998,6 +1003,8 @@ DBの制約では表現できないため、RPC側で必ず検査する。
 | `toggle_like(work_id)` / `toggle_save(work_id)` | 登録判定＋行の追加削除。カウンタはトリガーが同期 |
 | `create_report(work_id, reason, detail)` | 通報＋レート制限 |
 | `promote_anonymous(handle, display_name)` | 匿名 → 新規アカウント昇格の仕上げ |
+| `update_my_profile(handle, display_name, bio, links)` | ID・表示名・自己紹介・外部リンク。**予約語は配らない**（D59） |
+| `update_my_visibility(stats, history, saves)` | 公開設定3つ。登録ユーザーのみ |
 
 ### 9-3. テーブル別ポリシー
 
@@ -1176,9 +1183,10 @@ Supabase の匿名サインインを使う。匿名でも `auth.uid()` が発行
 
 ## 12. ポートフォリオページとランキング
 
-### 12-0. ポートフォリオページ
+### 12-0. ポートフォリオページ（Step 14・実装済み）
 
-URL: `/u/[handle]`
+URL: `/u/{handle}`。**`/{handle}` にはしない**（ページ名と ID が同じ空間に
+並ぶと、あとからページを増やすたびに衝突しうる。D59）。
 
 ```
 ┌───────────────────────────────────────┐
@@ -1211,7 +1219,17 @@ URL: `/u/[handle]`
 - 「伝わりやすさ」は回答者5人以上の作品のみを対象に平均する
 - 公開された回答履歴は「作品・日時・正答数」のみ。選択したタグは表示しない
 
-### 12-1. お気に入り作品一覧（Step 14 で実装）
+**実装での違い**（いずれも仕様の意図は変えていない）
+
+- 「発行したお題」タブは作らなかった。`get_my_prompts` はあるが、
+  お題の一覧をポートフォリオに置くと、**未投稿のお題の存在**が
+  本人以外から見える設計に近づく。必要になったら別の画面で扱う
+- 公開設定の切れているタブは、本人にだけ「（非公開）」を添えて出す。
+  自分の持ち物が自分から見えなくなるのは道理に合わないため
+- プロフィール編集と公開設定は `/account` に置いた（`/me/settings` は作らない）。
+  登録・サインアウトと同じ画面にまとめたほうが、行き先が1つで済む
+
+### 12-1. お気に入り作品一覧（Step 14・実装済み）
 
 ポートフォリオの「お気に入り」タブ。**既存の `saves` 表をそのまま使い、
 新しい表は作らない**。いいねとは別の機能として扱う
@@ -1369,6 +1387,13 @@ handle は 001 が列権限から外してあるため、この関数が唯一�
 **Step 12 は完了**（`20260803051913_reaction_rpcs.sql` ＋ `/works/[id]`）。
 `toggle_like` / `toggle_save` とカウンタ同期トリガー2本。
 登録ユーザーだけが押せる（D7 / D56）。検証は `npm run smoke:social`。
+
+**Step 14 は完了**（`20260803210859_profile_public_rpcs.sql` ＋ `/u/[handle]` ＋ `/saves`）。
+公開プロフィール・公開設定3つ・お気に入り一覧・回答履歴。
+RPC は `get_public_profile` / `get_user_works` / `get_saved_works` /
+`get_public_answers` / `update_my_visibility` の5本と、`update_my_profile` の差し替え
+（予約語の検査を追加）。URL は `/u/{handle}` に確定（D59）。
+検証は `npm run smoke:profile`。詳しくは 12-0 と 12-1。
 
 **Step 13 は完了**（`20260803204740_ranking_rpc.sql` ＋ `/rankings`）。
 取得系RPC `get_rankings` 1本と一覧ページ。順位を保存する表は作らず、毎回数える。

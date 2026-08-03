@@ -1,12 +1,14 @@
 import Link from "next/link";
 import { getCurrentUser, getMyProfile } from "@/features/auth/session";
 import { LINK_FIELDS } from "@/features/profile/rpc";
+import { VISIBILITY_FIELDS } from "@/features/profile/types";
 import type { Profile } from "@/types/database";
 import {
   registerAction,
   signInAction,
   signOutAction,
   updateProfileAction,
+  updateVisibilityAction,
 } from "./actions";
 
 /**
@@ -213,6 +215,63 @@ export default async function AccountPage({
               プロフィールを保存する
             </button>
           </form>
+
+          {profile?.handle ? (
+            <p className="border-t border-black/10 pt-4 text-sm dark:border-white/10">
+              <Link href={`/u/${profile.handle}`} className="underline">
+                公開プロフィールを見る（/u/{profile.handle}）
+              </Link>
+            </p>
+          ) : (
+            <p className="border-t border-black/10 pt-4 text-xs text-black/45 dark:border-white/10 dark:text-white/45">
+              ID を決めると、公開プロフィールのページ（/u/あなたのID）ができます。
+            </p>
+          )}
+        </section>
+      ) : null}
+
+      {/* --- 登録ユーザー：公開設定 -------------------------------------------- */}
+      {isRegistered ? (
+        <section className={`${box} space-y-4`}>
+          <div className="space-y-1">
+            <h2 className="text-sm font-bold">公開設定</h2>
+            <p className="text-xs text-black/55 dark:text-white/55">
+              すべて既定では公開しません。
+              <strong>投稿した作品と、描き手としての記録は常に公開されます。</strong>
+            </p>
+          </div>
+
+          <form action={updateVisibilityAction} className="space-y-4">
+            {VISIBILITY_FIELDS.map((f) => (
+              <label key={f.key} className="flex gap-3">
+                <input
+                  type="checkbox"
+                  name={f.key}
+                  defaultChecked={profile?.[f.key] ?? false}
+                  className="mt-1 size-4 shrink-0"
+                />
+                <span className="space-y-1">
+                  <span className="block text-sm">{f.label}</span>
+                  <span className="block text-xs text-black/45 dark:text-white/45">
+                    {f.note}
+                  </span>
+                </span>
+              </label>
+            ))}
+
+            <button type="submit" className={primary}>
+              公開設定を保存する
+            </button>
+          </form>
+
+          <p className="border-t border-black/10 pt-4 text-sm dark:border-white/10">
+            <Link href="/saves" className="underline">
+              自分のお気に入りを見る
+            </Link>
+            <span className="ml-2 text-xs text-black/45 dark:text-white/45">
+              公開設定に関わらず、自分では常に見られます
+            </span>
+          </p>
         </section>
       ) : null}
 
