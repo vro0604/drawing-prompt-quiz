@@ -1,6 +1,13 @@
 import Link from "next/link";
-import { getCurrentUser } from "@/features/auth/session";
-import { registerAction, signInAction, signOutAction } from "./actions";
+import { getCurrentUser, getMyProfile } from "@/features/auth/session";
+import { LINK_FIELDS } from "@/features/profile/rpc";
+import type { Profile } from "@/types/database";
+import {
+  registerAction,
+  signInAction,
+  signOutAction,
+  updateProfileAction,
+} from "./actions";
 
 /**
  * /account ／ アカウントの最小画面。
@@ -77,6 +84,11 @@ export default async function AccountPage({
   const isGuest = user?.is_anonymous === true;
   const isRegistered = user !== null && !user.is_anonymous;
 
+  // 登録ユーザーのときだけ、いまの設定値をフォームの初期値として読む。
+  // 自分の行は RLS で必ず見えるので、ここは直接読んでよい（001 の SELECT ポリシー）。
+  let profile: Profile | null = null;
+  if (isRegistered) profile = await getMyProfile();
+
   return (
     <main className="mx-auto w-full max-w-lg space-y-8 p-6 sm:p-10">
       <header className="space-y-2">
@@ -118,6 +130,91 @@ export default async function AccountPage({
           <p className="text-sm">まだサインインしていません。</p>
         )}
       </section>
+
+      {/* --- 登録ユーザー：プロフィール ---------------------------------------- */}
+      {isRegistered ? (
+        <section className={`${box} space-y-4`}>
+          <div className="space-y-1">
+            <h2 className="text-sm font-bold">プロフィール</h2>
+            <p className="text-xs text-black/55 dark:text-white/55">
+              ここで決めた表示名が、作品一覧や作品ページに出ます。
+              空欄のままにした項目は変更されません。
+            </p>
+          </div>
+
+          <form action={updateProfileAction} className="space-y-4">
+            <label className="block space-y-1">
+              <span className="block text-xs text-black/55 dark:text-white/55">
+                ID（3〜20字・小文字の英数字とハイフン）
+              </span>
+              <input
+                type="text"
+                name="handle"
+                defaultValue={profile?.handle ?? ""}
+                maxLength={20}
+                pattern="[a-z0-9][a-z0-9\-]{1,18}[a-z0-9]"
+                placeholder="my-handle"
+                className={input}
+              />
+              <span className="block text-xs text-black/40 dark:text-white/40">
+                {profile?.handle
+                  ? "早い者勝ちです。変えると、いまの ID は他の人が取れるようになります。"
+                  : "早い者勝ちです。ほかの人が使っている ID は取れません。"}
+              </span>
+            </label>
+
+            <label className="block space-y-1">
+              <span className="block text-xs text-black/55 dark:text-white/55">
+                表示名（30字まで）
+              </span>
+              <input
+                type="text"
+                name="displayName"
+                defaultValue={profile?.display_name ?? ""}
+                maxLength={30}
+                className={input}
+              />
+            </label>
+
+            <label className="block space-y-1">
+              <span className="block text-xs text-black/55 dark:text-white/55">
+                自己紹介（500字まで）
+              </span>
+              <textarea
+                name="bio"
+                defaultValue={profile?.bio ?? ""}
+                maxLength={500}
+                rows={3}
+                className={input}
+              />
+            </label>
+
+            <div className="space-y-3">
+              <span className="block text-xs text-black/55 dark:text-white/55">
+                外部リンク（http:// または https:// で始まる URL）
+              </span>
+              {LINK_FIELDS.map((f) => (
+                <label key={f.key} className="block space-y-1">
+                  <span className="block text-xs text-black/40 dark:text-white/40">
+                    {f.label}
+                  </span>
+                  <input
+                    type="url"
+                    name={`link_${f.key}`}
+                    defaultValue={profile?.links?.[f.key] ?? ""}
+                    placeholder={f.placeholder}
+                    className={input}
+                  />
+                </label>
+              ))}
+            </div>
+
+            <button type="submit" className={primary}>
+              プロフィールを保存する
+            </button>
+          </form>
+        </section>
+      ) : null}
 
       {/* --- ゲスト：昇格 ------------------------------------------------------ */}
       {isGuest ? (

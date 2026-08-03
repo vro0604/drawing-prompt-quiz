@@ -3,6 +3,7 @@
 import { redirect } from "next/navigation";
 import { revalidatePath } from "next/cache";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
+import { LINK_FIELDS, callUpdateMyProfile } from "@/features/profile/rpc";
 
 /**
  * /account のボタンから呼ばれる Server Action。
@@ -116,6 +117,52 @@ export async function registerAction(form: FormData): Promise<void> {
       ? "登録が完了しました。"
       : "確認メールを送りました。リンクを開いてから、もう一度サインインしてください。",
   );
+}
+
+/**
+ * プロフィール（ID・表示名・自己紹介・外部リンク）を更新する。
+ *
+ * 【空欄の扱い】
+ *   未入力は空文字で届く。それをそのまま渡すと DB 側で
+ *   「空にはできません」と断られてしまうので、空欄は
+ *   **「変更しない」（null）** に寄せてから渡す。
+ *
+ *   そのため、この画面から値を消すことはできない。
+ *   消す操作が要るようになったら、専用のボタンを足して区別する
+ *   （空欄と「消したい」を同じ入力に載せると取り違える。D49）。
+ *
+ * 【リンク】
+ *   キーは LINK_FIELDS で固定してある。入力があったものだけを集める。
+ *   値が http(s) で始まるかは DB 側が見る（javascript: を弾くため）。
+ */
+export async function updateProfileAction(form: FormData): Promise<void> {
+  const handle = str(form, "handle");
+  const displayName = str(form, "displayName");
+  const bio = str(form, "bio");
+
+  const links: Record<string, string> = {};
+  for (const field of LINK_FIELDS) {
+    const value = str(form, `link_${field.key}`);
+    if (value !== "") links[field.key] = value;
+  }
+
+  try {
+    await callUpdateMyProfile({
+      handle: handle === "" ? null : handle,
+      displayName: displayName === "" ? null : displayName,
+      bio: bio === "" ? null : bio,
+      // リンクは「1つも入力が無い」と「全部消したい」を区別できないため、
+      // 何か入力があるときだけ送る。
+      links: Object.keys(links).length > 0 ? links : null,
+    });
+  } catch (e) {
+    back(e instanceof Error ? e.message : String(e));
+  }
+
+  revalidatePath(PAGE);
+  // 一覧や作品ページの投稿者名も変わるので、まとめて描き直させる
+  revalidatePath("/works");
+  back(undefined, "プロフィールを更新しました。");
 }
 
 export async function signOutAction(): Promise<void> {
