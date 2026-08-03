@@ -144,6 +144,34 @@ export async function callUnpublishWork(workId: string): Promise<WorkWriteResult
 }
 
 /**
+ * いいねを付ける／外す。押すたびに入れ替わる。
+ *
+ * **登録ユーザーだけ**（D7 / spec 10）。ゲストが呼ぶと DB 側が断る。
+ * 判定は偽造できない JWT だけを見ているので、ここで確かめる必要はない
+ * （画面は、押す前に案内を出し分けるためだけに状態を見る）。
+ */
+export async function callToggleLike(
+  workId: string,
+): Promise<{ work_id: string; liked: boolean; likes_count: number }> {
+  const supabase = await createSupabaseServerClient();
+  const { data, error } = await supabase.rpc("toggle_like", { p_work_id: workId });
+
+  if (error) throw new Error(readableRpcError(error.message));
+  return data as { work_id: string; liked: boolean; likes_count: number };
+}
+
+/** 保存を付ける／外す。条件は toggle_like と同じ */
+export async function callToggleSave(
+  workId: string,
+): Promise<{ work_id: string; saved: boolean; saves_count: number }> {
+  const supabase = await createSupabaseServerClient();
+  const { data, error } = await supabase.rpc("toggle_save", { p_work_id: workId });
+
+  if (error) throw new Error(readableRpcError(error.message));
+  return data as { work_id: string; saved: boolean; saves_count: number };
+}
+
+/**
  * 画像を Storage へ置く。パスは spec 8-6 の {user_id}/{work_id}.{ext}。
  *
  * **upsert は使わない。** 同じパスに既に何かあるなら、それは

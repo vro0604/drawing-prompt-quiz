@@ -91,6 +91,20 @@ export const WRITE_RPCS = ["create_work", "update_work"];
  */
 export const ANSWER_RPCS = ["submit_answer"];
 
+/**
+ * 登録ユーザー限定の書き込みRPC。
+ *
+ * 作品の投稿（WRITE_RPCS）と同じく、匿名ゲストを JWT で弾く。
+ * ANSWER_RPCS とは分ける（回答はゲストにも許すため、条件が逆）。
+ *
+ *   update_my_profile … ID の先取りを防ぐ（001 の設計）
+ *   toggle_like / toggle_save … 人気ランキングを成立させる（D7 / spec 10）
+ */
+export const MEMBER_RPCS = ["update_my_profile", "toggle_like", "toggle_save"];
+
+/** いいね・保存の件数を works へ同期するトリガー */
+export const COUNT_TRIGGERS = ["likes_after_change_counts", "saves_after_change_counts"];
+
 /** storage.objects に張った works バケット用のポリシー */
 export const STORAGE_POLICIES = [
   "works_objects_read_public",
@@ -118,6 +132,8 @@ export const TRIGGER_FUNCS = [
   "draft_sessions_set_updated_at",
   "answers_after_insert_stats",
   "answer_items_after_insert_stats",
+  "likes_after_change_counts",
+  "saves_after_change_counts",
 ];
 
 /** 回答が入ったときに集計を進めるトリガー */
@@ -133,6 +149,7 @@ export const ALL_FUNCS = [
   ...DRAFT_RPCS,
   ...WRITE_RPCS,
   ...ANSWER_RPCS,
+  ...MEMBER_RPCS,
   ...INTERNAL_FUNCS,
   ...META_FUNCS,
   ...TRIGGER_FUNCS,
@@ -430,6 +447,49 @@ export const checks = [
     params: [STATS_TRIGGERS],
   },
 
+  {
+    group: "関数",
+    name: "登録ユーザー限定RPC 3本が存在する",
+    expected: 3,
+    sql: `select count(*)::int from pg_proc p
+            join pg_namespace n on n.oid = p.pronamespace
+           where n.nspname='public' and p.proname = any($1)`,
+    params: [MEMBER_RPCS],
+  },
+  {
+    group: "関数",
+    name: "登録ユーザー限定RPC 3本は anon から実行できない",
+    expected: 0,
+    sql: `select count(*)::int from pg_proc p
+            join pg_namespace n on n.oid = p.pronamespace
+           where n.nspname='public' and p.proname = any($1)
+             and has_function_privilege('anon', p.oid, 'EXECUTE')`,
+    params: [MEMBER_RPCS],
+  },
+  {
+    group: "関数",
+    name: "いいね・保存のカウンタ同期トリガー2本が設置されている",
+    expected: 2,
+    sql: `select count(*)::int from pg_trigger t
+            join pg_class c on c.oid = t.tgrelid
+            join pg_namespace n on n.oid = c.relnamespace
+           where n.nspname='public'
+             and not t.tgisinternal
+             and t.tgname = any($1)`,
+    params: [COUNT_TRIGGERS],
+  },
+  {
+    group: "関数",
+    name: "そのトリガー関数は anon/authenticated から実行できない",
+    expected: 0,
+    sql: `select count(*)::int from pg_proc p
+            join pg_namespace n on n.oid = p.pronamespace
+           where n.nspname='public' and p.proname = any($1)
+             and (has_function_privilege('anon', p.oid, 'EXECUTE')
+               or has_function_privilege('authenticated', p.oid, 'EXECUTE'))`,
+    params: [COUNT_TRIGGERS],
+  },
+
   // ─────────────────────── 選択肢のタグを重複させない ───────────────────────
   //
   // 同じタグが2つの問に出ると、そのタグは**どちらの問でも不正解だと確定する**
@@ -518,6 +578,22 @@ export const checks = [
            where schemaname='storage' and tablename='objects'
              and policyname='works_objects_insert_own'
              and with_check like '%is_anonymous%'`,
+  },
+  {
+    group: "登録必須",
+    name: "登録ユーザー限定RPC 3本が JWT の is_anonymous を見ている",
+    // update_my_profile … ID の先取りを防ぐ（001 が handle を列権限から外した意図）
+    // toggle_like / toggle_save … 人気ランキングを成立させる（D7）
+    //
+    // Postgres のロールでは匿名ゲストと登録ユーザーを区別できないので、
+    // この防御は関数の中の1行だけで成り立っている。消えても表面上は動く。
+    expected: 3,
+    sql: `select count(*)::int from pg_proc p
+            join pg_namespace n on n.oid = p.pronamespace
+           where n.nspname='public' and p.proname = any($1)
+             and p.prosrc like '%is_anonymous%'
+             and p.prosrc like '%auth.jwt()%'`,
+    params: [MEMBER_RPCS],
   },
   {
     group: "登録必須",
@@ -1048,6 +1124,30 @@ export const roleProbes = [
     label: `authenticated → ${fn}（検証用）`,
     sql: `select public.${fn}()`,
   })),
+  ...COUNT_TRIGGERS.map((fn) => ({
+    role: "authenticated",
+    mode: "denied",
+    label: `authenticated → ${fn}（トリガー専用）`,
+    sql: `select public.${fn}()`,
+  })),
+  {
+    role: "anon",
+    mode: "denied",
+    label: "anon → update_my_profile",
+    sql: `select public.update_my_profile('taro', null, null, null)`,
+  },
+  {
+    role: "anon",
+    mode: "denied",
+    label: "anon → toggle_like",
+    sql: `select public.toggle_like('00000000-0000-0000-0000-000000000000'::uuid)`,
+  },
+  {
+    role: "anon",
+    mode: "denied",
+    label: "anon → toggle_save",
+    sql: `select public.toggle_save('00000000-0000-0000-0000-000000000000'::uuid)`,
+  },
   ...INTERNAL_FUNCS.map((fn) => ({
     role: "authenticated",
     mode: "denied",

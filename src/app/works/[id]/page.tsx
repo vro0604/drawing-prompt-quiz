@@ -13,7 +13,12 @@ import {
   type WorkDetail,
 } from "@/features/work/types";
 import { AnswerResult, AuthorNotice, QuizForm, SlotStats } from "./_quiz";
-import { publishWorkAction, unpublishWorkAction } from "./actions";
+import {
+  publishWorkAction,
+  toggleLikeAction,
+  toggleSaveAction,
+  unpublishWorkAction,
+} from "./actions";
 
 /**
  * /works/[id] ／ 作品1件。
@@ -128,15 +133,73 @@ function MetaList({
   );
 }
 
+/**
+ * いいね・保存。
+ *
+ * 【押せるのは登録ユーザーだけ（D7 / spec 10）】
+ *   ゲストや未サインインにはボタンではなく案内を出す。
+ *   人気ランキング（Step 13）を登録ユーザーのいいねだけで集計するためで、
+ *   ゲストのままいくらでも押せると順位が意味を持たなくなる。
+ *
+ *   ここでの出し分けは親切であって守りではない。本当の判定は
+ *   toggle_like / toggle_save が JWT で行う。
+ *
+ * 【状態は追加で問い合わせない】
+ *   liked_by_me / saved_by_me と件数は get_work_detail が返している。
+ *   get_my_reaction を別に呼ぶ必要はない。
+ */
+function Reactions({ work, canReact }: { work: WorkDetail; canReact: boolean }) {
+  const base =
+    "rounded-xl border px-5 py-3 text-sm font-bold transition hover:bg-black/[0.04] dark:hover:bg-white/10";
+  const on = "border-black/40 bg-black/[0.04] dark:border-white/50 dark:bg-white/10";
+  const off = "border-black/15 dark:border-white/20";
+
+  if (!canReact) {
+    return (
+      <div className={`${box} space-y-2`}>
+        <p className="text-sm">
+          いいね {work.likes_count}・保存 {work.saves_count}
+        </p>
+        <p className="text-xs text-black/55 dark:text-white/55">
+          いいねと保存にはアカウント登録が必要です。クイズの回答はゲストのままできます。
+          <Link href="/account" className="pl-2 underline">
+            アカウントの画面へ
+          </Link>
+        </p>
+      </div>
+    );
+  }
+
+  return (
+    <div className="flex flex-wrap gap-3">
+      <form action={toggleLikeAction}>
+        <input type="hidden" name="workId" value={work.id} />
+        <button type="submit" className={`${base} ${work.liked_by_me ? on : off}`}>
+          {work.liked_by_me ? "いいね済み" : "いいね"} {work.likes_count}
+        </button>
+      </form>
+
+      <form action={toggleSaveAction}>
+        <input type="hidden" name="workId" value={work.id} />
+        <button type="submit" className={`${base} ${work.saved_by_me ? on : off}`}>
+          {work.saved_by_me ? "保存済み" : "保存"} {work.saves_count}
+        </button>
+      </form>
+    </div>
+  );
+}
+
 /** 公開されている作品の表示 */
 function PublicView({
   work,
   quiz,
   myAnswer,
+  canReact,
 }: {
   work: WorkDetail;
   quiz: WorkQuiz | null;
   myAnswer: MyAnswer | null;
+  canReact: boolean;
 }) {
   return (
     <>
@@ -165,6 +228,8 @@ function PublicView({
         actualTimeSeconds={work.actual_time_seconds}
         createdAt={work.created_at}
       />
+
+      <Reactions work={work} canReact={canReact} />
 
       {/* クイズ。出す形は3通りしかない。
             作者      → 回答できない案内（D28）
@@ -267,11 +332,14 @@ export default async function WorkPage({
   // 取れなかったときだけ、本人用の経路を試す。
   // 未サインイン（anon）には get_my_work の実行権限が無いので、
   // 呼ぶ前にサインイン済みか確かめる。
+  const user = await getCurrentUser();
+
   let myWork: MyWork | null = null;
-  if (!publicWork) {
-    const user = await getCurrentUser();
-    if (user) myWork = await fetchMyWork(id);
-  }
+  if (!publicWork && user) myWork = await fetchMyWork(id);
+
+  // いいね・保存は登録ユーザーだけ（D7 / spec 10）。
+  // ボタンを出すか案内を出すかの判断にだけ使う。本当の判定は DB 側。
+  const canReact = user !== null && !user.is_anonymous;
 
   // どちらでも取れないなら、存在しないのと同じ扱い（D40）。
   if (!publicWork && !myWork) notFound();
@@ -298,7 +366,12 @@ export default async function WorkPage({
       ) : null}
 
       {publicWork ? (
-        <PublicView work={publicWork} quiz={quiz} myAnswer={myAnswer} />
+        <PublicView
+          work={publicWork}
+          quiz={quiz}
+          myAnswer={myAnswer}
+          canReact={canReact}
+        />
       ) : myWork ? (
         <OwnerOnlyView work={myWork} />
       ) : null}

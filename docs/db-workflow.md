@@ -102,7 +102,7 @@ npm run db:privs     # 誰がどの関数を呼べるかを一覧（読むだけ
 | 構造 | 表21個・RLS 有効・マスタ行数 |
 | 権限 | 遮断11表に権限0件／ポリシー0本、権限を持つのは10表だけ |
 | 関数 | `search_path` 固定、PUBLIC に EXECUTE が残っていない、公開／本人用／書き込みの切り分け |
-| 登録必須 | `create_work` / `update_work` と Storage の追加ポリシーが JWT の `is_anonymous` を見ている |
+| 登録必須 | `create_work` / `update_work` / `update_my_profile` / `toggle_like` / `toggle_save` と<br>Storage の追加ポリシーが JWT の `is_anonymous` を見ている |
 | Storage | `works` バケットが公開読み取り・5MiB・画像3種、ポリシー4本、`anon` に書き込みが無い |
 | フィード | 通常フィード（`p_division = null`）が AI 部門を除いている |
 | 選択肢 | `complete_draft` がプール単位でハズレを配り、重複を検算して失敗させる |

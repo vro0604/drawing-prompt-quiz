@@ -1257,7 +1257,16 @@ URL: `/u/[handle]`
 `submit_answer` と集計トリガー2本。作品ページで4択に答えると採点結果と正解が出て、
 `works.answers_count` と集計3表が動く。検証は `npm run smoke:answer`。
 
-Step 7 に伴い **Step 6 の最小版を先取りした**（`/account`）。
+**Step 6 本体は完了**（`20260803051911_profile_rpc.sql` ＋ `/account`）。
+`update_my_profile` で ID（handle）・表示名・自己紹介・外部リンクを設定できる。
+handle は 001 が列権限から外してあるため、この関数が唯一の設定経路（D55）。
+これで作品一覧・作品ページの投稿者名が「ゲスト」から実際の表示名に変わる。
+
+**Step 12 は完了**（`20260803051913_reaction_rpcs.sql` ＋ `/works/[id]`）。
+`toggle_like` / `toggle_save` とカウンタ同期トリガー2本。
+登録ユーザーだけが押せる（D7 / D56）。検証は `npm run smoke:social`。
+
+Step 7 に伴い **Step 6 の最小版を先取りしていた**（`/account`）。
 `create_work` は登録ユーザーだけを通す（C3 / D27-1）ため、
 登録の手段が無いと投稿までブラウザで到達できないため。
 いま `/account` にあるのは次の3つだけ。

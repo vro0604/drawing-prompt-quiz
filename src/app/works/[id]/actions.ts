@@ -5,7 +5,12 @@ import { revalidatePath } from "next/cache";
 import { ensureUserId } from "@/features/auth/session";
 import { callSubmitAnswer } from "@/features/quiz/rpc";
 import type { AnswerSelection } from "@/features/quiz/types";
-import { callPublishWork, callUnpublishWork } from "@/features/work/rpc";
+import {
+  callPublishWork,
+  callToggleLike,
+  callToggleSave,
+  callUnpublishWork,
+} from "@/features/work/rpc";
 
 /**
  * 作品ページのボタンから呼ばれる Server Action。
@@ -53,6 +58,44 @@ export async function unpublishWorkAction(form: FormData): Promise<void> {
 
   revalidatePath(`/works/${workId}`);
   redirect(`/works/${workId}`);
+}
+
+/**
+ * いいね・保存を付ける／外す。
+ *
+ * 【回答と違って、ここでは匿名サインインをしない】
+ *   いいねと保存は登録ユーザー限定（D7 / spec 10）。
+ *   ここで ensureUserId を呼ぶと、押せもしないゲストを1人作ってしまう。
+ *   閲覧しただけの人でユーザーを増やさない方針（spec 11-1）にも反する。
+ *
+ * 【判定は DB 側】
+ *   ゲストかどうかは toggle_like / toggle_save が JWT で見る。
+ *   ここを通り抜けても必ず止まる。
+ */
+async function toggleReaction(
+  form: FormData,
+  run: (workId: string) => Promise<unknown>,
+): Promise<void> {
+  const workId = str(form, "workId");
+
+  try {
+    await run(workId);
+  } catch (e) {
+    backWithError(workId, e);
+  }
+
+  revalidatePath(`/works/${workId}`);
+  // 一覧にも件数が出ているので、そちらも描き直させる
+  revalidatePath("/works");
+  redirect(`/works/${workId}`);
+}
+
+export async function toggleLikeAction(form: FormData): Promise<void> {
+  await toggleReaction(form, callToggleLike);
+}
+
+export async function toggleSaveAction(form: FormData): Promise<void> {
+  await toggleReaction(form, callToggleSave);
 }
 
 /**
