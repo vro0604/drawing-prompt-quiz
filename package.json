@@ -6,7 +6,11 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "lint": "eslint"
+    "lint": "eslint",
+    "db:status": "bash scripts/db-status.sh",
+    "db:deploy": "bash scripts/db-deploy.sh",
+    "db:verify": "node scripts/db-verify.mjs",
+    "db:link": "npx supabase link --project-ref oyyiutiptsffckujqkvl"
   },
   "dependencies": {
     "@supabase/ssr": "^0.12.4",
@@ -22,6 +26,8 @@
     "@types/react-dom": "^19",
     "eslint": "^9",
     "eslint-config-next": "16.2.12",
+    "pg": "^8.22.0",
+    "supabase": "^2.111.0",
     "tailwindcss": "^4",
     "typescript": "^5"
   }
