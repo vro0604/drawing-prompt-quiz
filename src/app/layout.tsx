@@ -37,9 +37,12 @@ export default function RootLayout({
 }: Readonly<{
   children: React.ReactNode;
 }>) {
+  // lang は画面の言語に合わせる。ここが en のままだと、読み上げソフトが
+  // 日本語の本文を英語として発音し、意味が取れなくなる。
+  // 検索エンジンや翻訳の判定にも使われる。
   return (
     <html
-      lang="en"
+      lang="ja"
       className={`${geistSans.variable} ${geistMono.variable} h-full antialiased`}
     >
       <body className="min-h-full flex flex-col">{children}</body>

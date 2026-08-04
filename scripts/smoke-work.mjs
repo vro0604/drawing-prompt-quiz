@@ -264,4 +264,86 @@ section("8. 画像が公開URLから取れる");
   }
 }
 
+// ── 9. 壊れた画像・偽装した画像は受け取らない ─────────────
+//
+// 【なぜここでまとめて見るか】
+//   画像の種類と大きさは、ブラウザの申告ではなく**中身から数えている**
+//   （src/features/work/image.ts）。その判定が効いていることを、
+//   通る側だけでなく**通らない側から**確かめる。
+//
+// 【お題を使い切らない】
+//   断られた投稿はお題を消費しない（create_work まで届かない）。
+//   だから1つのお題で何度でも試せる。**新しいお題を引かない**のは、
+//   検査のたびに残るお題を増やさないため。
+section("9. 壊れた画像・偽装した画像は受け取らない");
+{
+  const badPrompt = await drawPrompt(author, "easy");
+
+  /** 画像を1つ送って、返ってきた画面の文言を返す */
+  const trySubmit = async (bytes, name, type) => {
+    const res = await submitWork(
+      author,
+      badPrompt.promptId,
+      { title: "受け取らないはず", division: "original" },
+      { bytes, name, type },
+    );
+    return { text: textOf(res.html), path: res.path };
+  };
+
+  const cases = [
+    {
+      label: "0バイトのファイル",
+      bytes: new Uint8Array(0),
+      name: "empty.png",
+      type: "image/png",
+    },
+    {
+      label: "中身が画像でないファイル（拡張子だけ png）",
+      bytes: new TextEncoder().encode("これは画像ではありません"),
+      name: "notimage.png",
+      type: "image/png",
+    },
+    {
+      label: "途中で切れた PNG（ヘッダだけ）",
+      bytes: makePng(10, 10).slice(0, 12),
+      name: "broken.png",
+      type: "image/png",
+    },
+    {
+      label: "PNG の中身に jpg の名前を付けたもの",
+      // 中身から種類を決めるので、名前が違っても**中身どおりに扱われる**。
+      // ここだけは「通る」のが正しい（拡張子は当てにしない）。
+      bytes: makePng(20, 15),
+      name: "actually-png.jpg",
+      type: "image/jpeg",
+      shouldPass: true,
+    },
+  ];
+
+  for (const c of cases) {
+    const { text, path } = await trySubmit(c.bytes, c.name, c.type);
+    const accepted = /^\/works\/[0-9a-f-]{36}/.test(path);
+
+    if (c.shouldPass) {
+      must(accepted, `${c.label} は中身どおりに受け取る`, path);
+    } else {
+      must(
+        !accepted && /扱えません|画像を選んで|大きさを読み取れません/.test(text),
+        `${c.label} を断る`,
+        accepted ? "受け取ってしまった" : text.slice(0, 60),
+      );
+    }
+  }
+
+  // 幅・高さの異常。PNG のヘッダに 30000 と書いても、
+  // works の CHECK（1〜20000）と同じ範囲で先に断る。
+  const huge = makePng(30000, 30000);
+  const { text, path } = await trySubmit(huge, "huge.png", "image/png");
+  must(
+    !/^\/works\/[0-9a-f-]{36}/.test(path) && /扱えません|読み取れません/.test(text),
+    "幅・高さが範囲外の画像を断る",
+    text.slice(0, 60),
+  );
+}
+
 finish();

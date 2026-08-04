@@ -300,12 +300,12 @@ export default async function ProfilePage({
       {/* --- 見出し ------------------------------------------------------------ */}
       <header className="space-y-3">
         <div className="space-y-1">
-          <h1 className="text-2xl font-bold">{profile.display_name}</h1>
+          <h1 className="text-2xl font-bold break-words">{profile.display_name}</h1>
           <p className="text-sm text-black/45 dark:text-white/45">@{profile.handle}</p>
         </div>
 
         {profile.bio ? (
-          <p className="text-sm whitespace-pre-wrap text-black/70 dark:text-white/70">
+          <p className="text-sm whitespace-pre-wrap break-words text-black/70 dark:text-white/70">
             {profile.bio}
           </p>
         ) : null}

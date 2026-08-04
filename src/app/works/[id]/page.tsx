@@ -234,7 +234,7 @@ function PublicView({
   return (
     <>
       <header className="space-y-2">
-        <h1 className="text-2xl font-bold">{work.title}</h1>
+        <h1 className="text-2xl font-bold break-words">{work.title}</h1>
         <p className="text-sm text-black/55 dark:text-white/55">
           {/* handle がある人だけ公開プロフィールを持つ（001 の SELECT ポリシー） */}
           {/* 1つの式にまとめているのは、隣り合う値の境目に React が
@@ -335,7 +335,7 @@ function OwnerOnlyView({ work }: { work: MyWork }) {
         <p className="text-xs font-bold tracking-wider text-amber-600 dark:text-amber-400">
           {work.is_published ? "本人にのみ表示" : "下書き"}
         </p>
-        <h1 className="text-2xl font-bold">{work.title}</h1>
+        <h1 className="text-2xl font-bold break-words">{work.title}</h1>
         <p className="text-sm text-black/55 dark:text-white/55">{reason}</p>
       </header>
 

@@ -99,6 +99,7 @@ npm run db:privs     # 誰がどの関数を呼べるかを一覧（読むだけ
 
 | 区分 | 内容 |
 |---|---|
+| 整合 | **表と表のつなぎ目**を見る。退会で消す6表が CASCADE、残す5表が SET NULL。<br>NOT NULL なのに SET NULL される外部キーが無い。<br>作品のあるお題は消せない（`works.prompt_id` が RESTRICT）。<br>下書きを消してもお題は残る（`prompts.draft_session_id` が SET NULL）。<br>二重送信を止める一意索引が4本ある。<br>いいね・お気に入りが同時押しで例外にならない（`on conflict`）。<br>回答・通報の2件目が日本語で断られる（`unique_violation` を変換） |
 | 構造 | 表22個・RLS 有効・マスタ行数 |
 | 権限 | 遮断12表に権限0件／ポリシー0本、権限を持つのは10表だけ。<br>`profiles` の保護列（`handle` / `handle_updated_at` / `id` / `is_anonymous` / `created_at`）に UPDATE が無く、<br>直接更新してよい6列は残っている |
 | 関数 | `search_path` 固定、PUBLIC に EXECUTE が残っていない、公開／本人用／書き込みの切り分け |
@@ -250,6 +251,8 @@ npm run db:verify
 | `supabase db pull` | Docker が必要。方針に反する（baseline + repair を使う） |
 | 新しい表を作って `revoke` を書かない | **Supabase は新しい表へ ALL を自動で配る。**<br>遮断表なら `revoke all on <表> from public, anon, authenticated;` まで書いて1組（D65）。<br>20260803221747 で既定を逆にしたので今後は自動では付かないが、<br>別のロールが作った表には効かないため、書く習慣は残す |
 | 権限の検査を `information_schema` だけで行う | `DELETE` / `TRUNCATE` が見えない。`aclexplode` で `relacl` / `attacl` を展開する |
+| 「見てから書く」だけで二重送信を防いだつもりにする | 見てから書くまでのすき間に同じ操作が並ぶ。<br>**一意索引と、その違反を日本語へ変換する組み合わせまでで1組**（D81 / D82） |
+| スモークの失敗を「一時的」で片づける | 回数制限に当たると**無関係な項目が次々に失敗する**。<br>`_smoke-http.mjs` が制限を検知してその場で止めるので、まずその文言を確認する（D83） |
 | マスタ行の投入で `delete` してから入れ直す | `tags.id` は `prompt_cards` / `quiz_choices` の宛先。**入れ直すと id がずれ、<br>過去のお題が別のタグを指す。しかもエラーにならない。**<br>`on conflict (自然キー) do update` で当てる（D69） |
 | 投入件数の検算を定数で書く | 2回目に必ず失敗し、「壊れたのか、もう入っているのか」が区別できなくなる。<br>`目標件数 −（実行前から在った件数）` で計算する（D69） |
 | 鍵やパスワードを migration の本文に書く | migration は Git に入る。**鍵付きハッシュにする意味が無くなる。**<br>`gen_random_uuid()` などで DB の中に作り、遮断表に置く（D73） |

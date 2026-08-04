@@ -66,12 +66,11 @@ export async function runCleanup(): Promise<CleanupResult> {
   };
 
   // --- 実行前の残り -----------------------------------------------------
-  try {
-    const { data } = await admin.rpc("cleanup_status");
-    result.before = (data as Record<string, number>) ?? null;
-  } catch {
-    // 状況が取れなくても掃除そのものは進める
-  }
+  //
+  // 取れなくても掃除そのものは進める。ただし**黙って null にしない。**
+  // before が null で errors が空だと「何も残っていなかった」と読めてしまい、
+  // 実際は「数えられなかった」だったときに区別がつかない。
+  result.before = await readStatus(admin, result, "実行前の残り");
 
   // --- SQL だけで終わるもの ---------------------------------------------
   await step("お題", async () => {
@@ -198,13 +197,33 @@ export async function runCleanup(): Promise<CleanupResult> {
   });
 
   // --- 実行後の残り -----------------------------------------------------
-  try {
-    const { data } = await admin.rpc("cleanup_status");
-    result.after = (data as Record<string, number>) ?? null;
-  } catch {
-    // ここが取れなくても掃除は終わっている
-  }
+  result.after = await readStatus(admin, result, "実行後の残り");
 
   result.ok = result.errors.length === 0;
   return result;
+}
+
+/**
+ * 残り件数を読む。読めなかったら理由を jobs へ残す。
+ *
+ * **掃除そのものは止めない。**数えられなかっただけで
+ * 片づけをやめるほうが困る。ただし「数えられなかった」ことは記録する。
+ * 記録が無いと、次に見た人が「残り0件だった」と誤って読む。
+ */
+async function readStatus(
+  admin: NonNullable<ReturnType<typeof createSupabaseAdminClient>>,
+  result: CleanupResult,
+  label: string,
+): Promise<Record<string, number> | null> {
+  try {
+    const { data, error } = await admin.rpc("cleanup_status");
+    if (error) {
+      result.jobs[label] = `数えられませんでした: ${error.message}`;
+      return null;
+    }
+    return (data as Record<string, number>) ?? null;
+  } catch (e) {
+    result.jobs[label] = `数えられませんでした: ${e instanceof Error ? e.message : String(e)}`;
+    return null;
+  }
 }

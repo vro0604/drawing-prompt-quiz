@@ -1624,7 +1624,8 @@ ranking_likes_count = count(*) from likes
 | 15 | **P5 の解消**／共有OGP／通報／削除・非公開 | 旧IDが他人に渡らない。削除しても行は消えない |
 | ~~15-B~~ ✅ | 退会・匿名化・規約同意（P1 / P2 / P3） | 退会しても他人の回答と正答率が壊れない |
 | ~~16~~ ✅ | 掃除Cron（P4・匿名ユーザー・画像の消し残し・退会の後始末・<br>期限切れ同意記録）／CAPTCHA（P6）の実装／Vercel 設定ファイル | 掃除を1回叩くと残り件数が減る |
-| **公開** | 規約本文の差し替え／Confirm email を ON／Turnstile の鍵／<br>Vercel 環境変数／本番URLでの縦断試験 | `docs/launch-checklist.md` が全部埋まる |
+| ~~17~~ ✅ | **公開前デバッグ**（機能間の矛盾・権限漏れ・異常系・競合・UI の停止箇所）<br>トップページの新設／404・失敗時の画面／同時押しの取り扱い（D81 / D82） | `docs/prelaunch-debug-report.md` |
+| **公開** | 規約本文の差し替え／Confirm email を ON／**匿名サインインの回数制限**／<br>Turnstile の鍵／Vercel 環境変数／本番URLでの縦断試験 | `docs/launch-checklist.md` が全部埋まる |
 
 **Step 4 は完了**（`20260803013522_draft_rpcs.sql` ＋ `/play` ＋ `/prompt/[id]`）。
 最小タグ46件、ドラフトRPC 6本、モード選択からお題確定までの画面が通る。

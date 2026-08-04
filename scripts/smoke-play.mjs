@@ -25,6 +25,8 @@
  * 【使い方】
  *   npm run smoke:play
  */
+import { assertNotRateLimited } from "./_smoke-http.mjs";
+
 const BASE = process.env.SMOKE_BASE_URL ?? "http://localhost:3000";
 const jar = new Map();
 
@@ -47,9 +49,16 @@ async function get(path) {
   });
   storeCookies(res);
   if (res.status >= 300 && res.status < 400) {
-    return get(res.headers.get("location").replace(BASE, ""));
+    const location = res.headers.get("location");
+    // 回数制限に当たったら、ここで止める。
+    // 先へ進めても「盤面が出た」「めくるボタンがある」が
+    // 次々に失敗するだけで、原因がまったく読み取れない。
+    assertNotRateLimited(location);
+    return get(location.replace(BASE, ""));
   }
-  return { html: await res.text(), status: res.status, path };
+  const html = await res.text();
+  assertNotRateLimited(html);
+  return { html, status: res.status, path };
 }
 
 async function post(path, fields) {

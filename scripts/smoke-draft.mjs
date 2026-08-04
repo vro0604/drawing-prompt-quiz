@@ -87,9 +87,31 @@ async function main() {
   const { data: auth, error: authErr } = await supabase.auth.signInAnonymously();
   check(!authErr && !!auth?.user, "ゲストとしてサインインできる", authErr?.message ?? "");
   if (authErr) {
-    console.error(
-      `${RED}  → Supabase → Authentication → Sign In / Providers で Anonymous を有効にしてください${RESET}`,
-    );
+    // **原因で案内を分ける。**
+    // 以前はどちらの場合も「Anonymous を有効にしてください」と出していた。
+    // 回数制限に当たっただけのときにそれを読むと、**すでに正しい設定を
+    // 触りに行かせてしまう。**しかも直らないので、さらに遠回りになる。
+    if (/rate limit/i.test(authErr.message)) {
+      console.error(
+        [
+          "",
+          `${RED}  Supabase の回数制限に当たりました。設定は正しいままです。${RESET}`,
+          "",
+          "    ・匿名サインインの既定は 1時間あたり30回・IPアドレス単位",
+          "    ・スモークは1周で十数人ぶん使うため、続けて回すと当たる",
+          "",
+          "  対処:",
+          "    1. 1時間ほど待ってからもう一度実行する",
+          "    2. または Authentication → Rate limits で上限を上げる",
+          "",
+          `${RED}  **これはアプリの不具合ではありません。**${RESET}`,
+        ].join("\n"),
+      );
+    } else {
+      console.error(
+        `${RED}  → Supabase → Authentication → Sign In / Providers で Anonymous を有効にしてください${RESET}`,
+      );
+    }
     process.exit(1);
   }
 

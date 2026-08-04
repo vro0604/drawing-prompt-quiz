@@ -1,4 +1,5 @@
 import Link from "next/link";
+import { notFound } from "next/navigation";
 import { getCurrentUser, getMyProfile } from "@/features/auth/session";
 import type { Profile } from "@/types/database";
 import { ActionButton, Field, Layout, Section, Status } from "../_ui";
@@ -33,6 +34,12 @@ export default async function AuthHealthPage({
   // Next.js 16 では searchParams が Promise なので await が必要
   searchParams: Promise<{ error?: string }>;
 }) {
+  // **本番では出さない。**開発用の診断画面で、
+  // 誰でも1クリックでゲストを作れるボタンが付いている。
+  // 匿名サインインは1時間30回・IP単位の上限があるので（D83）、
+  // 公開したままにする理由が無い。
+  if (process.env.NODE_ENV === "production") notFound();
+
   const { error: actionError } = await searchParams;
 
   const user = await getCurrentUser();

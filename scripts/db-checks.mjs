@@ -355,7 +355,151 @@ export const DEFAULT_ACL_SQL = `
    order by 1, 2, 3, 4, 5
 `;
 
+/** 外部キーの削除時の動作を1本ずつ数えるための共通SQL */
+const FK_DELETE_RULE_SQL = `
+  select count(*)::int
+    from pg_constraint c
+   where c.contype = 'f'
+     and c.connamespace = 'public'::regnamespace
+     and c.conrelid::regclass::text = any($1)
+     and c.confrelid::regclass::text = $2
+     and c.confdeltype = $3
+`;
+
 export const checks = [
+  // ───────────────────────────── 整合 ─────────────────────────────
+  //
+  // 表の中身ではなく、**表と表のつなぎ目**を見る。
+  //
+  // 退会は「消すもの」と「残すもの」を外部キーの削除動作で決めている。
+  // どれか1本の向きが変わると、退会したときに
+  // **他人の回答や作品が巻き添えで消える**か、逆に
+  // **個人と結び付いたままの行が残る**。どちらも取り返しがつかない。
+  //
+  // RPC の中身をいくら検査しても、この向きは見えない。
+  // auth.users を消した瞬間に Postgres が勝手に実行する部分だから。
+  {
+    group: "整合",
+    // 退会で消すと決めた6表（指定8）。ここが SET NULL に変わると、
+    // 持ち主のいない likes / saves が残って集計が狂う。
+    name: "退会で消す6表が profiles を CASCADE で追いかけている",
+    expected: 6,
+    sql: FK_DELETE_RULE_SQL,
+    params: [
+      ["draft_sessions", "handle_history", "likes", "saves", "user_slot_stats", "user_stats"],
+      "profiles",
+      "c",
+    ],
+  },
+  {
+    group: "整合",
+    // 退会で残すと決めた5表（指定6・7）。ここが CASCADE に変わると、
+    // **他人の回答と作品そのものが消える。**いちばん危ない向き。
+    name: "退会で残す5表が profiles を SET NULL で切り離している",
+    expected: 5,
+    sql: FK_DELETE_RULE_SQL,
+    params: [["answers", "prompts", "reports", "terms_agreements", "works"], "profiles", "n"],
+  },
+  {
+    group: "整合",
+    // NOT NULL の列へ SET NULL を仕掛けると、親を消した瞬間に
+    // 制約違反で失敗する。退会が最後まで通らなくなる。
+    name: "NOT NULL なのに SET NULL される外部キーが0本",
+    expected: 0,
+    sql: `select count(*)::int
+            from pg_constraint c
+            join pg_attribute a
+              on a.attrelid = c.conrelid and a.attnum = any(c.conkey)
+           where c.contype = 'f'
+             and c.connamespace = 'public'::regnamespace
+             and c.confdeltype in ('n','d')
+             and a.attnotnull`,
+    detailSql: `select c.conrelid::regclass::text as tbl, a.attname
+                  from pg_constraint c
+                  join pg_attribute a
+                    on a.attrelid = c.conrelid and a.attnum = any(c.conkey)
+                 where c.contype = 'f'
+                   and c.connamespace = 'public'::regnamespace
+                   and c.confdeltype in ('n','d') and a.attnotnull`,
+  },
+  {
+    group: "整合",
+    // お題の掃除（cleanup_orphan_prompts）が作品を巻き添えにしないための最後の砦。
+    // 掃除は status を見て submitted を避けているが、
+    // **仮にそこを間違えても RESTRICT が止める。**
+    name: "作品のあるお題は消せない（works.prompt_id が RESTRICT）",
+    expected: 1,
+    sql: FK_DELETE_RULE_SQL,
+    params: [["works"], "prompts", "r"],
+  },
+  {
+    group: "整合",
+    // 下書きの掃除（cleanup_stale_drafts）でお題まで消えないようにする向き。
+    // ここが CASCADE だと、古い下書きを1件消すたびに
+    // お題 → クイズ → 作品 と連鎖する。
+    name: "下書きを消してもお題は残る（prompts.draft_session_id が SET NULL）",
+    expected: 1,
+    sql: FK_DELETE_RULE_SQL,
+    params: [["prompts"], "draft_sessions", "n"],
+  },
+  {
+    group: "整合",
+    // 二重送信の最後の砦。画面や RPC の事前検査をすり抜けても、
+    // ここが効いていれば行は増えない（検査してから入れるまでのすき間）。
+    name: "二重送信を止める一意索引が4本そろっている",
+    expected: 4,
+    sql: `select count(*)::int from pg_indexes
+           where schemaname = 'public'
+             and indexname = any(array[
+               'works_prompt_id_key',              -- お題1つに作品1件
+               'answers_one_per_user_per_work',    -- 1人1作品に回答1件
+               'reports_one_per_reporter_per_work',-- 同じ作品への通報は1回
+               'draft_sessions_one_in_progress_idx'-- 進行中のドラフトは1人1つ
+             ])`,
+    detailSql: `select indexname from pg_indexes
+                 where schemaname='public' and indexdef like 'CREATE UNIQUE%'
+                 order by indexname`,
+  },
+  {
+    group: "整合",
+    // 一意索引は行が増えるのを止めるが、**止めかたが荒い。**
+    // 素の Postgres が
+    //   duplicate key value violates unique constraint "likes_pkey"
+    // を返し、それが利用者の画面にそのまま出ていた（公開前デバッグで再現）。
+    //
+    // いいね・お気に入りは**入れ替える操作**なので、二度押しは
+    // エラーにせず「付いている」に落ち着かせる。
+    name: "いいね・お気に入りが同時押しで例外にならない（on conflict）",
+    expected: 2,
+    sql: `select count(*)::int from pg_proc p
+            join pg_namespace n on n.oid = p.pronamespace
+           where n.nspname = 'public'
+             and p.proname in ('toggle_like','toggle_save')
+             and p.prosrc ilike '%on conflict (work_id, user_id) do nothing%'`,
+    detailSql: `select proname from pg_proc p
+                  join pg_namespace n on n.oid = p.pronamespace
+                 where n.nspname='public' and p.proname in ('toggle_like','toggle_save')`,
+  },
+  {
+    group: "整合",
+    // 回答と通報は「1回だけ」が仕様なので、2件目は断るのが正しい。
+    // ただし断り文句は日本語でなければならない。
+    // 速く二度押ししたかどうかで説明が変わらないようにする。
+    name: "回答・通報の2件目が日本語で断られる（unique_violation を変換）",
+    expected: 2,
+    sql: `select count(*)::int from pg_proc p
+            join pg_namespace n on n.oid = p.pronamespace
+           where n.nspname = 'public'
+             and p.proname in ('submit_answer','create_report')
+             and p.prosrc ilike '%when unique_violation%'`,
+    detailSql: `select proname,
+                       (prosrc ilike '%when unique_violation%') as wrapped
+                  from pg_proc p
+                  join pg_namespace n on n.oid = p.pronamespace
+                 where n.nspname='public'
+                   and p.proname in ('submit_answer','create_report')`,
+  },
+
   // ───────────────────────────── 構造 ─────────────────────────────
   {
     group: "構造",
@@ -2233,6 +2377,41 @@ export const notices = [
  * 何も出ないことが正常だと分かるようにする。
  */
 export const listings = [
+  {
+    label: "全外部キーと削除時の動作（CASCADE の連鎖を追う）",
+    sql: `select c.conrelid::regclass::text || '.' ||
+                 (select string_agg(a.attname, ',' order by a.attnum)
+                    from unnest(c.conkey) k
+                    join pg_attribute a on a.attrelid = c.conrelid and a.attnum = k) as fk_column,
+                 c.confrelid::regclass::text as refs,
+                 case c.confdeltype when 'a' then 'NO ACTION' when 'r' then 'RESTRICT'
+                                    when 'c' then 'CASCADE'   when 'n' then 'SET NULL'
+                                    when 'd' then 'SET DEFAULT' end as delete_rule
+            from pg_constraint c
+           where c.contype = 'f' and c.connamespace = 'public'::regnamespace
+           order by 3, 1`,
+  },
+  {
+    label: "外部キーに索引が無い列（親を消すとき全件走査になる）",
+    sql: `select c.conrelid::regclass::text || '.' ||
+                 (select string_agg(a.attname, ',' order by a.attnum)
+                    from unnest(c.conkey) k
+                    join pg_attribute a on a.attrelid = c.conrelid and a.attnum = k) as fk_column
+            from pg_constraint c
+           where c.contype = 'f'
+             and c.connamespace = 'public'::regnamespace
+             and not exists (
+                   select 1 from pg_index i
+                    where i.indrelid = c.conrelid
+                      and (i.indkey::int2[])[0:array_length(c.conkey,1)-1] = c.conkey)
+           order by 1`,
+    emptyNote: "0行なら、どの外部キーにも索引がある。",
+    note:
+      "ここに出る列は、**親の行を消すときだけ**全件走査になる。" +
+      "いま出ているのは tags / card_slots / draft_modes を指すもの（これらは消さない）と、" +
+      "reports.reporter_id（退会時に1回だけ走る。件数が小さいうちは問題にならない）。" +
+      "作品・回答・お題を指す外部キーには索引があるので、通常の閲覧には効かない。",
+  },
   {
     // 件数の検査は「合っているか」しか言わない。
     // 内訳と重みの散らばりは、目で見ないと崩れに気づけない。

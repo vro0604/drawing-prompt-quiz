@@ -267,9 +267,20 @@ section("4. 通報");
   //
   // 開発では Cloudflare の公式テスト鍵を使う（.env.local）。
   // 鍵が入っていれば widget が出て、検証も実際に走る。
-  const captchaOn = /class="cf-turnstile"/.test(res.html);
+  //
+  // **鍵の有無は .env.local から決める。HTML を見て決めてはいけない。**
+  // 以前は HTML に widget があるかで判定していたが、その書き方だと
+  // 通報ページがたまたま開けなかったとき（404 など）に
+  // 「CAPTCHA は無効」と読み替えて、検査を丸ごと飛ばしてしまう。
+  // **失敗が成功に化ける**ので、判定の根拠を画面の外に置く。
+  const captchaOn = envValue("NEXT_PUBLIC_TURNSTILE_SITE_KEY") !== "";
 
   if (captchaOn) {
+    must(
+      /class="cf-turnstile"/.test(res.html),
+      "鍵があるので widget が出ている",
+      res.status === 200 ? "" : `ページが開けていません（${res.status}）`,
+    );
     must(
       /data-action="report"/.test(res.html),
       "widget に action が付いている（トークンの使い回しを防ぐ）",
@@ -306,7 +317,16 @@ section("4. 通報");
     detail: "スモークテストの通報です。",
     ...captchaToken(captchaOn),
   });
-  must(/報告を受け付けました/.test(textOf(sent.html)), "ゲストのまま通報できた");
+  // **失敗したら断られた理由をそのまま出す。**
+  // 「通らなかった」だけでは、CAPTCHA・レート制限・通信失敗の
+  // どれなのか分からず、一時的な失敗として片づけられてしまう。
+  must(
+    /報告を受け付けました/.test(textOf(sent.html)),
+    "ゲストのまま通報できた",
+    /報告を受け付けました/.test(textOf(sent.html))
+      ? ""
+      : `断られた理由: ${textOf(sent.html).slice(0, 160)}`,
+  );
 
   // 同じ作品への2回目は断られる
   const twice = await submitPageForm(visitor, `/works/${keepId}/report`, "報告する", {

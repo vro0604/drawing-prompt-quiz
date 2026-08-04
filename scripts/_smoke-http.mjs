@@ -99,9 +99,13 @@ export function session(name) {
     });
     store(res);
     if (res.status >= 300 && res.status < 400) {
-      return get(res.headers.get("location").replace(BASE, ""));
+      const location = res.headers.get("location");
+      assertNotRateLimited(location);
+      return get(location.replace(BASE, ""));
     }
-    return { html: await res.text(), status: res.status, path };
+    const html = await res.text();
+    assertNotRateLimited(html);
+    return { html, status: res.status, path };
   }
 
   async function post(path, fields, file) {
@@ -117,11 +121,57 @@ export function session(name) {
     });
     store(res);
     const loc = res.headers.get("location");
-    if (loc) return get(loc.replace(BASE, ""));
-    return { html: await res.text(), status: res.status, path };
+    if (loc) {
+      assertNotRateLimited(loc);
+      return get(loc.replace(BASE, ""));
+    }
+    const html = await res.text();
+    assertNotRateLimited(html);
+    return { html, status: res.status, path };
   }
 
   return { name, get, post };
+}
+
+/**
+ * Supabase の回数制限に当たったら、**その場で止める。**
+ *
+ * 【なぜ要るか】
+ *   ゲストを作れなくなると、回答も通報も記録されない。
+ *   そのままスモークを続けると
+ *     「全問正解になった」が失敗
+ *     「伝達率が 50% になっている」が失敗
+ *   のように、**まったく関係のない項目が失敗として並ぶ。**
+ *
+ *   公開前デバッグで実際にこれをやり、
+ *   submit_answer の作り直しを疑って半日ぶんの回り道をした。
+ *   原因が「制限に当たっただけ」と分かる形にしておく。
+ *
+ * 【上限】
+ *   匿名サインインは**1時間あたり30回・IPアドレス単位**が既定。
+ *   スモークは1周で十数人ぶん使うので、続けて何周も回すと必ず当たる。
+ *   上げるのは Supabase ダッシュボードの
+ *   Authentication → Rate limits（docs/launch-checklist.md 2-1）。
+ */
+export function assertNotRateLimited(text) {
+  if (typeof text !== "string") return;
+  if (!/ただいま混み合っています|Request%20rate%20limit|Request rate limit/.test(text)) return;
+
+  throw new Error(
+    [
+      "",
+      "Supabase の回数制限に当たりました（この先の失敗はすべて巻き添えです）。",
+      "",
+      "  ・匿名サインインの既定は 1時間あたり30回・IPアドレス単位",
+      "  ・スモークは1周で十数人ぶん使うため、続けて回すと当たる",
+      "",
+      "対処:",
+      "  1. 1時間ほど待ってからもう一度実行する",
+      "  2. または Supabase ダッシュボード → Authentication → Rate limits で上限を上げる",
+      "",
+      "**これはアプリの不具合ではありません。**",
+    ].join("\n"),
+  );
 }
 
 // ── 前提の確認 ────────────────────────────────────────
@@ -325,6 +375,11 @@ export async function register(s, label) {
  *   ここで自動的に同意させているのは、**この関数を使うすべてのスモークが
  *   「投稿できること」を確かめる目的だから**。同意そのものの検査は
  *   smoke:account が別に行う（同意しないと投稿できないことも見る）。
+ *
+ * 【4番目の引数】
+ *   ふつうは PNG のバイト列をそのまま渡す（名前と種類は smoke.png / image/png）。
+ *   **壊れた画像や、名前と中身が食い違うものを送りたいとき**は
+ *   `{ bytes, name, type }` の形で渡す。smoke:work の第9節が使う。
  */
 export async function submitWork(s, promptId, fields, png) {
   const page = await s.get(`/works/new?promptId=${promptId}`);
@@ -340,10 +395,15 @@ export async function submitWork(s, promptId, fields, png) {
       }
     : {};
 
+  // バイト列そのままでも、名前と種類を添えた形でも受ける
+  const file = ArrayBuffer.isView(png)
+    ? { field: "image", bytes: png, name: "smoke.png", type: "image/png" }
+    : { field: "image", bytes: png.bytes, name: png.name, type: png.type };
+
   return s.post(
     `/works/new?promptId=${promptId}`,
     { [form.actionId]: "", promptId, ...agree, ...fields },
-    { field: "image", bytes: png, name: "smoke.png", type: "image/png" },
+    file,
   );
 }
 

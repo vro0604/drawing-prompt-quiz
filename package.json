@@ -25,7 +25,8 @@
     "smoke:profile": "node scripts/smoke-profile.mjs",
     "smoke:report": "node scripts/smoke-report.mjs",
     "smoke:account": "node scripts/smoke-account.mjs",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "smoke:race": "node scripts/smoke-race.mjs"
   },
   "dependencies": {
     "@supabase/ssr": "^0.12.4",

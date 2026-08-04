@@ -1,4 +1,5 @@
 import Link from "next/link";
+import { notFound } from "next/navigation";
 import { connection } from "next/server";
 import { missingSupabaseEnv, SUPABASE_URL, SUPABASE_PUBLISHABLE_KEY } from "@/lib/env";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
@@ -80,6 +81,11 @@ function diagnose(errorMessage: string, errorCode: string | undefined): Diagnosi
 }
 
 export default async function HealthPage() {
+  // **本番では出さない。**開発用の診断画面で、
+  // DB のエラー文をそのまま並べるうえ、公開しても誰の役にも立たない。
+  // 404 にするのは、存在を教えないため（D40 と同じ考えかた）。
+  if (process.env.NODE_ENV === "production") notFound();
+
   // ビルド時に結果を固定させず、アクセスのたびに実際の接続を確認する
   await connection();
 

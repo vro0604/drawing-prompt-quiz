@@ -46,7 +46,15 @@ values ('2026-09-01', $doc$...$doc$, true);
       スモークテストのため OFF にしてある。**ON に戻さずに公開すると、
       他人のメールアドレスで登録できてしまう。**
 - [ ] Authentication → URL Configuration → Site URL を本番URLにする
-- [ ] Authentication → Rate limits を確認する（既定のままでよいか）
+- [ ] **Authentication → Rate limits → Anonymous sign-ins を引き上げる**
+      既定は **1時間あたり30回・IPアドレス単位**。
+      このサービスの入口はゲストなので（spec 11-1）、
+      **学校・会社・携帯回線のように出口IPを共有する場所では
+      31人目が何も始められない。**
+      公開前デバッグで実際にこの制限に当たっている（D83）。
+      当たった人には「ただいま混み合っています」と出る（英語は出さない）。
+- [ ] Authentication → Rate limits → Sign up / Sign in も合わせて確認する
+      （既定は5分あたり30回・IP単位）
 - [ ] Database → Backups が有効か確認する
       （退会は取り消せない。誤操作の復旧手段はバックアップだけ）
 

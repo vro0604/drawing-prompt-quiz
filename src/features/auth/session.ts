@@ -12,6 +12,18 @@ import type { Profile } from "@/types/database";
 const ANONYMOUS_DISABLED = "anonymous_provider_disabled";
 
 /**
+ * 同じ回線からの匿名サインインが多すぎるときのエラーコード。
+ *
+ * Supabase の既定は **1時間あたり30回・IPアドレス単位**。
+ * このサービスはゲストがそのまま遊べることが売りなので、
+ * 学校・会社・携帯回線のように多人数が同じ出口IPを共有する場所では、
+ * 31人目が始められなくなる。上限は
+ * ダッシュボードの Authentication → Rate limits で上げられる
+ * （docs/launch-checklist.md 2-1）。
+ */
+const RATE_LIMITED = "over_request_rate_limit";
+
+/**
  * いま誰としてアクセスしているかを返す。未サインインなら null。
  *
  * getSession() ではなく getUser() を使う。
@@ -61,6 +73,14 @@ export async function ensureUserId(): Promise<string> {
         ].join("\n"),
       );
     }
+    // 回数制限。**英語のまま出さない。**
+    // 利用者は何も悪いことをしていないので、待てば直ることを伝える。
+    if (error.code === RATE_LIMITED || /rate limit/i.test(error.message)) {
+      throw new Error(
+        "ただいま混み合っています。少し時間をおいてからもう一度お試しください。",
+      );
+    }
+
     throw new Error(`匿名サインインに失敗しました: ${error.message}`);
   }
 
