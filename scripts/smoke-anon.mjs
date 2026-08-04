@@ -55,6 +55,7 @@ import {
   forms,
   makePng,
   must,
+  rawAuthError,
   registerConcurrent,
   isAutoConfirm,
   section,
@@ -162,6 +163,13 @@ let promotedWorkId;
     pages.map((p) => (registerFailed(p.html) ? whyFailed(p.html) : "OK")).join(" / "),
   );
 
+  // 送信枠切れ（email rate limit exceeded）も含めて、英語をそのまま出さない
+  must(
+    pages.every((p) => rawAuthError(p.html) === null),
+    "Supabase の生エラーが画面に出ていない（D89）",
+    pages.map((p) => rawAuthError(p.html) ?? "OK").join(" / "),
+  );
+
   const page = pages[pages.length - 1];
   const text = pages.map((p) => textOf(p.html)).join(" ");
 
@@ -232,6 +240,14 @@ section("3-b. 登録を同時に5本送っても失敗しない");
     pages.map((p) => (registerFailed(p.html) ? whyFailed(p.html) : "OK")).join(" / "),
   );
 
+  // 5連打は送信枠（内蔵メールは1時間に2通）に当たりやすい。
+  // 当たっても英語は出さず、日本語で「時間をおいて」と伝える
+  must(
+    pages.every((p) => rawAuthError(p.html) === null),
+    "Supabase の生エラーが画面に出ていない（D89）",
+    pages.map((p) => rawAuthError(p.html) ?? "OK").join(" / "),
+  );
+
   const after = (await rapid.get("/account")).html;
   if (autoConfirm) {
     must(
@@ -239,16 +255,25 @@ section("3-b. 登録を同時に5本送っても失敗しない");
       "5連打でも登録は1回ぶんとして完了する",
     );
   } else {
+    // 何が出たかを1本ずつ言い分ける。
+    // **「送りました以外」でひとまとめにすると、送信枠切れを取りこぼす。**
+    const outcomes = pages.map((p) => {
+      const t = textOf(p.html);
+      if (/確認メールを送りました/.test(t)) return "送信";
+      if (/確認メールは送信済み/.test(t)) return "送信済み";
+      if (/送信上限に達しました/.test(t)) return "上限";
+      return "不明";
+    });
+
     must(
-      pages.some((p) => /確認メール/.test(textOf(p.html))),
-      "5連打でも確認メールの案内は出る",
+      outcomes.every((o) => o !== "不明"),
+      "5本とも、送信・送信済み・上限のどれかに落ちる",
+      outcomes.join(" / "),
     );
     must(
-      pages.filter((p) => /確認メールを送りました/.test(textOf(p.html))).length <= 1,
-      "「送りました」は1回だけ（2本目以降は「送信済み」）",
-      pages
-        .map((p) => (/確認メールを送りました/.test(textOf(p.html)) ? "送信" : "送信済み"))
-        .join(" / "),
+      outcomes.filter((o) => o === "送信").length <= 1,
+      "「送りました」は多くても1回（残りは送信済みか上限）",
+      outcomes.join(" / "),
     );
   }
   must(accountUserId(after) === before, "5連打でも uid が変わらない");

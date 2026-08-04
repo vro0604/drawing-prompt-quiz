@@ -36,8 +36,10 @@ import {
   drawPrompt,
   finish,
   forms,
+  isSignedIn,
   makePng,
   must,
+  rawAuthError,
   throwawaySession,
   section,
   session,
@@ -434,6 +436,32 @@ section("確認メールの戻り先（/auth/confirm）");
     !/code=|access_token|refresh_token/.test(denied.path),
     "戻り先の URL に確認用の値を残していない",
   );
+}
+
+// ── 認証の失敗を日本語で伝える ───────────────────────
+section("認証の失敗は日本語で出す（D89）");
+
+{
+  const visitor = session("signin-visitor");
+  const page = await visitor.get("/account");
+  const form = forms(page.html).find((f) => /サインインする/.test(f.text));
+  must(!!form?.actionId, "サインインの欄がある");
+
+  // 合っていないメールとパスワード。**存在しない宛先を使う**（RFC 2606）
+  const failed = await visitor.post("/account", {
+    [form.actionId]: "",
+    email: `nobody${stamp}@example.invalid`,
+    password: `wrong-${stamp}`,
+  });
+
+  const text = textOf(failed.html);
+  must(/違います|確かめて/.test(text), "断る理由が日本語で出る", text.slice(0, 80));
+  must(
+    rawAuthError(failed.html) === null,
+    "Supabase の生エラーが画面に出ていない",
+    rawAuthError(failed.html) ?? "",
+  );
+  must(!isSignedIn(failed.html), "サインインしていない");
 }
 
 console.log("");

@@ -5,6 +5,12 @@ import { revalidatePath } from "next/cache";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
 import { siteUrl } from "@/lib/env";
 import {
+  EMAIL_RATE_LIMIT_MESSAGE,
+  SAME_PASSWORD,
+  authErrorMessage,
+  isEmailRateLimit,
+} from "@/features/auth/errors";
+import {
   LINK_FIELDS,
   callUpdateMyProfile,
   callUpdateMyVisibility,
@@ -38,14 +44,11 @@ import { VISIBILITY_FIELDS } from "@/features/profile/types";
 
 const PAGE = "/account";
 
-/**
- * 入力したパスワードが、いま設定されているものと同じときに Supabase が返す印。
- * **二重送信の合図**として使う（同じ値を2回送ったということ）。
+/*
+ * SAME_PASSWORD（同じパスワードを送った印。**二重送信の合図**として使う）と
+ * 送信枠切れの判定・文面は features/auth/errors.ts にまとめてある。
+ * 画面に出す文はすべてそこを通す。**生のエラー文を出さない。**
  */
-const SAME_PASSWORD = "same_password";
-
-/** 確認メールの送りすぎ。Supabase 側の制限 */
-const EMAIL_RATE_LIMITED = "over_email_send_rate_limit";
 
 /**
  * 確認メールのリンクから戻ってくる場所。
@@ -76,7 +79,15 @@ export async function signInAction(form: FormData): Promise<void> {
   const supabase = await createSupabaseServerClient();
   const { error } = await supabase.auth.signInWithPassword({ email, password });
 
-  if (error) back(`サインインできませんでした: ${error.message}`);
+  // 生のエラー文は出さない。「なぜ入れないのか」だけを日本語で伝える
+  if (error) {
+    back(
+      authErrorMessage(
+        error,
+        "サインインできませんでした。メールアドレスとパスワードを確かめてください。",
+      ),
+    );
+  }
 
   revalidatePath(PAGE);
   back(undefined, "サインインしました。");
@@ -208,13 +219,17 @@ export async function registerAction(form: FormData): Promise<void> {
         back(undefined, ALREADY_SENT);
       }
 
-      if (error.code === EMAIL_RATE_LIMITED || /rate limit/i.test(error.message)) {
-        back(undefined, ALREADY_SENT);
-      }
+      // 送信枠を使い切っただけのときは、**登録の失敗として書かない。**
+      // 内蔵メールは1時間に2通しか送れない（launch-checklist 手順5）。
+      // 利用者は入力を直しようがないので、待てばよいことだけを伝える。
+      if (isEmailRateLimit(error)) back(EMAIL_RATE_LIMIT_MESSAGE);
 
       back(
-        "登録できませんでした。入力を確かめて、もう一度お試しください。" +
-          "（同じメールで何度も試した場合は、届いているメールをご確認ください）",
+        authErrorMessage(
+          error,
+          "登録できませんでした。入力を確かめて、もう一度お試しください。" +
+            "（同じメールで何度も試した場合は、届いているメールをご確認ください）",
+        ),
       );
     }
 
@@ -225,7 +240,6 @@ export async function registerAction(form: FormData): Promise<void> {
       back(
         [
           "メールとパスワードは登録できましたが、ログイン情報の取り直しに失敗しました。",
-          `原因: ${refreshError.message}`,
           "いったんサインアウトして、登録したメールでサインインし直してください。",
         ].join("\n"),
       );
@@ -252,7 +266,17 @@ export async function registerAction(form: FormData): Promise<void> {
     options: { emailRedirectTo: CONFIRM_URL },
   });
 
-  if (error) back(`登録できませんでした: ${error.message}`);
+  // 未サインインからの新規作成でも、送信枠切れは起こる。
+  // ここは昇格と違って**まだ何も残っていない**ので、成功と偽らずに案内する
+  if (error) {
+    if (isEmailRateLimit(error)) back(EMAIL_RATE_LIMIT_MESSAGE);
+    back(
+      authErrorMessage(
+        error,
+        "登録できませんでした。メールアドレスとパスワードを確かめてください。",
+      ),
+    );
+  }
 
   revalidatePath(PAGE);
 

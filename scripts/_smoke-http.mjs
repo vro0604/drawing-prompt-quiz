@@ -283,6 +283,38 @@ export function assertNotRateLimited(text) {
   );
 }
 
+/**
+ * Supabase の生エラーが、そのまま画面へ出ていないか見る。
+ *
+ * 【なぜ要るか】
+ *   本番の認証試験で `email rate limit exceeded` が画面に出た（D89）。
+ *   これは送信枠を使い切っただけで、利用者の入力は正しい。
+ *   英語のまま出ると「自分が間違えた」と読まれ、**同じ操作を繰り返される。**
+ *   繰り返すほど枠は空かないので、いちばん困る行動を促してしまう。
+ *
+ * @returns 見つかった英語の断片。無ければ null
+ */
+const RAW_AUTH_TEXT = [
+  /email rate limit exceeded/i,
+  /over_email_send_rate_limit/i,
+  /over_request_rate_limit/i,
+  /New password should be different/i,
+  /same_password/i,
+  /Invalid login credentials/i,
+  /User already registered/i,
+  /Password should be at least/i,
+  /AuthApiError/i,
+];
+
+export function rawAuthError(html) {
+  const t = textOf(html);
+  for (const re of RAW_AUTH_TEXT) {
+    const m = re.exec(t);
+    if (m) return m[0];
+  }
+  return null;
+}
+
 // ── 前提の確認 ────────────────────────────────────────
 
 function readEnvLocal() {
