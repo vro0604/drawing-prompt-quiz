@@ -10,6 +10,7 @@ import {
   uploadWorkImage,
 } from "@/features/work/rpc";
 import { MAX_IMAGE_BYTES, type Division } from "@/features/work/types";
+import { callAgreeToDocuments } from "@/features/account/rpc";
 
 /**
  * 作品投稿の Server Action。
@@ -79,6 +80,21 @@ export async function createWorkAction(form: FormData): Promise<void> {
           "作品の投稿にはアカウント登録が必要です。いまのゲストのまま登録すれば、引いたお題はそのまま引き継がれます。",
         ),
     );
+  }
+
+  // --- 1-b. 規約への同意 ------------------------------------------------------
+  //
+  // **画像を上げる前に済ませる。**あとにすると、同意で失敗したときに
+  // 置いた画像を消す手間が増える。
+  //
+  // ここで通しても守りにはならない。works の門番が未同意の INSERT を
+  // TERMS_NOT_AGREED で断るので、この画面を通らない投稿も止まる。
+  if (str(form, "agreeDocs") === "on") {
+    try {
+      await callAgreeToDocuments(str(form, "termsVersion"), str(form, "privacyVersion"));
+    } catch (e) {
+      backWithError(promptId, e instanceof Error ? e.message : String(e));
+    }
   }
 
   // --- 2. 画像を読む ----------------------------------------------------------

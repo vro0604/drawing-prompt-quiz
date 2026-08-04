@@ -337,10 +337,42 @@ export default async function AccountPage({
         </section>
       ) : null}
 
-      <footer className="border-t border-black/10 pt-6 text-sm dark:border-white/10">
-        <Link href="/play" className="underline">
-          お題を引く画面へ
-        </Link>
+      {/* --- 退会 -------------------------------------------------------------- */}
+      {/*
+        ゲストには出さない。メールもプロフィールも持たないので消すものが無く、
+        使われなくなれば自動で消えるため。
+        いちばん下に置き、確認画面を挟む。ここでは実行しない。
+      */}
+      {user !== null && !isGuest ? (
+        <section className={`${box} space-y-2`}>
+          <h2 className="text-sm font-bold">退会</h2>
+          <p className="text-xs text-black/55 dark:text-white/55">
+            アカウントと投稿した作品を削除します。取り消せません。
+            次の画面で、何が消えて何が残るかを確認できます。
+          </p>
+          <p className="pt-1 text-sm">
+            <Link href="/account/delete" className="underline">
+              退会の手続きへ進む
+            </Link>
+          </p>
+        </section>
+      ) : null}
+
+      <footer className="space-y-2 border-t border-black/10 pt-6 text-sm dark:border-white/10">
+        <p>
+          <Link href="/play" className="underline">
+            お題を引く画面へ
+          </Link>
+        </p>
+        <p className="text-xs text-black/45 dark:text-white/45">
+          <Link href="/terms" className="underline">
+            利用規約
+          </Link>
+          {" ・ "}
+          <Link href="/privacy" className="underline">
+            プライバシーポリシー
+          </Link>
+        </p>
       </footer>
     </main>
   );

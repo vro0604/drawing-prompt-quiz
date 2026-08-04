@@ -48,7 +48,16 @@ function Label({ children, hint }: { children: React.ReactNode; hint?: string })
   );
 }
 
-export function WorkForm({ promptId }: { promptId: string }) {
+/** 未同意のときだけ渡す。null なら同意欄を出さない */
+export type AgreementProps = { termsVersion: string; privacyVersion: string } | null;
+
+export function WorkForm({
+  promptId,
+  agreement,
+}: {
+  promptId: string;
+  agreement: AgreementProps;
+}) {
   const [division, setDivision] = useState<Division>("original");
   const [fileName, setFileName] = useState<string | null>(null);
   const [previewUrl, setPreviewUrl] = useState<string | null>(null);
@@ -187,6 +196,43 @@ export function WorkForm({ promptId }: { promptId: string }) {
           ここでの申告は分類に影響しません。
         </p>
       </div>
+
+      {/* --- 規約への同意（まだのときだけ）------------------------------------ */}
+      {/*
+        いつも出すのではなく、同意が要るときだけ出す。毎回出すと読まれなくなる。
+        版を hidden で持つのは、**同意した瞬間に有効だった版**を記録するため。
+        表示中に改定されたら、DB 側が VERSION_MISMATCH で断る。
+      */}
+      {agreement ? (
+        <div className={`${box} space-y-3 border-amber-500/40`}>
+          <h2 className="text-sm font-bold">投稿の前に同意が必要です</h2>
+          <input type="hidden" name="termsVersion" value={agreement.termsVersion} />
+          <input type="hidden" name="privacyVersion" value={agreement.privacyVersion} />
+          <label className="flex items-start gap-3 text-sm">
+            <input
+              type="checkbox"
+              name="agreeDocs"
+              value="on"
+              required
+              className="mt-1 size-4"
+            />
+            <span>
+              <a href="/terms" target="_blank" className="underline">
+                利用規約
+              </a>
+              と
+              <a href="/privacy" target="_blank" className="underline">
+                プライバシーポリシー
+              </a>
+              に同意します。
+            </span>
+          </label>
+          <p className="text-xs text-black/45 dark:text-white/45">
+            同意した記録として、どの版にいつ同意したかを5年間だけ保存します。
+            退会するとこの記録からあなたとの結び付きが外れます。
+          </p>
+        </div>
+      ) : null}
 
       {/* --- 送信 ------------------------------------------------------------ */}
       <div className="space-y-3 border-t border-black/10 pt-6 dark:border-white/10">

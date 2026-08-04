@@ -314,15 +314,35 @@ export async function register(s, label) {
   return { email, password, page: after };
 }
 
-/** 投稿フォームを送る。戻り値は移動先のページ */
+/**
+ * 投稿フォームを送る。戻り値は移動先のページ
+ *
+ * 【規約への同意】
+ *   P3 以降、初回の投稿には利用規約とプライバシーポリシーへの同意が要る。
+ *   未同意なら画面に同意欄（agreeDocs と版の hidden）が出るので、
+ *   出ていればそのまま同意して送る。
+ *
+ *   ここで自動的に同意させているのは、**この関数を使うすべてのスモークが
+ *   「投稿できること」を確かめる目的だから**。同意そのものの検査は
+ *   smoke:account が別に行う（同意しないと投稿できないことも見る）。
+ */
 export async function submitWork(s, promptId, fields, png) {
   const page = await s.get(`/works/new?promptId=${promptId}`);
   const form = forms(page.html).find((f) => f.fields.promptId !== undefined);
   if (!form?.actionId) throw new Error("/works/new に投稿フォームが見つかりません");
 
+  // 同意欄が出ているときだけ、版を添えて同意する
+  const agree = /name="agreeDocs"/.test(page.html)
+    ? {
+        agreeDocs: "on",
+        termsVersion: form.fields.termsVersion ?? "",
+        privacyVersion: form.fields.privacyVersion ?? "",
+      }
+    : {};
+
   return s.post(
     `/works/new?promptId=${promptId}`,
-    { [form.actionId]: "", promptId, ...fields },
+    { [form.actionId]: "", promptId, ...agree, ...fields },
     { field: "image", bytes: png, name: "smoke.png", type: "image/png" },
   );
 }

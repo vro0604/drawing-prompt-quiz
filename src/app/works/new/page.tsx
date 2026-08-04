@@ -1,6 +1,7 @@
 import Link from "next/link";
 import { getCurrentUser } from "@/features/auth/session";
 import { fetchMyPrompt } from "@/features/draft/rpc";
+import { fetchAccountState, fetchCurrentDocuments } from "@/features/account/rpc";
 import { formatDuration } from "@/features/draft/types";
 import { WorkForm } from "./_form";
 
@@ -128,6 +129,16 @@ export default async function NewWorkPage({
     );
   }
 
+  // --- 規約への同意を確かめる -------------------------------------------------
+  //
+  // 未同意なら投稿フォームに同意欄を出す。**既存の利用者もここで初めて
+  // 同意を求められる**（規約は Step 15 のあとに足したため）。
+  //
+  // 画面で止めるのは親切であって守りではない。本当の判定は works への
+  // 門番（app_guard_works）が持っていて、未同意の INSERT を
+  // TERMS_NOT_AGREED で断る。
+  const [state, docs] = await Promise.all([fetchAccountState(), fetchCurrentDocuments()]);
+
   // --- お題を読む ------------------------------------------------------------
   const prompt = await fetchMyPrompt(promptId);
 
@@ -207,7 +218,17 @@ export default async function NewWorkPage({
         </p>
       </section>
 
-      <WorkForm promptId={promptId} />
+      <WorkForm
+        promptId={promptId}
+        agreement={
+          state && (!state.terms_agreed || !state.privacy_agreed)
+            ? {
+                termsVersion: docs.terms?.version ?? "",
+                privacyVersion: docs.privacy?.version ?? "",
+              }
+            : null
+        }
+      />
 
       <footer className="border-t border-black/10 pt-6 text-xs text-black/40 dark:border-white/10 dark:text-white/40">
         <Link href={`/prompt/${promptId}`} className="underline">

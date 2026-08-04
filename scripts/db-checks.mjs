@@ -261,6 +261,20 @@ const TABLE_ACL_CTE = `
 /** 利用者向けのロール（PUBLIC / anon / authenticated）だけを対象にする条件 */
 const USER_GRANTEES = `(0, 'anon'::regrole::oid, 'authenticated'::regrole::oid)`;
 
+/**
+ * 退会・規約で足した7表。すべて遮断する（権限もポリシーも与えない）。
+ * 読み書きは security definer の RPC と service_role だけ。
+ */
+const WITHDRAWAL_TABLES = [
+  "app_secrets",
+  "handle_reservations",
+  "storage_cleanup_queue",
+  "account_deletions",
+  "terms_versions",
+  "privacy_versions",
+  "terms_agreements",
+];
+
 /** PUBLIC / anon / authenticated に付いている権限の件数（表単位＋列単位） */
 export const TABLE_USER_PRIV_COUNT_SQL = `
   ${TABLE_ACL_CTE}
@@ -325,9 +339,14 @@ export const checks = [
   // ───────────────────────────── 構造 ─────────────────────────────
   {
     group: "構造",
-    name: "public スキーマの表が22個",
-    expected: 22,
+    // 22表（Step 3B まで）＋ handle_history（P5）は 3B の数に含む。
+    // 退会・規約で7表増えて29。増減したら必ずここを直す
+    //   ＝「知らないうちに表が増えていた」を検出する仕掛け。
+    name: "public スキーマの表が29個",
+    expected: 29,
     sql: `select count(*)::int from pg_tables where schemaname = 'public'`,
+    detailSql: `select tablename from pg_tables
+                 where schemaname = 'public' order by tablename`,
   },
   {
     group: "構造",
@@ -339,8 +358,8 @@ export const checks = [
   },
   {
     group: "構造",
-    name: "22表すべてで RLS が有効",
-    expected: 22,
+    name: "29表すべてで RLS が有効",
+    expected: 29,
     sql: `select count(*)::int from pg_class c
             join pg_namespace n on n.oid = c.relnamespace
            where n.nspname = 'public' and c.relkind = 'r' and c.relrowsecurity`,
@@ -696,6 +715,203 @@ export const checks = [
              and (has_function_privilege('anon', p.oid, 'EXECUTE')
                or has_function_privilege('authenticated', p.oid, 'EXECUTE'))`,
     params: [META_FUNCS],
+  },
+
+  // ─────────────────────────────── 退会・規約 ───────────────────────────────
+  //
+  // spec 13 の P1 / P2 / P3。実際の流れは smoke:account が見る。
+  //
+  // **ここでしか見られないものがある。** 退会したあと「他人の回答と
+  // work_slot_stats が残っていること」は HTTP からは確かめられない。
+  // 削除済みの作品は誰にも開けないためで、スモークからは覗けない。
+  //
+  // だからここでは**作りのほう**を見る。
+  // 「消していないこと」を、消す命令が無いことで確かめる。
+  {
+    group: "退会",
+    name: "退会が作品・回答・通報・集計の行を消していない",
+    expected: 0,
+    sql: `select count(*)::int from pg_proc p
+            join pg_namespace n on n.oid = p.pronamespace
+           where n.nspname='public' and p.proname='start_account_deletion'
+             and (p.prosrc ilike '%delete from public.works%'
+               or p.prosrc ilike '%delete from public.answers%'
+               or p.prosrc ilike '%delete from public.reports%'
+               or p.prosrc ilike '%delete from public.work_slot_stats%')`,
+  },
+  {
+    group: "退会",
+    name: "退会が持ち主と回答者の線だけを切っている",
+    expected: 1,
+    sql: `select count(*)::int from pg_proc p
+            join pg_namespace n on n.oid = p.pronamespace
+           where n.nspname='public' and p.proname='start_account_deletion'
+             and p.prosrc like '%a set user_id     = null%'
+             and p.prosrc like '%r set reporter_id = null%'
+             and p.prosrc like '%p set created_by  = null%'`,
+  },
+  {
+    group: "退会",
+    name: "退会が本人だけのものを消している",
+    expected: 1,
+    sql: `select count(*)::int from pg_proc p
+            join pg_namespace n on n.oid = p.pronamespace
+           where n.nspname='public' and p.proname='start_account_deletion'
+             and p.prosrc like '%delete from public.likes%'
+             and p.prosrc like '%delete from public.saves%'
+             and p.prosrc like '%delete from public.user_stats%'
+             and p.prosrc like '%delete from public.user_slot_stats%'
+             and p.prosrc like '%delete from public.draft_sessions%'`,
+  },
+  {
+    group: "退会",
+    name: "退会が作品を即座に公開から外している",
+    expected: 1,
+    sql: `select count(*)::int from pg_proc p
+            join pg_namespace n on n.oid = p.pronamespace
+           where n.nspname='public' and p.proname='start_account_deletion'
+             and p.prosrc like '%is_published     = false%'
+             and p.prosrc like '%deleted_at       = coalesce(w.deleted_at, now())%'`,
+  },
+  {
+    group: "退会",
+    name: "works.user_id を外せる（nullable ＋ set null）",
+    expected: 1,
+    sql: `select count(*)::int
+            from pg_constraint con
+            join pg_class c on c.oid = con.conrelid
+            join pg_namespace n on n.oid = c.relnamespace
+           where n.nspname='public' and c.relname='works'
+             and con.conname='works_user_id_fkey'
+             and con.confdeltype='n'
+             and not (select a.attnotnull from pg_attribute a
+                       where a.attrelid=c.oid and a.attname='user_id')`,
+  },
+  {
+    group: "退会",
+    name: "持ち主のいない作品は公開対象になれない",
+    expected: 1,
+    sql: `select count(*)::int
+            from pg_constraint con
+            join pg_class c on c.oid = con.conrelid
+            join pg_namespace n on n.oid = c.relnamespace
+           where n.nspname='public' and c.relname='works'
+             and con.conname='works_owner_or_deleted'`,
+  },
+  {
+    group: "退会",
+    name: "書き込みの門番が8つ付いている",
+    expected: 8,
+    sql: `select count(*)::int
+            from pg_trigger t
+            join pg_class c on c.oid = t.tgrelid
+            join pg_namespace n on n.oid = c.relnamespace
+           where n.nspname='public' and not t.tgisinternal
+             and t.tgname in ('guard_account_active','guard_works','guard_profiles')`,
+    detailSql: `select c.relname as table_name, t.tgname
+                  from pg_trigger t
+                  join pg_class c on c.oid = t.tgrelid
+                  join pg_namespace n on n.oid = c.relnamespace
+                 where n.nspname='public' and not t.tgisinternal
+                   and t.tgname in ('guard_account_active','guard_works','guard_profiles')
+                 order by 1`,
+  },
+  {
+    group: "退会",
+    name: "退会した人の ID を平文で持っていない",
+    expected: 1,
+    sql: `select count(*)::int
+            from information_schema.columns
+           where table_schema='public' and table_name='handle_reservations'
+             and column_name='handle_hash' and data_type='bytea'`,
+    detailSql: `select column_name, data_type from information_schema.columns
+                 where table_schema='public' and table_name='handle_reservations'
+                 order by ordinal_position`,
+  },
+  {
+    group: "退会",
+    name: "ID ハッシュの鍵が DB の中にある（Git には無い）",
+    expected: 1,
+    sql: `select count(*)::int from public.app_secrets
+           where key_name='handle_hash_key' and octet_length(secret) >= 32`,
+  },
+  {
+    group: "退会",
+    name: "退会まわりの7表に PUBLIC / anon / authenticated の権限が0件",
+    expected: 0,
+    sql: TABLE_USER_PRIV_COUNT_SQL,
+    params: [WITHDRAWAL_TABLES],
+    detailSql: TABLE_PRIV_SQL,
+    detailParams: [WITHDRAWAL_TABLES],
+  },
+  {
+    group: "退会",
+    name: "Storage の書き込み3本が退会処理中を見ている",
+    expected: 3,
+    sql: `select count(*)::int from pg_policies
+           where schemaname='storage' and tablename='objects'
+             and policyname in ('works_objects_insert_own','works_objects_update_own',
+                                'works_objects_delete_own')
+             and coalesce(qual,'') || coalesce(with_check,'') like '%account_status%'`,
+  },
+  {
+    group: "退会",
+    name: "退会が他人を指せない（引数に利用者を取らない）",
+    expected: 1,
+    // 引数は合言葉の text 1つだけ。uuid を受け取る口が無いことを見る。
+    // 文字列の見た目ではなく型そのもので判定する（表記は版で変わりうる）。
+    sql: `select count(*)::int from pg_proc p
+            join pg_namespace n on n.oid = p.pronamespace
+           where n.nspname='public' and p.proname='start_account_deletion'
+             and p.pronargs = 1
+             and p.proargtypes[0] = 'text'::regtype`,
+    detailSql: `select p.proname,
+                       pg_get_function_identity_arguments(p.oid) as args
+                  from pg_proc p
+                  join pg_namespace n on n.oid = p.pronamespace
+                 where n.nspname='public' and p.proname='start_account_deletion'`,
+  },
+  {
+    group: "規約",
+    name: "いま有効な版が規約とポリシーに1つずつ",
+    expected: 2,
+    sql: `select ((select count(*) from public.terms_versions where is_current)
+                + (select count(*) from public.privacy_versions where is_current))::int`,
+  },
+  {
+    group: "規約",
+    name: "同意の記録に保存期限が必ず入る（無期限にしない）",
+    expected: 1,
+    sql: `select count(*)::int from information_schema.columns
+           where table_schema='public' and table_name='terms_agreements'
+             and column_name='retain_until' and is_nullable='NO'`,
+  },
+  {
+    group: "規約",
+    name: "同意の記録が退会で個人と切り離される",
+    expected: 1,
+    sql: `select count(*)::int
+            from pg_constraint con
+            join pg_class c on c.oid = con.conrelid
+            join pg_namespace n on n.oid = c.relnamespace
+           where n.nspname='public' and c.relname='terms_agreements'
+             and con.contype='f' and con.confdeltype='n'`,
+  },
+  {
+    group: "規約",
+    name: "未同意では作品を作れない",
+    expected: 1,
+    sql: `select count(*)::int from pg_proc p
+            join pg_namespace n on n.oid = p.pronamespace
+           where n.nspname='public' and p.proname='app_guard_works'
+             and p.prosrc like '%TERMS_NOT_AGREED%'`,
+  },
+  {
+    group: "規約",
+    name: "保存期限を過ぎた同意の記録が残っていない",
+    expected: 0,
+    sql: `select count(*)::int from public.terms_agreements
+           where retain_until < now()`,
   },
 
   // ────────────────────────────── タグマスタ ──────────────────────────────
