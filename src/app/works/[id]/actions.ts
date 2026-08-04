@@ -7,7 +7,11 @@ import { ensureUserId } from "@/features/auth/session";
 import { callSubmitAnswer } from "@/features/quiz/rpc";
 import type { AnswerSelection } from "@/features/quiz/types";
 import { callCreateReport } from "@/features/report/rpc";
-import { captchaRequired, verifyCaptcha } from "@/features/report/captcha";
+import {
+  captchaConfigError,
+  captchaRequired,
+  verifyCaptcha,
+} from "@/features/report/captcha";
 import {
   callDeleteWork,
   callMarkWorkImageDeleted,
@@ -240,6 +244,15 @@ export async function createReportAction(form: FormData): Promise<void> {
   //
   // 検証に行けなかった場合も通さない。「確かめられなかったから通す」に
   // すると、検証先を落とすだけで CAPTCHA を無効化できてしまう。
+  //
+  // proxy でも同じ判定をしている（入口で 503 にする）。ここにも置くのは、
+  // proxy が matcher の書き換えひとつで外れるため。**片方だけには頼らない。**
+  const configError = captchaConfigError();
+
+  if (configError) {
+    redirect(`/works/${workId}/report?error=${encodeURIComponent(configError)}`);
+  }
+
   if (captchaRequired()) {
     const token = str(form, "cf-turnstile-response");
     const headerList = await headers();
@@ -248,10 +261,14 @@ export async function createReportAction(form: FormData): Promise<void> {
       headerList.get("x-real-ip") ??
       undefined;
 
-    if (!(await verifyCaptcha(token, ip))) {
+    const verdict = await verifyCaptcha(token, ip);
+
+    if (!verdict.ok) {
+      // 理由は短くしか出さない。何が引っかかったかを詳しく返すと、
+      // 通し方を探る手がかりになる。
       redirect(
         `/works/${workId}/report?error=${encodeURIComponent(
-          "確認に失敗しました。画面を読み込み直して、もう一度お試しください。",
+          `${verdict.reason}。画面を読み込み直して、もう一度お試しください。`,
         )}`,
       );
     }

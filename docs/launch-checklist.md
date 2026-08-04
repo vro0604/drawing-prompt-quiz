@@ -52,13 +52,26 @@ values ('2026-09-01', $doc$...$doc$, true);
 
 ### 2-2. Cloudflare Turnstile（P6）
 
-通報の CAPTCHA。**鍵が無いと検証を素通しする。**
+通報の CAPTCHA。**鍵が無いと通報が 503 になる**（素通しはしない。D78）。
 
-- [ ] Turnstile でサイトを登録する
+つまり、鍵を入れ忘れたまま公開しても穴は開かない。
+代わりに**通報機能が丸ごと使えない**ので、必ず入れること。
+
+- [ ] Turnstile でサイトを登録する（ドメインは本番のもの）
 - [ ] `NEXT_PUBLIC_TURNSTILE_SITE_KEY` を Vercel に設定する
 - [ ] `TURNSTILE_SECRET_KEY` を Vercel に設定する（`NEXT_PUBLIC_` を付けない）
-- [ ] 通報画面に widget が出ることを本番で確認する
-- [ ] 空のトークンで POST して断られることを確認する
+- [ ] **テスト鍵（`1x000…` など）を本番に入れない**。設定の誤りとして 503 になる
+- [ ] 通報画面が 200 で開き、widget が出ることを本番で確認する
+- [ ] 確認を通さずに送ると断られることを確認する
+
+**動作の確かめかた**（本番URLで）
+
+```
+# 鍵が正しく入っていれば 200
+curl -o /dev/null -w "%{http_code}\n" https://<本番>/works/<作品ID>/report
+```
+
+503 が返るときは鍵が足りないか、テスト鍵が入っている。
 
 ### 2-3. Vercel
 
@@ -76,6 +89,8 @@ values ('2026-09-01', $doc$...$doc$, true);
 
 - [ ] 上の7つを設定する
 - [ ] `SUPABASE_SECRET_KEY` に `NEXT_PUBLIC_` が**付いていない**ことを二度確認する
+- [ ] **`npm run check:env:prod` が通ることを確認する**
+      （本番のビルドは自動でこれを通る。足りなければビルドが止まる。D80）
 - [ ] Cron が登録されていることを確認する（`vercel.json` の `/api/cron/cleanup`、毎日 03:17 UTC）
 - [ ] 鍵なしで `/api/cron/cleanup` を叩くと 401 になることを確認する
 
@@ -98,7 +113,7 @@ ON に戻したあとはそのままでは動かない。
 - [ ] いいね・お気に入りが押せる（ゲストでは押せない）
 - [ ] ランキングに出る
 - [ ] プロフィールが公開設定どおりに見える
-- [ ] 通報が送れる（**CAPTCHA を通る**）
+- [ ] 通報が送れる（**CAPTCHA を通る**。画面が 503 でないこと）
 - [ ] 作品を非公開にできる／削除できる
 - [ ] 共有カードが SNS で正しく出る（**お題の答えが入っていない**）
 - [ ] 退会できる（**テスト用のアカウントで**）
@@ -138,7 +153,8 @@ ON に戻したあとはそのままでは動かない。
 | P3 規約と同意 | Step 15-B | D74 / spec 12-8 |
 | P4 持ち主のいないお題の掃除 | Step 16 | `cleanup_orphan_prompts` |
 | P5 手放した ID の再取得 | Step 15 | D62 / D73 |
-| P6 通報の CAPTCHA（実装） | Step 16 | `src/features/report/captcha.ts` |
+| P6 通報の CAPTCHA | Step 16 | D78 / D79 / `src/features/report/captcha.ts` |
+| 環境変数の不足をビルドで止める | Step 16 | D80 / `scripts/check-env.mjs` |
 | 匿名ユーザーの掃除 | Step 16 | `list_stale_guests` |
 | 画像の消し残しの掃除 | Step 16 | `storage_cleanup_queue` |
 | 退会の後始末の再試行 | Step 16 | `account_deletions` |

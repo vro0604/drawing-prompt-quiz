@@ -26,6 +26,7 @@
  *   npm run smoke:report
  */
 
+import { readFileSync } from "node:fs";
 import {
   accountUserId,
   answerWork,
@@ -69,6 +70,30 @@ async function post(s, promptId, title, extra) {
   const id = /^\/works\/([0-9a-f-]{36})/.exec(page.path)?.[1];
   if (!id) throw new Error(`投稿に失敗しました（${title}）: ${page.path}`);
   return id;
+}
+
+/** .env.local から値を読む（比べるためだけに使い、表示はしない） */
+function envValue(name) {
+  try {
+    const text = readFileSync(new URL("../.env.local", import.meta.url), "utf8");
+    return new RegExp("^" + name + "=(.*)$", "m").exec(text)?.[1]?.trim() ?? "";
+  } catch {
+    return "";
+  }
+}
+
+/**
+ * CAPTCHA の確認の値。
+ *
+ * ブラウザを動かさないので widget からトークンを受け取れない。
+ * 開発の「常に通る」テスト鍵は、どんな値でも success を返すので、
+ * 決まった文字列を渡して検証の道筋だけ通す。
+ *
+ * **本番の鍵ではこの値は通らない。**検証を飛ばしているのではなく、
+ * テスト鍵がそう振る舞うだけ。
+ */
+function captchaToken(enabled) {
+  return enabled ? { "cf-turnstile-response": "XXXX.DUMMY.TOKEN.XXXX" } : {};
 }
 
 /** <head> の meta を読む */
@@ -238,9 +263,48 @@ section("4. 通報");
   const res = await visitor.get(`/works/${keepId}/report`);
   must(res.status === 200, "通報フォームが開ける（未サインインでも）", `実際 ${res.status}`);
 
+  // --- CAPTCHA（P6）---------------------------------------------------
+  //
+  // 開発では Cloudflare の公式テスト鍵を使う（.env.local）。
+  // 鍵が入っていれば widget が出て、検証も実際に走る。
+  const captchaOn = /class="cf-turnstile"/.test(res.html);
+
+  if (captchaOn) {
+    must(
+      /data-action="report"/.test(res.html),
+      "widget に action が付いている（トークンの使い回しを防ぐ）",
+    );
+    // **秘密鍵そのものと突き合わせる。**
+    // 「0 が続く文字列」で見ると、HTML に出て当然のサイト鍵まで
+    // 引っかかって、検査が意味を失う（実際に一度そうなった）。
+    const secret = envValue("TURNSTILE_SECRET_KEY");
+    must(
+      secret !== "" && !res.html.includes(secret),
+      "秘密鍵が HTML に出ていない",
+      secret === "" ? "秘密鍵が読めませんでした" : "",
+    );
+    must(
+      res.html.includes(envValue("NEXT_PUBLIC_TURNSTILE_SITE_KEY")),
+      "サイト鍵は HTML に出ている（widget に必要）",
+    );
+
+    // 確認の値を付けずに送ると断られる。**ここが素通しだと意味が無い。**
+    const noToken = await submitPageForm(visitor, `/works/${keepId}/report`, "報告する", {
+      reason: "spam",
+      detail: "確認なしの通報。",
+    });
+    must(
+      /確認が完了していません|確認に失敗/.test(textOf(noToken.html)),
+      "確認の値が無いと通報できない",
+    );
+  } else {
+    must(true, "CAPTCHA は無効（鍵が未設定の開発環境）");
+  }
+
   const sent = await submitPageForm(visitor, `/works/${keepId}/report`, "報告する", {
     reason: "spam",
     detail: "スモークテストの通報です。",
+    ...captchaToken(captchaOn),
   });
   must(/報告を受け付けました/.test(textOf(sent.html)), "ゲストのまま通報できた");
 
@@ -248,6 +312,7 @@ section("4. 通報");
   const twice = await submitPageForm(visitor, `/works/${keepId}/report`, "報告する", {
     reason: "spam",
     detail: "2回目。",
+     ...captchaToken(captchaOn),
   });
   must(/すでに報告済み/.test(textOf(twice.html)), "同じ作品への2回目は断られる");
 
@@ -255,6 +320,7 @@ section("4. 通報");
   const noDetail = await submitPageForm(fan, `/works/${keepId}/report`, "報告する", {
     reason: "other",
     detail: "",
+     ...captchaToken(captchaOn),
   });
   must(
     /内容を書いてください/.test(textOf(noDetail.html)),
@@ -303,6 +369,7 @@ const doomedId = await post(artist, doomedPrompt.promptId, `削除される作�
   await submitPageForm(fan, `/works/${doomedId}`, "いいね", {});
   await submitPageForm(fan, `/works/${doomedId}`, "保存", {});
   await submitPageForm(fan, `/works/${doomedId}/report`, "報告する", {
+    ...captchaToken(true),
     reason: "spam",
     detail: "削除の検査用。",
   });

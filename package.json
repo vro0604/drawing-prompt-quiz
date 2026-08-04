@@ -4,7 +4,9 @@
   "private": true,
   "scripts": {
     "dev": "next dev",
-    "build": "next build",
+    "build": "node scripts/check-env.mjs && next build",
+    "check:env": "node scripts/check-env.mjs",
+    "check:env:prod": "REQUIRE_PROD_ENV=1 node scripts/check-env.mjs",
     "start": "next start",
     "lint": "eslint",
     "db:status": "bash scripts/db-status.sh",

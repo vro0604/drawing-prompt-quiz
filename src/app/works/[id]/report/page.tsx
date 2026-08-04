@@ -3,11 +3,12 @@ import { notFound } from "next/navigation";
 import { REPORT_REASONS } from "@/features/report/rpc";
 import { fetchWorkDetail } from "@/features/work/rpc";
 import { createReportAction } from "../actions";
-import { TURNSTILE_SITE_KEY, captchaEnabled } from "@/features/report/captcha";
-
-/** Turnstile の widget を描くスクリプト */
-const TURNSTILE_SCRIPT =
-  "https://challenges.cloudflare.com/turnstile/v0/api.js";
+import {
+  CAPTCHA_ACTION,
+  TURNSTILE_SCRIPT,
+  TURNSTILE_SITE_KEY,
+  captchaEnabled,
+} from "@/features/report/captcha";
 
 /**
  * /works/[id]/report ／ 通報フォーム。
@@ -103,9 +104,15 @@ export default async function ReportWorkPage({
         {/* CAPTCHA（P6）。サイト鍵があるときだけ出す。
             script は widget を描くために要る。data-* だけで動くので、
             こちらから JavaScript を書く必要は無い。 */}
+        {/* data-action を付けるのは、siteverify の応答と突き合わせるため。
+            これが無いと、同じ鍵を使う別のフォームで取ったトークンが通る。 */}
         {captchaEnabled() ? (
           <div className="space-y-2">
-            <div className="cf-turnstile" data-sitekey={TURNSTILE_SITE_KEY} />
+            <div
+              className="cf-turnstile"
+              data-sitekey={TURNSTILE_SITE_KEY}
+              data-action={CAPTCHA_ACTION}
+            />
             <script src={TURNSTILE_SCRIPT} async defer />
             <p className="text-xs text-black/45 dark:text-white/45">
               自動での大量送信を防ぐための確認です。
