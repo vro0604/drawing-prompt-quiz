@@ -16,6 +16,7 @@ import { readFileSync } from "node:fs";
 import { deflateSync } from "node:zlib";
 import {
   createThrowawayUser,
+  deleteReportsBy,
   ensureFixtureUser,
   loadCookies,
   storeCookies,
@@ -88,8 +89,32 @@ export async function cleanupCreatedWorks() {
   }
 }
 
+/**
+ * この実行が作った使い捨て利用者。**後片づけの範囲を決めるためだけ**に持つ。
+ * ここに入るのは数秒前に Admin API で作った人だけで、既存の利用者は入らない。
+ */
+const throwawayIds = [];
+
+/**
+ * 使い捨て利用者が出した通報を消す。**失敗しても合否は変えない。**
+ *
+ * 通報は「24時間に10件まで」。使い捨ての人を使えば枠は毎回まっさらだが、
+ * 行は実データに残る。運営が見る列が検査用で埋まらないよう片づける（D91）。
+ */
+async function cleanupSmokeReports() {
+  if (throwawayIds.length === 0) return;
+
+  const removed = await deleteReportsBy(throwawayIds);
+  if (removed === null) {
+    console.log("[片づけ] 検査用の通報を消せませんでした（SUPABASE_SECRET_KEY を確認）");
+  } else if (removed > 0) {
+    console.log(`[片づけ] この検査が出した通報 ${removed} 件を削除しました`);
+  }
+}
+
 export async function finish() {
   await cleanupCreatedWorks();
+  await cleanupSmokeReports();
   console.log(failures === 0 ? "\n=== すべて期待どおり ===" : `\n=== ${failures}件 失敗 ===`);
   process.exit(failures === 0 ? 0 : 1);
 }
@@ -563,6 +588,10 @@ export async function throwawaySession(role) {
   const user = await createThrowawayUser(role);
   const s = session(`${role}-throwaway`);
   await signIn(s, user.email, user.password);
+
+  // 片づけの範囲に入れる。**ここに入った人の行しか消さない**
+  throwawayIds.push(user.id);
+
   return { session: s, ...user };
 }
 

@@ -227,6 +227,45 @@ export async function createThrowawayUser(role) {
   return { id: data.user.id, email, password };
 }
 
+/**
+ * この実行が作った使い捨て利用者の**通報だけ**を消す。
+ *
+ * 【なぜ要るか】
+ *   通報は「24時間に10件まで」（step15 の create_report）。
+ *   検査が固定の利用者で通報していたため、何度か回すと枠を使い切り、
+ *   **時間が経つまで通らない検査**になっていた（D91）。
+ *
+ *   使い捨ての利用者に変えれば枠は毎回まっさらだが、
+ *   そのぶん通報の行が実データに積み上がる。運営が見る列が
+ *   検査用の行で埋まらないよう、この実行が作ったものだけを消す。
+ *
+ * 【安全のための決まり】
+ *   ・消す相手は**引数で渡された ID だけ**。一覧から拾わない
+ *   ・その ID は、この実行が数秒前に Admin API で作った利用者のもの
+ *   ・空の一覧では何もしない（`in ()` で全件に当たる事故を防ぐ）
+ *   ・**本番の通報上限そのものは変えない**
+ *
+ * @returns 消した件数。鍵が無いなど、消せなかったときは null
+ */
+export async function deleteReportsBy(userIds) {
+  const ids = [...new Set((userIds ?? []).filter(Boolean))];
+  if (ids.length === 0) return 0;
+
+  try {
+    const admin = adminClient();
+    const { data, error } = await admin
+      .from("reports")
+      .delete()
+      .in("reporter_id", ids)
+      .select("id");
+
+    if (error) return null;
+    return data?.length ?? 0;
+  } catch {
+    return null;
+  }
+}
+
 /** メールアドレスで1人だけ探す */
 async function findByEmail(admin, email) {
   // listUsers はページ送りなので、見つかるまで進む。

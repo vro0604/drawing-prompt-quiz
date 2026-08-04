@@ -19,8 +19,10 @@
  *   ・Supabase の Authentication → Email で Confirm email が OFF であること
  *
  * 【残るデータ】
- *   登録ユーザー2人と、その作品・回答・いいね・お気に入り・通報が残る。
+ *   使い捨ての登録ユーザー3人と、その作品・回答・いいね・お気に入りが残る。
  *   削除した1件も行としては残る（論理削除）。
+ *   **通報だけは片づける**（この実行が作った人の行だけ。D91）。
+ *   利用者そのものを消したいときは `npm run smoke:fixtures:purge`。
  *
  * 【使い方】
  *   npm run smoke:report
@@ -37,7 +39,6 @@ import {
   must,
   section,
   session,
-  fixtureSession,
   throwawaySession,
   submitWork,
   textOf,
@@ -121,9 +122,17 @@ function metaOf(html) {
 const { session: artist } = await throwawaySession("report-artist");
 const { session: fan } = await throwawaySession("report-fan");
 
-// 通報する人は使い回してよい。通報は「同じ作品に1回」までで、
-// 作品は毎回新しく作るため、前回の記録とぶつからない。
-const reporter = await fixtureSession("report-reporter");
+// 【通報する人も使い回せない】
+//   通報には「同じ作品に1回」のほかに、**24時間に10件まで**の上限がある
+//   （create_report）。固定の人を使い回すと通報が積み上がり、
+//   何度か回したところで枠を使い切って、**時間が経つまで通らない検査**に
+//   なっていた（D91。実際に落ちた）。
+//
+//   使い捨ての人なら、直近24時間の通報は必ず0件から始まる。
+//   本番の上限そのものは変えない。**検査の側を決定的にする。**
+//
+//   出した通報は finish() が片づける（この実行が作った人の行だけ）。
+const { session: reporter } = await throwawaySession("report-reporter");
 const visitor = session("visitor"); // 未サインインのまま見るだけ
 
 const firstHandle = `smoke-old${stamp}`;

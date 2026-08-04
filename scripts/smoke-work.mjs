@@ -231,6 +231,25 @@ section("7. 他人のお題では投稿できない（D27-2 / D40）");
 
   const mine = await author.get(`/prompt/${strangerPrompt.promptId}`);
   must(mine.status === 404, "他人のお題ページも 404", `実際 ${mine.status}`);
+
+  // 未サインインの人にも、**実在の有無を悟らせない**（D90）。
+  // 以前は形の正しい UUID でだけ 500 が出ていた。
+  // 壊れた文字列では 404 だったので、応答の違いが
+  // 「ここは何かを持っている場所だ」という答えになっていた。
+  const real = await visitor.get(`/prompt/${strangerPrompt.promptId}`);
+  const missing = await visitor.get("/prompt/00000000-0000-4000-8000-000000000000");
+  const broken = await visitor.get("/prompt/not-a-uuid");
+
+  must(real.status === 404, "未サインインでは実在するお題も 404", `実際 ${real.status}`);
+  must(
+    real.status === missing.status && missing.status === broken.status,
+    "実在するID・しないID・壊れたIDで応答が変わらない",
+    `${real.status} / ${missing.status} / ${broken.status}`,
+  );
+  must(
+    !/permission denied|PGRST|pg_|relation "|function public\./i.test(real.html),
+    "DB の生エラーが画面に出ていない",
+  );
 }
 
 // ── 8. 画像が実際に配信されている ──────────────────────

@@ -135,12 +135,31 @@ export async function callAbandonDraft(sessionId: string): Promise<void> {
 /**
  * 確定したお題1件。**答えのカードを外へ出す唯一の経路**（作成者本人のみ）。
  * 他人のIDや存在しないIDには null が返る（D40）。
+ *
+ * 【サインインしていない人には、DB へ問い合わせない】
+ *   get_my_prompt を実行できるのは authenticated だけ（ゲストも含む）。
+ *   未サインインのまま呼ぶと Postgres が
+ *   `permission denied for function get_my_prompt` を返し、
+ *   例外になって**画面が 500 になっていた**（D90）。
+ *
+ *   500 はそれ自体が答えになる。形の正しい UUID でだけ 500 が出て、
+ *   壊れた文字列では 404 が出るなら、**「ここは何かを持っている場所だ」**
+ *   と読める。さらに開発では Postgres の文面がそのまま画面に出ていた。
+ *
+ *   ここで null を返せば、未サインインの人には
+ *   **実在する ID も、しない ID も、区別なく 404** になる。
+ *   これは他人のお題を渡されたときの振る舞いとも同じ（D40）。
  */
 export async function fetchMyPrompt(promptId: string): Promise<PromptDetail | null> {
   // 形が違うIDは DB へ渡さない（500 ではなく 404 にそろえる）
   if (!isUuid(promptId)) return null;
 
   const supabase = await createSupabaseServerClient();
+
+  // Cookie を信じずに問い合わせて確かめる（getSession ではなく getUser）
+  const { data: auth } = await supabase.auth.getUser();
+  if (!auth.user) return null;
+
   const { data, error } = await supabase.rpc("get_my_prompt", { p_prompt_id: promptId });
 
   if (error) throw new Error(readableRpcError(error.message));
