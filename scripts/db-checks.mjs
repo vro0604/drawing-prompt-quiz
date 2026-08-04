@@ -2446,9 +2446,14 @@ export const listings = [
     label: "handle_history の権限（grantee 別）",
     sql: TABLE_PRIV_SQL,
     params: [["handle_history"]],
+    note:
+      "**見るのは grantee だけ。** 出てよいのは所有者（postgres）と service_role の2つで、" +
+      "PUBLIC / anon / authenticated が1行でも出たら異常（P5 / D62）。" +
+      "権限の種類が多いのは所有者の既定なので問題ない。" +
+      "合否は上の「handle_history に PUBLIC / anon / authenticated の権限が0件」が見ている。",
     emptyNote:
-      "0行が正常。PUBLIC / anon / authenticated には何も配らない（P5 / D62）。" +
-      "service_role と所有者の権限はここに出ない（対象外）。",
+      "0行でも正常。一度も GRANT / REVOKE していない表は ACL が空のままで、" +
+      "そのときは所有者の権限も現れない。",
   },
   {
     label: "handle_history の RLS ポリシー",

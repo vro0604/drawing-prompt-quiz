@@ -67,28 +67,19 @@ function reactionCounts(html) {
 
 const artist = session("artist");   // 作品を投稿する側
 const fan = session("fan");         // いいねを押す側
-const guest = session("guest");     // ゲストのまま
+// 以前はここでゲストを発行していたが、匿名サインインの上限に当たるため
+// やめた（D83）。「ゲストはいいねできない」「ゲストは ID を取れない」は
+// smoke:anon が持っている。この検査に別の利用者は要らない。
 const visitor = session("visitor"); // 未サインイン
 
 const stamp = `${process.pid}${Math.floor(Math.random() * 1000)}`.slice(-8);
 const artistHandle = `smoke-a${stamp}`;
 const artistName = `スモーク絵師${stamp}`;
 
-// ── 1. ゲストはプロフィールを設定できない ────────────────
-section("1. ゲストは ID を取れない（001 の設計）");
-{
-  await drawPrompt(guest, "easy"); // ゲストとして発行させる
-  const page = await guest.get("/account");
-
-  must(
-    /ゲストとして遊んでいます/.test(textOf(page.html)),
-    "ゲストとして認識されている",
-  );
-  must(
-    !/プロフィールを保存する/.test(page.html),
-    "ゲストにはプロフィールの設定欄が出ない",
-  );
-}
+// 【ゲストの検査はここには無い】
+//   「ゲストは ID を取れない」「ゲストはいいねを押せない」は
+//   smoke:anon へ移した。匿名サインインを使う場所を1本に集めて、
+//   Supabase の回数制限に検査全体が引きずられないようにするため（D83）。
 
 // ── 2. 登録して表示名と ID を決める ───────────────────────
 section("2. 表示名と ID を決める");
@@ -161,10 +152,8 @@ must(!/ゲスト/.test(textOf(page.html)), "「ゲスト」表示が消えてい
 // ── 5. ゲスト・未サインインはいいねを押せない ─────────────
 section("5. いいね・保存は登録ユーザーだけ（D7 / spec 10）");
 
-for (const [s, label] of [
-  [visitor, "未サインインの訪問者"],
-  [guest, "ゲスト"],
-]) {
+// ゲストの側は smoke:anon が見る。ここでは未サインインだけを見る。
+for (const [s, label] of [[visitor, "未サインインの訪問者"]]) {
   const res = await s.get(`/works/${workId}`);
   must(
     /いいねと保存にはアカウント登録が必要です/.test(textOf(res.html)),
@@ -218,4 +207,4 @@ section("7. 自作へのいいねは禁じない（回答とは違う。D28 は�
   must(counts.likes === 1, "作者が自作にいいねできる", `${counts.likes}`);
 }
 
-finish();
+await finish();

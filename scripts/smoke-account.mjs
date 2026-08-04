@@ -399,4 +399,4 @@ console.log(
       "  .env.local に鍵を入れると、この検査が最後まで通ります。",
 );
 
-finish();
+await finish();

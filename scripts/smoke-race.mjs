@@ -38,6 +38,7 @@ import {
   requireAutoConfirm,
   section,
   session,
+  fixtureSession,
   submitWork,
   textOf,
 } from "./_smoke-http.mjs";
@@ -176,7 +177,7 @@ section("3. いいね・お気に入りを同時に押す");
 section("4. 回答を同時に2回送る");
 {
   // 別の人として回答する（自作には答えられない）
-  const guest = session("guest");
+  const guest = await fixtureSession("race-answerer");
   const page = await guest.get(`/works/${workId}`);
   const form = forms(page.html).find((f) => /回答する/.test(f.text));
 
@@ -220,4 +221,4 @@ section("4. 回答を同時に2回送る");
   }
 }
 
-finish();
+await finish();

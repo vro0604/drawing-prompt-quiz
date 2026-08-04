@@ -308,4 +308,4 @@ section("11. 作者名からポートフォリオへ行ける");
   );
 }
 
-finish();
+await finish();

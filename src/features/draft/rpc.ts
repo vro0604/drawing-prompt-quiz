@@ -1,4 +1,5 @@
 import { createSupabaseServerClient } from "@/lib/supabase/server";
+import { isUuid } from "@/lib/uuid";
 import type {
   CompletedDraft,
   DraftMode,
@@ -136,6 +137,9 @@ export async function callAbandonDraft(sessionId: string): Promise<void> {
  * 他人のIDや存在しないIDには null が返る（D40）。
  */
 export async function fetchMyPrompt(promptId: string): Promise<PromptDetail | null> {
+  // 形が違うIDは DB へ渡さない（500 ではなく 404 にそろえる）
+  if (!isUuid(promptId)) return null;
+
   const supabase = await createSupabaseServerClient();
   const { data, error } = await supabase.rpc("get_my_prompt", { p_prompt_id: promptId });
 

@@ -39,10 +39,10 @@ import {
   forms,
   makePng,
   must,
-  register,
   requireAutoConfirm,
   section,
   session,
+  fixtureSession,
   submitWork,
   textOf,
   textOutsideQuiz,
@@ -50,40 +50,24 @@ import {
 
 await requireAutoConfirm();
 
-const author = session("author");
-const stranger = session("stranger");
+// **ゲストからは始めない。**
+//
+// 「ゲストは投稿できない」「昇格しても uid が変わらない」は
+// smoke:anon へ移した。匿名サインインを使う場所を1本に集めて、
+// Supabase の回数制限（1時間30回・IP単位）に検査全体が
+// 引きずられないようにするため（D83）。
+//
+// ここの本題は投稿そのもの。作者は固定の検査用利用者を使う。
+const author = await fixtureSession("work-author");
+const stranger = await fixtureSession("work-stranger");
 const visitor = session("visitor");
 
-// ── 0. ゲストのままお題を引き、投稿できないことを確かめる ────────
-section("0. 匿名ゲストは投稿できない（spec C3 / D27-1）");
+section("0. 投稿の準備（お題を引く）");
 
 const original = await drawPrompt(author, "standard");
 const guestId = accountUserId((await author.get("/account")).html);
 
-must(!!guestId, "ゲストとして発行されている", guestId ?? "");
-{
-  const page = await author.get(`/works/new?promptId=${original.promptId}`);
-  must(
-    /投稿にはアカウント登録が必要です/.test(textOf(page.html)),
-    "ゲストには投稿フォームではなく登録の案内が出る",
-  );
-  must(!/<input[^>]*type="file"/.test(page.html), "ゲストの画面に画像の入力欄が無い");
-}
-
-// ── 1. 昇格する（uid が変わらないこと）──────────────────
-section("1. ゲストから昇格して登録する（spec 11-2）");
-{
-  const { page } = await register(author, "author");
-  must(
-    /登録ユーザーとしてサインインしています/.test(textOf(page.html)),
-    "登録ユーザーになった",
-  );
-  must(
-    accountUserId(page.html) === guestId,
-    "昇格しても uid が変わらない",
-    `${guestId} → ${accountUserId(page.html)}`,
-  );
-}
+must(!!guestId, "作者の uid が取れている", guestId ?? "");
 
 // ── 2. ゲストのときに引いたお題で投稿する ────────────────
 section("2. 公開作品を投稿する（オリジナル部門）");
@@ -166,7 +150,6 @@ must(/公開する/.test(page.html), "公開ボタンが出ている");
 // ── 4. 漏れの検査 ──────────────────────────────────────
 section("4. 非公開作品・他人の下書きが漏れない");
 
-await register(stranger, "stranger");
 
 for (const [s, label] of [
   [visitor, "未サインインの訪問者"],
@@ -200,6 +183,15 @@ for (const [s, label] of [
 {
   const res = await visitor.get("/works/00000000-0000-0000-0000-000000000000");
   must(res.status === 404, "存在しないIDも 404（下書きと区別がつかない）", `実際 ${res.status}`);
+
+  // **形が違うIDも同じ 404。**
+  // そのまま DB へ渡すと「invalid input syntax for type uuid」で 500 になり、
+  // そこだけ応答が変わってしまう。URL を打ち間違えただけの人に
+  // 「うまく表示できませんでした」と出るのも正しくない。
+  for (const bad of ["not-a-uuid", "12345", "../../etc/passwd"]) {
+    const r = await visitor.get(`/works/${encodeURIComponent(bad)}`);
+    must(r.status === 404, `形が違うIDも 404（${bad}）`, `実際 ${r.status}`);
+  }
 }
 
 // ── 5. 下書きを公開する ────────────────────────────────
@@ -309,41 +301,58 @@ section("9. 壊れた画像・偽装した画像は受け取らない");
       name: "broken.png",
       type: "image/png",
     },
-    {
-      label: "PNG の中身に jpg の名前を付けたもの",
-      // 中身から種類を決めるので、名前が違っても**中身どおりに扱われる**。
-      // ここだけは「通る」のが正しい（拡張子は当てにしない）。
-      bytes: makePng(20, 15),
-      name: "actually-png.jpg",
-      type: "image/jpeg",
-      shouldPass: true,
-    },
   ];
 
+  // 幅・高さの異常。
+  //
+  // **本物の 30000×30000 は作らない。**それだと 31MB になり、
+  // 寸法ではなく容量の上限に当たってしまう（一度そうなった）。
+  // 見たいのは「ヘッダの申告が範囲外なら断る」ことなので、
+  // 小さな PNG のヘッダだけを 30000 に書き換える。
+  // readImageInfo はヘッダの数字を読むので、これで判定を通せる。
+  const forged = Buffer.from(makePng(10, 10));
+  forged.writeUInt32BE(30000, 16); // 幅
+  forged.writeUInt32BE(30000, 20); // 高さ
+  cases.push({
+    label: "幅・高さが範囲外だと申告する画像（30000×30000）",
+    bytes: forged,
+    name: "forged.png",
+    type: "image/png",
+  });
+
+  // 容量の上限（5MB）。中身は正しい PNG のまま、後ろに詰め物をする。
+  cases.push({
+    label: "5MB を超えるファイル",
+    bytes: Buffer.concat([makePng(10, 10), Buffer.alloc(5 * 1024 * 1024 + 1)]),
+    name: "big.png",
+    type: "image/png",
+  });
+
+  // **断られる例を先に全部やる。**断られた投稿はお題を消費しないので、
+  // 1つのお題で何度でも試せる。
   for (const c of cases) {
     const { text, path } = await trySubmit(c.bytes, c.name, c.type);
     const accepted = /^\/works\/[0-9a-f-]{36}/.test(path);
-
-    if (c.shouldPass) {
-      must(accepted, `${c.label} は中身どおりに受け取る`, path);
-    } else {
-      must(
-        !accepted && /扱えません|画像を選んで|大きさを読み取れません/.test(text),
-        `${c.label} を断る`,
-        accepted ? "受け取ってしまった" : text.slice(0, 60),
-      );
-    }
+    must(
+      !accepted && /扱えません|画像を選んで|読み取れません|5MBまで/.test(text),
+      `${c.label} を断る`,
+      accepted ? "受け取ってしまった" : text.slice(0, 60),
+    );
   }
 
-  // 幅・高さの異常。PNG のヘッダに 30000 と書いても、
-  // works の CHECK（1〜20000）と同じ範囲で先に断る。
-  const huge = makePng(30000, 30000);
-  const { text, path } = await trySubmit(huge, "huge.png", "image/png");
-  must(
-    !/^\/works\/[0-9a-f-]{36}/.test(path) && /扱えません|読み取れません/.test(text),
-    "幅・高さが範囲外の画像を断る",
-    text.slice(0, 60),
-  );
+  // **通る例はいちばん最後。**ここでお題を使い切るので、
+  // これより後ろに断られる例を置くと「もう投稿しています」で
+  // 落ちてしまう（実際に一度そうなった）。
+  //
+  // 中身から種類を決めるので、名前が jpg でも中身が PNG なら PNG として扱う。
+  {
+    const { path } = await trySubmit(makePng(20, 15), "actually-png.jpg", "image/jpeg");
+    must(
+      /^\/works\/[0-9a-f-]{36}/.test(path),
+      "PNG の中身に jpg の名前を付けたものは、中身どおりに受け取る",
+      path,
+    );
+  }
 }
 
-finish();
+await finish();

@@ -26,6 +26,7 @@
 
 import { readFileSync } from "node:fs";
 import { createClient } from "@supabase/supabase-js";
+import { ensureFixtureUser } from "./_smoke-users.mjs";
 
 const GREEN = "\x1b[32m";
 const RED = "\x1b[31m";
@@ -83,9 +84,22 @@ async function main() {
 
   const supabase = newClient(env);
 
-  console.log(`\n${BOLD}[1] 匿名サインイン${RESET}`);
-  const { data: auth, error: authErr } = await supabase.auth.signInAnonymously();
-  check(!authErr && !!auth?.user, "ゲストとしてサインインできる", authErr?.message ?? "");
+  // **匿名サインインは使わない。**
+  //
+  // この検査の本題はドラフトRPCの中身（候補の数・重複の無さ・引き直し）で、
+  // 「ゲストでも呼べること」は smoke:anon と権限検査が持っている。
+  // 匿名で回すと 1回ごとに上限（1時間30回・IP単位）を削り、
+  // 続けて回したときに**本題と無関係な項目が落ちる**（D83）。
+  //
+  // 固定の検査用利用者でサインインする。こちらの枠は5分に30回で、
+  // 12倍ゆるい。
+  console.log(`\n${BOLD}[1] 検査用の利用者としてサインイン${RESET}`);
+  const fixture = await ensureFixtureUser("draft-user");
+  const { data: auth, error: authErr } = await supabase.auth.signInWithPassword({
+    email: fixture.email,
+    password: fixture.password,
+  });
+  check(!authErr && !!auth?.user, "検査用の利用者としてサインインできる", authErr?.message ?? "");
   if (authErr) {
     // **原因で案内を分ける。**
     // 以前はどちらの場合も「Anonymous を有効にしてください」と出していた。
@@ -265,7 +279,11 @@ async function main() {
 
   console.log(`\n${BOLD}[11] 他人からは見えないこと${RESET}`);
   const other = newClient(env);
-  const { error: otherAuthErr } = await other.auth.signInAnonymously();
+  const otherFixture = await ensureFixtureUser("draft-other");
+  const { error: otherAuthErr } = await other.auth.signInWithPassword({
+    email: otherFixture.email,
+    password: otherFixture.password,
+  });
   check(!otherAuthErr, "別のゲストとしてサインインできる");
   const { data: stolen, error: stolenErr } = await other.rpc("get_my_prompt", {
     p_prompt_id: done.prompt_id,

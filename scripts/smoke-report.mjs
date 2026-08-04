@@ -35,10 +35,11 @@ import {
   forms,
   makePng,
   must,
-  register,
   requireAutoConfirm,
   section,
   session,
+  fixtureSession,
+  throwawaySession,
   submitWork,
   textOf,
   workImageUrl,
@@ -110,9 +111,23 @@ function metaOf(html) {
   return out;
 }
 
-const artist = session("artist");
-const fan = session("fan");
-const visitor = session("visitor");
+// **ゲストは作らない。**「ゲストのまま通報できる」は smoke:anon が持つ。
+// ここの本題は旧IDの保護・共有カード・削除で、通報はその一部でしかない。
+// ゲストで回すと匿名サインインの上限に当たる（D83）。
+//
+// 【artist と fan は使い回せない】
+//   この検査は ID（handle）を決めて、変えて、他人が取れないことを見る。
+//   ID の変更は**30日に1回**までなので、同じ人を使い回すと
+//   2回目の実行で必ず落ちる（実際に落ちた）。
+//   毎回まっさらな人が要るので、Admin API で使い捨てを作る。
+//   匿名サインインの枠は使わない。
+const { session: artist } = await throwawaySession("report-artist");
+const { session: fan } = await throwawaySession("report-fan");
+
+// 通報する人は使い回してよい。通報は「同じ作品に1回」までで、
+// 作品は毎回新しく作るため、前回の記録とぶつからない。
+const reporter = await fixtureSession("report-reporter");
+const visitor = session("visitor"); // 未サインインのまま見るだけ
 
 const firstHandle = `smoke-old${stamp}`;
 const nextHandle = `smoke-new${stamp}`;
@@ -121,8 +136,6 @@ const artistName = `スモーク削除${stamp}`;
 // ── 1. ID を決めて、変える ───────────────────────────────
 section("1. ID を変えると、古い ID は他人に渡らない（P5）");
 
-await register(artist, "artist");
-await register(fan, "fan");
 
 {
   const first = await submitAccountForm(artist, "プロフィールを保存する", {
@@ -260,7 +273,7 @@ const draftId = await post(artist, draftPrompt.promptId, `下書き作品${stamp
 // ── 4. 通報 ──────────────────────────────────────────────
 section("4. 通報");
 {
-  const res = await visitor.get(`/works/${keepId}/report`);
+  const res = await reporter.get(`/works/${keepId}/report`);
   must(res.status === 200, "通報フォームが開ける（未サインインでも）", `実際 ${res.status}`);
 
   // --- CAPTCHA（P6）---------------------------------------------------
@@ -300,7 +313,7 @@ section("4. 通報");
     );
 
     // 確認の値を付けずに送ると断られる。**ここが素通しだと意味が無い。**
-    const noToken = await submitPageForm(visitor, `/works/${keepId}/report`, "報告する", {
+    const noToken = await submitPageForm(reporter, `/works/${keepId}/report`, "報告する", {
       reason: "spam",
       detail: "確認なしの通報。",
     });
@@ -312,7 +325,7 @@ section("4. 通報");
     must(true, "CAPTCHA は無効（鍵が未設定の開発環境）");
   }
 
-  const sent = await submitPageForm(visitor, `/works/${keepId}/report`, "報告する", {
+  const sent = await submitPageForm(reporter, `/works/${keepId}/report`, "報告する", {
     reason: "spam",
     detail: "スモークテストの通報です。",
     ...captchaToken(captchaOn),
@@ -322,14 +335,14 @@ section("4. 通報");
   // どれなのか分からず、一時的な失敗として片づけられてしまう。
   must(
     /報告を受け付けました/.test(textOf(sent.html)),
-    "ゲストのまま通報できた",
+    "通報を受け付けた",
     /報告を受け付けました/.test(textOf(sent.html))
       ? ""
       : `断られた理由: ${textOf(sent.html).slice(0, 160)}`,
   );
 
   // 同じ作品への2回目は断られる
-  const twice = await submitPageForm(visitor, `/works/${keepId}/report`, "報告する", {
+  const twice = await submitPageForm(reporter, `/works/${keepId}/report`, "報告する", {
     reason: "spam",
     detail: "2回目。",
      ...captchaToken(captchaOn),
@@ -519,4 +532,4 @@ section("9. 削除しても回答・いいね・お気に入り・通報が壊�
   );
 }
 
-finish();
+await finish();

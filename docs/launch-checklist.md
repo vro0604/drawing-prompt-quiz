@@ -104,6 +104,25 @@ curl -o /dev/null -w "%{http_code}\n" https://<本番>/works/<作品ID>/report
 
 ---
 
+## 2-4. 回数制限を上げたあとにやり直すこと
+
+**公開前デバッグで完走できなかった試験がある**（`docs/prelaunch-debug-report.md` 10-R1）。
+匿名サインインの上限（2-1）を上げてから、次をやり直す。
+
+- [ ] 全10スモークを通常順で実行
+- [ ] もう一度逆順で実行
+- [ ] `npm run smoke:ranking` を5回連続（1回で**ゲストを5人**使う）
+- [ ] `npm run smoke:account` を3回
+- [ ] `npm run smoke:report` を3回
+- [ ] 終わったら `npm run db:verify:keychain` の「参考」3つが 0 に戻ることを確認
+
+失敗したら「一時的」と決めつけないこと。
+回数制限に当たった場合は、スモークがその場で
+「Supabase の回数制限に当たりました」と名指しして止まる（D83）。
+**その文言が出ていない失敗は、本物の不具合として扱う。**
+
+---
+
 ## 3. 本番URLでの縦断試験
 
 ローカルのスモークと同じ道筋を、**本番URLで手で1回通す。**
@@ -163,6 +182,10 @@ ON に戻したあとはそのままでは動かない。
 | P5 手放した ID の再取得 | Step 15 | D62 / D73 |
 | P6 通報の CAPTCHA | Step 16 | D78 / D79 / `src/features/report/captcha.ts` |
 | 環境変数の不足をビルドで止める | Step 16 | D80 / `scripts/check-env.mjs` |
+| トップページ（サービスへの入口） | Step 17 | `src/app/page.tsx` |
+| 404・失敗時の画面 | Step 17 | `src/app/not-found.tsx` / `error.tsx` |
+| 同時押しで内部エラーを出さない | Step 17 | D81 / D82 / `20260804160000_concurrent_write_guards.sql` |
+| 開発用の診断画面を本番で閉じる | Step 17 | `src/app/health/` |
 | 匿名ユーザーの掃除 | Step 16 | `list_stale_guests` |
 | 画像の消し残しの掃除 | Step 16 | `storage_cleanup_queue` |
 | 退会の後始末の再試行 | Step 16 | `account_deletions` |

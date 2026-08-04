@@ -25,10 +25,20 @@
  * 【使い方】
  *   npm run smoke:play
  */
-import { assertNotRateLimited } from "./_smoke-http.mjs";
+import { assertNotRateLimited, fixtureSession, retryingFetch } from "./_smoke-http.mjs";
 
 const BASE = process.env.SMOKE_BASE_URL ?? "http://localhost:3000";
-const jar = new Map();
+
+// **ゲストではなく固定の検査用利用者で回す。**
+//
+// この検査の本題はドラフト画面の流れ（めくる・引き直す・確定する）で、
+// 「ゲストのまま引けること」は smoke:anon が持っている。
+// ゲストで回すと 1回ごとに匿名サインインを使い、
+// 続けて回すと Supabase の上限（1時間30回・IP単位）に当たる（D83）。
+//
+// fixtureSession が用意した Cookie をそのまま種にする。
+const seed = await fixtureSession("play-user");
+const jar = new Map(Object.entries(seed.cookies()));
 
 function cookieHeader() {
   return [...jar.entries()].map(([k, v]) => `${k}=${v}`).join("; ");
@@ -43,10 +53,11 @@ function storeCookies(res) {
 }
 
 async function get(path) {
-  const res = await fetch(BASE + path, {
-    headers: { cookie: cookieHeader() },
-    redirect: "manual",
-  });
+  const res = await retryingFetch(
+    BASE + path,
+    { headers: { cookie: cookieHeader() }, redirect: "manual" },
+    { retry: true },
+  );
   storeCookies(res);
   if (res.status >= 300 && res.status < 400) {
     const location = res.headers.get("location");
@@ -64,12 +75,11 @@ async function get(path) {
 async function post(path, fields) {
   const body = new FormData();
   for (const [k, v] of Object.entries(fields)) body.append(k, v);
-  const res = await fetch(BASE + path, {
-    method: "POST",
-    headers: { cookie: cookieHeader() },
-    body,
-    redirect: "manual",
-  });
+  const res = await retryingFetch(
+    BASE + path,
+    { method: "POST", headers: { cookie: cookieHeader() }, body, redirect: "manual" },
+    { retry: false },
+  );
   storeCookies(res);
   const loc = res.headers.get("location");
   if (loc) return get(loc.replace(BASE, ""));
@@ -115,7 +125,12 @@ const must = (ok, label, extra = "") => {
 let page = await get("/play");
 must(page.status === 200, "GET /play が 200");
 must(/モード/.test(page.html) && /標準/.test(page.html), "モード選択が出ている");
-must(/まだサインインしていません/.test(page.html), "未サインインの表示");
+// 「まだサインインしていません」の表示は、未サインインで開いたときのもの。
+// この検査は固定の検査用利用者で回すので出ない（smoke:anon が見ている）。
+must(
+  !/まだサインインしていません/.test(page.html),
+  "サインイン済みとして開けている",
+);
 
 // ── 2. start_draft ────────────────────────────────
 const startForm = forms(page.html).find((f) => /ドラフトを始める/.test(f.text));

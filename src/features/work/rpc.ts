@@ -1,4 +1,5 @@
 import { SUPABASE_URL } from "@/lib/env";
+import { isUuid } from "@/lib/uuid";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
 import { readableRpcError } from "@/features/draft/rpc";
 import {
@@ -56,6 +57,9 @@ export async function fetchPublicWorks(params: {
  * 教えないため（D40）。
  */
 export async function fetchWorkDetail(workId: string): Promise<WorkDetail | null> {
+  // 形が違うIDは DB へ渡さない。渡すと 500 になる（本来は 404）
+  if (!isUuid(workId)) return null;
+
   const supabase = await createSupabaseServerClient();
   const { data, error } = await supabase.rpc("get_work_detail", { p_work_id: workId });
 
@@ -71,6 +75,8 @@ export async function fetchWorkDetail(workId: string): Promise<WorkDetail | null
  * 呼ぶ前にサインイン済みか確かめること。
  */
 export async function fetchMyWork(workId: string): Promise<MyWork | null> {
+  if (!isUuid(workId)) return null;
+
   const supabase = await createSupabaseServerClient();
   const { data, error } = await supabase.rpc("get_my_work", { p_work_id: workId });
 

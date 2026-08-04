@@ -43,6 +43,7 @@ import {
   requireAutoConfirm,
   section,
   session,
+  fixtureSession,
   submitWork,
   textOf,
 } from "./_smoke-http.mjs";
@@ -103,7 +104,13 @@ async function post(s, promptId, title, extra) {
 const artist = session("artist");
 const fanA = session("fanA");
 const fanB = session("fanB");
-const guests = [1, 2, 3, 4, 5].map((n) => session(`guest${n}`));
+// 回答者5人。**ゲストではなく固定の検査用利用者。**
+// ここの本題はランキングの並びであって「ゲストでも答えられること」ではない。
+// ゲストで回すと 1回の実行で匿名サインインを5回使い、
+// 連続実行が Supabase の上限（1時間30回）に当たる（D83）。
+// ゲストの検査は smoke:anon が持つ。
+const guests = [];
+for (const n of [1, 2, 3, 4, 5]) guests.push(await fixtureSession(`ranker${n}`));
 const visitor = session("visitor"); // 未サインイン
 
 // ── 1. 作品を用意する ────────────────────────────────────
@@ -300,4 +307,4 @@ section("9. 作品一覧からランキングへ行ける");
   must(/\/rankings/.test(res.html), "作品一覧にランキングへのリンクがある");
 }
 
-finish();
+await finish();

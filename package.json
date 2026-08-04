@@ -26,7 +26,9 @@
     "smoke:report": "node scripts/smoke-report.mjs",
     "smoke:account": "node scripts/smoke-account.mjs",
     "typecheck": "tsc --noEmit",
-    "smoke:race": "node scripts/smoke-race.mjs"
+    "smoke:race": "node scripts/smoke-race.mjs",
+    "smoke:anon": "node scripts/smoke-anon.mjs",
+    "smoke:fixtures:purge": "node scripts/_smoke-users.mjs --purge"
   },
   "dependencies": {
     "@supabase/ssr": "^0.12.4",

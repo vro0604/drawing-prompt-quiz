@@ -14,6 +14,12 @@
 
 import { readFileSync } from "node:fs";
 import { deflateSync } from "node:zlib";
+import {
+  createThrowawayUser,
+  ensureFixtureUser,
+  loadCookies,
+  storeCookies,
+} from "./_smoke-users.mjs";
 
 export const BASE = process.env.SMOKE_BASE_URL ?? "http://localhost:3000";
 
@@ -31,7 +37,59 @@ export function section(title) {
   console.log(`\n${title}`);
 }
 
-export function finish() {
+// ── 後片づけ ──────────────────────────────────────────
+//
+// 【なぜ要るか】
+//   検査は毎回、作品と回答を新しく作る。片づけないと
+//   ランキングや一覧が検査用の作品で埋まり、**次の実行の前提が変わる。**
+//   何周も回す試験ではとくに効いてくる。
+//
+// 【消しかた】
+//   画面から削除する（`/works/{id}/delete`）。専用の抜け道は作らない。
+//   **この工程の削除の流れをそのまま通す**ので、片づけ自体が
+//   削除機能の検査を兼ねる。行は残り、公開から外れて画像が消える。
+//
+// 【消すのはこの実行が作ったものだけ】
+//   一覧から拾ったIDは決して入れない。投稿の応答で受け取ったIDだけを積む。
+
+const created = [];
+
+/** この実行が作った作品を、あとで片づけるために覚えておく */
+export function trackWork(s, workId, title) {
+  if (workId && title) created.push({ s, workId, title });
+}
+
+/**
+ * 覚えておいた作品を消す。**失敗しても検査の合否は変えない。**
+ * 片づけの失敗で「検査が落ちた」ことにすると、本題が見えなくなる。
+ */
+export async function cleanupCreatedWorks() {
+  let removed = 0;
+
+  for (const { s, workId, title } of created.reverse()) {
+    try {
+      const page = await s.get(`/works/${workId}/delete`);
+      const form = forms(page.html).find((f) => /削除する/.test(f.text));
+      if (!form?.actionId) continue;
+
+      await s.post(`/works/${workId}/delete`, {
+        [form.actionId]: "",
+        ...form.fields,
+        confirmTitle: title,
+      });
+      removed += 1;
+    } catch {
+      // 片づけの失敗は握りつぶす。掃除 Cron が拾う
+    }
+  }
+
+  if (created.length > 0) {
+    console.log(`\n[片づけ] この検査が作った作品 ${removed}/${created.length} 件を削除しました`);
+  }
+}
+
+export async function finish() {
+  await cleanupCreatedWorks();
   console.log(failures === 0 ? "\n=== すべて期待どおり ===" : `\n=== ${failures}件 失敗 ===`);
   process.exit(failures === 0 ? 0 : 1);
 }
@@ -79,8 +137,56 @@ export function forms(html) {
 
 // ── ブラウザ1つぶんのセッション（Cookie を別々に持つ）─────────────
 
-export function session(name) {
-  const jar = new Map();
+/**
+ * 通信そのものが切れたときだけ、読み取りをやり直す。
+ *
+ * 【なぜ要るか】
+ *   スモークを続けて何十回も回すと、使い回している接続を
+ *   サーバー側が閉じる瞬間に当たることがある（ECONNRESET）。
+ *   実際、ranking を5回連続で回した5回目で起きた。
+ *
+ *   これは**アプリの不具合ではない**が、ここで落ちると
+ *   検査全体が中断し、本当に見たかったことが分からなくなる。
+ *
+ * 【やり直すのは GET だけ】
+ *   POST をやり直すと、**届いていた場合に二重送信になる。**
+ *   いいねが2回入ったり、作品が2件できたりしては検査にならない。
+ *   POST が切れたときは、理由を書いてそのまま失敗させる。
+ *
+ * 【HTTP のエラーはやり直さない】
+ *   404 も 500 も「届いて返ってきた」結果なので、そのまま返す。
+ *   やり直してよいのは、**返事が返ってこなかったとき**だけ。
+ */
+export async function retryingFetch(url, options, { retry }) {
+  let last;
+
+  for (let attempt = 1; attempt <= (retry ? 3 : 1); attempt += 1) {
+    try {
+      return await fetch(url, options);
+    } catch (e) {
+      last = e;
+      const cause = e?.cause?.code ?? "";
+      const transient = ["ECONNRESET", "ECONNREFUSED", "UND_ERR_SOCKET", "EPIPE"].includes(cause);
+      if (!transient || attempt === 3) break;
+      await new Promise((r) => setTimeout(r, 200 * attempt));
+    }
+  }
+
+  throw new Error(
+    [
+      `${options?.method ?? "GET"} ${url} への通信が切れました（${last?.cause?.code ?? last?.message}）。`,
+      "",
+      retry
+        ? "3回やり直しても届きませんでした。npm run dev が動いているか確かめてください。"
+        : "**送信（POST）はやり直しません。**届いていた場合に二重送信になるためです。",
+      "",
+      "これはアプリの不具合ではなく、手元の接続が切れたときに出ます。",
+    ].join("\n"),
+  );
+}
+
+export function session(name, initialCookies) {
+  const jar = new Map(Object.entries(initialCookies ?? {}));
 
   const cookieHeader = () => [...jar.entries()].map(([k, v]) => `${k}=${v}`).join("; ");
 
@@ -93,10 +199,11 @@ export function session(name) {
   };
 
   async function get(path) {
-    const res = await fetch(BASE + path, {
-      headers: { cookie: cookieHeader() },
-      redirect: "manual",
-    });
+    const res = await retryingFetch(
+      BASE + path,
+      { headers: { cookie: cookieHeader() }, redirect: "manual" },
+      { retry: true },
+    );
     store(res);
     if (res.status >= 300 && res.status < 400) {
       const location = res.headers.get("location");
@@ -113,12 +220,11 @@ export function session(name) {
     for (const [k, v] of Object.entries(fields)) body.append(k, v);
     if (file) body.append(file.field, new Blob([file.bytes], { type: file.type }), file.name);
 
-    const res = await fetch(BASE + path, {
-      method: "POST",
-      headers: { cookie: cookieHeader() },
-      body,
-      redirect: "manual",
-    });
+    const res = await retryingFetch(
+      BASE + path,
+      { method: "POST", headers: { cookie: cookieHeader() }, body, redirect: "manual" },
+      { retry: false },
+    );
     store(res);
     const loc = res.headers.get("location");
     if (loc) {
@@ -130,7 +236,10 @@ export function session(name) {
     return { html, status: res.status, path };
   }
 
-  return { name, get, post };
+  /** いまの Cookie を控えとして持ち出す（固定利用者の使い回しに使う） */
+  const cookies = () => Object.fromEntries(jar);
+
+  return { name, get, post, cookies };
 }
 
 /**
@@ -349,6 +458,83 @@ export async function drawPrompt(s, modeKey, timeLimitSeconds = "3600") {
   return { promptId, answers, answerLabels: [...answers.values()] };
 }
 
+/** /account でサインイン済みかどうか */
+export function isSignedIn(html) {
+  return /登録ユーザーとしてサインインしています/.test(textOf(html));
+}
+
+/**
+ * メールと合言葉で /account からサインインする。
+ *
+ * **匿名サインインではない。**認証の口は叩くが、こちらは
+ * 「5分に30回」の枠で、匿名の「1時間に30回」より12倍ゆるい。
+ * さらに fixtureSession が Cookie を使い回すので、
+ * ふだんはここまで来ない。
+ */
+export async function signIn(s, email, password) {
+  const page = await s.get("/account");
+  const form = forms(page.html).find((f) => /サインインする/.test(f.text));
+  if (!form?.actionId) throw new Error("/account にサインインフォームが見つかりません");
+
+  const after = await s.post("/account", { [form.actionId]: "", email, password });
+
+  if (!isSignedIn(after.html)) {
+    throw new Error(
+      `検査用の利用者としてサインインできませんでした: ${textOf(after.html).slice(0, 120)}`,
+    );
+  }
+  return after;
+}
+
+/**
+ * 使い回しの検査用利用者としてサインインしたセッションを返す。
+ *
+ * 【ここが回数制限をほどく肝】
+ *   1. 前回の Cookie が控えにあれば、まずそれで開いてみる
+ *   2. まだ有効ならそのまま使う → **認証の口を1回も叩かない**
+ *   3. 切れていたときだけサインインし直し、新しい Cookie を控える
+ *
+ *   ふだんの実行は 1 と 2 で終わるので、何周回しても上限に当たらない。
+ *
+ * 【匿名サインインは使わない】
+ *   ゲストとして遊べることは smoke:anon が確かめる。
+ *   ランキングや投稿の検査は本題がそこではないので、
+ *   外の上限に振り回されないよう固定利用者を使う。
+ *
+ * @param role 役割名。`dpq-fixture-<役割>@dpq-smoke.invalid` になる
+ */
+export async function fixtureSession(role) {
+  const cached = loadCookies(role);
+  const s = session(role, cached);
+
+  if (Object.keys(cached).length > 0) {
+    const page = await s.get("/account");
+    if (isSignedIn(page.html)) {
+      storeCookies(role, s.cookies());
+      return s;
+    }
+  }
+
+  const user = await ensureFixtureUser(role);
+  const fresh = session(role);
+  await signIn(fresh, user.email, user.password);
+  storeCookies(role, fresh.cookies());
+  return fresh;
+}
+
+/**
+ * 使い捨ての検査用利用者としてサインインしたセッションを返す。
+ *
+ * 退会の検査のように、**その人が消える前提**の流れで使う。
+ * 使い回すと次の実行で「もう居ない人」になってしまうため。
+ */
+export async function throwawaySession(role) {
+  const user = await createThrowawayUser(role);
+  const s = session(`${role}-throwaway`);
+  await signIn(s, user.email, user.password);
+  return { session: s, ...user };
+}
+
 /** /account の登録フォームを送る。ゲストなら昇格、未サインインなら新規作成 */
 export async function register(s, label) {
   const email = `dpq-smoke-${label}-${process.pid}-${Math.floor(Math.random() * 1e6)}@example.com`;
@@ -400,11 +586,19 @@ export async function submitWork(s, promptId, fields, png) {
     ? { field: "image", bytes: png, name: "smoke.png", type: "image/png" }
     : { field: "image", bytes: png.bytes, name: png.name, type: png.type };
 
-  return s.post(
+  const after = await s.post(
     `/works/new?promptId=${promptId}`,
     { [form.actionId]: "", promptId, ...agree, ...fields },
     file,
   );
+
+  // 作れたものは、その場で片づけ対象に入れておく。
+  // **各検査に覚えさせない。**忘れた1件が次の実行の前提を変えるので、
+  // 作る場所が1つしかないここで機械的に積む。
+  const workId = /^\/works\/([0-9a-f-]{36})/.exec(after.path)?.[1];
+  if (workId) trackWork(s, workId, fields.title);
+
+  return after;
 }
 
 /**
