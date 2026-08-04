@@ -85,7 +85,7 @@ const secretKey = hasSecretKey();
 // ── 1. 規約に同意しないと投稿できない ─────────────────────
 section("1. 規約に同意しないと投稿できない（P3）");
 
-await register(leaver, "leaver");
+const leaverLogin = await register(leaver, "leaver");
 await register(stayer, "stayer");
 await register(other, "other");
 
@@ -363,6 +363,32 @@ section("10. 使っていた ID は他人に渡らない");
 
   const check = await other.get(`/u/${leaverHandle}`);
   must(check.status === 404, "その ID のページは存在しないまま", `実際 ${check.status}`);
+}
+
+// ── 11. 退会したあとは再ログインできない ─────────────────
+section("11. 退会したあとは再ログインできない");
+
+if (secretKey) {
+  // **新しいセッション**で試す。退会した本人の Cookie は当てにしない。
+  const ghost = session("ghost");
+  const tried = await submitAccountForm(ghost, "サインインする", {
+    email: leaverLogin.email,
+    password: leaverLogin.password,
+  });
+  const text = textOf(tried.html);
+
+  must(
+    !/サインインしました|ログインしました/.test(text),
+    "退会したメールとパスワードではサインインできない",
+  );
+
+  // サインインできていれば /account に自分の情報が出る。出ないことを見る。
+  must(
+    !new RegExp(leaverHandle).test(text),
+    "退会した人の ID が画面に出てこない",
+  );
+} else {
+  must(true, "鍵が無いので再ログインの検査は省略（auth.users が残るため）");
 }
 
 console.log("");

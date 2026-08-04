@@ -1,11 +1,13 @@
 "use server";
 
 import { redirect } from "next/navigation";
+import { headers } from "next/headers";
 import { revalidatePath } from "next/cache";
 import { ensureUserId } from "@/features/auth/session";
 import { callSubmitAnswer } from "@/features/quiz/rpc";
 import type { AnswerSelection } from "@/features/quiz/types";
 import { callCreateReport } from "@/features/report/rpc";
+import { captchaRequired, verifyCaptcha } from "@/features/report/captcha";
 import {
   callDeleteWork,
   callMarkWorkImageDeleted,
@@ -230,6 +232,30 @@ export async function createReportAction(form: FormData): Promise<void> {
   const workId = str(form, "workId");
   const reason = str(form, "reason");
   const detail = str(form, "detail").trim();
+
+  // --- CAPTCHA（P6）-----------------------------------------------------
+  //
+  // 秘密鍵が設定されているときだけ検証する。設定されていなければ素通し
+  // （開発中に手が止まらないようにするため）。**公開前に必ず設定する。**
+  //
+  // 検証に行けなかった場合も通さない。「確かめられなかったから通す」に
+  // すると、検証先を落とすだけで CAPTCHA を無効化できてしまう。
+  if (captchaRequired()) {
+    const token = str(form, "cf-turnstile-response");
+    const headerList = await headers();
+    const ip =
+      headerList.get("x-forwarded-for")?.split(",")[0]?.trim() ??
+      headerList.get("x-real-ip") ??
+      undefined;
+
+    if (!(await verifyCaptcha(token, ip))) {
+      redirect(
+        `/works/${workId}/report?error=${encodeURIComponent(
+          "確認に失敗しました。画面を読み込み直して、もう一度お試しください。",
+        )}`,
+      );
+    }
+  }
 
   try {
     await ensureUserId();

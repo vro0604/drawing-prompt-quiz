@@ -265,6 +265,26 @@ const USER_GRANTEES = `(0, 'anon'::regrole::oid, 'authenticated'::regrole::oid)`
  * 退会・規約で足した7表。すべて遮断する（権限もポリシーも与えない）。
  * 読み書きは security definer の RPC と service_role だけ。
  */
+/**
+ * Step 16 の掃除。**呼べるのは service_role だけ**でなければならない。
+ * 掃除は RLS を迂回して動くので、利用者から呼べると
+ * 「掃除」を装ってデータを消させられる。
+ */
+const CLEANUP_FUNCS = [
+  "cleanup_orphan_prompts",
+  "cleanup_stale_drafts",
+  "cleanup_expired_agreements",
+  "enqueue_orphan_work_images",
+  "list_pending_storage_objects",
+  "mark_storage_object_done",
+  "mark_storage_object_failed",
+  "list_pending_account_deletions",
+  "finish_account_deletion",
+  "fail_account_deletion",
+  "list_stale_guests",
+  "cleanup_status",
+];
+
 const WITHDRAWAL_TABLES = [
   "app_secrets",
   "handle_reservations",
@@ -715,6 +735,106 @@ export const checks = [
              and (has_function_privilege('anon', p.oid, 'EXECUTE')
                or has_function_privilege('authenticated', p.oid, 'EXECUTE'))`,
     params: [META_FUNCS],
+  },
+
+  // ──────────────────────────────── 掃除 ────────────────────────────────
+  //
+  // spec 13 Step 16。実際に減ることは [参考] の件数で見る。
+  // ここでは**掃除が誰にでも呼べる状態になっていないか**を見る。
+  //
+  // 掃除は service_role で動く（RLS を迂回する）。利用者から呼べると、
+  // 「掃除」を装ってデータを消させられる。
+  {
+    group: "掃除",
+    name: "掃除の関数が12本ある",
+    expected: 12,
+    sql: `select count(*)::int from pg_proc p
+            join pg_namespace n on n.oid = p.pronamespace
+           where n.nspname='public' and p.proname = any($1)`,
+    params: [CLEANUP_FUNCS],
+  },
+  {
+    group: "掃除",
+    name: "掃除の関数を anon / authenticated が呼べない",
+    expected: 0,
+    sql: `select count(*)::int from pg_proc p
+            join pg_namespace n on n.oid = p.pronamespace
+           where n.nspname='public' and p.proname = any($1)
+             and (has_function_privilege('anon', p.oid, 'EXECUTE')
+               or has_function_privilege('authenticated', p.oid, 'EXECUTE'))`,
+    params: [CLEANUP_FUNCS],
+    detailSql: `select p.proname,
+                       has_function_privilege('anon', p.oid, 'EXECUTE') as anon,
+                       has_function_privilege('authenticated', p.oid, 'EXECUTE') as auth
+                  from pg_proc p join pg_namespace n on n.oid = p.pronamespace
+                 where n.nspname='public' and p.proname = any($1)
+                 order by 1`,
+    detailParams: [CLEANUP_FUNCS],
+  },
+  {
+    group: "掃除",
+    name: "掃除の関数を service_role が呼べる",
+    expected: 12,
+    sql: `select count(*)::int from pg_proc p
+            join pg_namespace n on n.oid = p.pronamespace
+           where n.nspname='public' and p.proname = any($1)
+             and has_function_privilege('service_role', p.oid, 'EXECUTE')`,
+    params: [CLEANUP_FUNCS],
+  },
+  {
+    // 投稿済みのはずの作品が失われている行は、掃除で消さない。
+    // 消すと原因を調べる手がかりまで消える（診断 A5 が拾うもの）。
+    group: "掃除",
+    name: "お題の掃除が submitted を消さない",
+    expected: 1,
+    sql: `select count(*)::int from pg_proc p
+            join pg_namespace n on n.oid = p.pronamespace
+           where n.nspname='public' and p.proname='cleanup_orphan_prompts'
+             and p.prosrc like '%''active'', ''abandoned''%'
+             and p.prosrc not like '%submitted%'`,
+  },
+  {
+    // completed のドラフトは消さない。未選択カードの後日開示に候補が要る。
+    group: "掃除",
+    name: "ドラフトの掃除が completed を消さない",
+    expected: 1,
+    sql: `select count(*)::int from pg_proc p
+            join pg_namespace n on n.oid = p.pronamespace
+           where n.nspname='public' and p.proname='cleanup_stale_drafts'
+             and p.prosrc like '%in_progress%'
+             and p.prosrc like '%abandoned%'
+             and p.prosrc not like '%completed%'`,
+  },
+  {
+    // 作品を持つゲストを消そうとすると works_owner_or_deleted で失敗する。
+    // 失敗する前に候補から除いておく。
+    group: "掃除",
+    name: "ゲストの掃除が作品を持つ人を除いている",
+    expected: 1,
+    sql: `select count(*)::int from pg_proc p
+            join pg_namespace n on n.oid = p.pronamespace
+           where n.nspname='public' and p.proname='list_stale_guests'
+             and p.prosrc like '%public.works%'
+             and p.prosrc like '%30 days%'`,
+  },
+  {
+    group: "掃除",
+    name: "掃除の関数で search_path が未固定のものが0本",
+    expected: 0,
+    // proconfig の値は `search_path=""` の形になる。完全一致では拾えないので
+    // 前方一致で見る（既存の「関数」検査と同じ書き方にそろえた）。
+    sql: `select count(*)::int from pg_proc p
+            join pg_namespace n on n.oid = p.pronamespace
+           where n.nspname='public' and p.proname = any($1)
+             and not exists (
+               select 1 from unnest(coalesce(p.proconfig,'{}')) c
+                where c like 'search\\_path=%')`,
+    params: [CLEANUP_FUNCS],
+    detailSql: `select p.proname, p.proconfig::text
+                  from pg_proc p join pg_namespace n on n.oid = p.pronamespace
+                 where n.nspname='public' and p.proname = any($1)
+                 order by 1`,
+    detailParams: [CLEANUP_FUNCS],
   },
 
   // ─────────────────────────────── 退会・規約 ───────────────────────────────
@@ -1971,6 +2091,72 @@ export const diagnostics = [
     sql: `select w.id::text from public.works w
            where w.image_deleted_at is not null and w.deleted_at is null`,
   },
+
+  // ───────────── 退会（A28〜A33）─────────────
+  //
+  // 読み取り RPC を止めていないのは「止める対象が残っていないから」だった。
+  // **その前提が本当に成り立っているかを、ここで数え続ける。**
+  // 1件でも出れば、退会処理中の人のデータがまだ本人に紐づいている。
+  {
+    id: "A28",
+    label: "退会処理中なのに作品を持ったままの人",
+    sql: `select w.id::text from public.works w
+            join public.profiles p on p.id = w.user_id
+           where p.account_status <> 'active'`,
+  },
+  {
+    id: "A29",
+    label: "退会処理中なのに本人だけのデータが残っている人",
+    // likes / saves / user_stats / user_slot_stats / draft_sessions は
+    // 退会で消すと決めた（指定8）。1件でも残っていれば消し漏れ。
+    sql: `select p.id::text from public.profiles p
+           where p.account_status <> 'active'
+             and (exists (select 1 from public.likes           x where x.user_id = p.id)
+               or exists (select 1 from public.saves           x where x.user_id = p.id)
+               or exists (select 1 from public.user_stats      x where x.user_id = p.id)
+               or exists (select 1 from public.user_slot_stats x where x.user_id = p.id)
+               or exists (select 1 from public.draft_sessions  x where x.user_id = p.id))`,
+  },
+  {
+    id: "A30",
+    label: "退会処理中なのに個人が特定できる情報が残っている人",
+    sql: `select p.id::text from public.profiles p
+           where p.account_status <> 'active'
+             and (p.handle is not null
+               or p.bio is not null
+               or p.links <> '{}'::jsonb
+               or p.display_name <> '退会したユーザー')`,
+  },
+  {
+    id: "A31",
+    label: "退会処理中なのに回答・通報・お題が本人に紐づいたままの人",
+    sql: `select p.id::text from public.profiles p
+           where p.account_status <> 'active'
+             and (exists (select 1 from public.answers x where x.user_id     = p.id)
+               or exists (select 1 from public.reports x where x.reporter_id = p.id)
+               or exists (select 1 from public.prompts x where x.created_by  = p.id)
+               or exists (select 1 from public.terms_agreements x where x.user_id = p.id))`,
+  },
+  {
+    id: "A32",
+    // **他人の回答が残っていることを、逆から確かめる。**
+    // 作者のいない作品で、数えた回答数と実際の行数が食い違っていたら、
+    // 回答が消えている（cascade で巻き添えになった）ということ。
+    label: "持ち主のいない作品で、回答の件数が合わない",
+    sql: `select w.id::text from public.works w
+           where w.user_id is null
+             and w.answers_count <> (select count(*) from public.answers a
+                                      where a.work_id = w.id)`,
+  },
+  {
+    id: "A33",
+    // 同じく、枠ごとの集計が消えていないこと。
+    label: "持ち主のいない作品で、回答があるのに集計が消えている",
+    sql: `select w.id::text from public.works w
+           where w.user_id is null and w.answers_count > 0
+             and not exists (select 1 from public.work_slot_stats s
+                              where s.work_id = w.id)`,
+  },
 ];
 
 /**
@@ -1980,6 +2166,30 @@ export const diagnostics = [
  * checks に混ぜると常に失敗し、本当の失敗が埋もれてしまう。
  */
 export const notices = [
+  // 退会の後始末。**0 になるのが正しいが、失敗したぶんが残るのも正しい。**
+  // 診断に混ぜると、後始末が1件でも残っている間ずっと失敗し続けてしまう。
+  // 片づけるのは Step 16 の掃除。
+  {
+    label: "auth.users をまだ消せていない退会（掃除の対象）",
+    sql: `select count(*)::int from public.account_deletions`,
+    note:
+      "0 が正常。残っているぶんは Step 16 の掃除が再試行する。" +
+      "この行が残っている間、その人は deletion_pending のままで何も書き込めない。",
+  },
+  {
+    label: "Storage からまだ消せていない画像（掃除の対象）",
+    sql: `select count(*)::int from public.storage_cleanup_queue where deleted_at is null`,
+    note:
+      "0 が正常。残っているぶんは Step 16 の掃除が再試行する。" +
+      "作品はすでに非公開・削除済みなので、残っていても画面には出ない。",
+  },
+  {
+    label: "退会処理中のまま止まっている人",
+    sql: `select count(*)::int from public.profiles where account_status <> 'active'`,
+    note:
+      "0 が正常。退会が最後まで通れば profiles ごと消える（auth.users の cascade）。" +
+      "残っているのは第2段階が失敗した人で、上の2つと対になっている。",
+  },
   {
     label: "選択肢が重複しているお題（重複禁止より前に作られたぶん・legacy）",
     sql: `select count(*)::int from (
