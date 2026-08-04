@@ -116,7 +116,7 @@ function adminClient() {
         "    NEXT_PUBLIC_SUPABASE_URL",
         "    SUPABASE_SECRET_KEY   … sb_secret_ で始まる新しい形式",
         "",
-        "  取り方: docs/launch-checklist.md 2-3",
+        "  取り方: docs/launch-checklist.md 手順4",
       ].join("\n"),
     );
   }

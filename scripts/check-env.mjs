@@ -169,7 +169,7 @@ if (strict) {
   console.log(`${RED}${BOLD}✗ ${problems.length}件たりません。本番のビルドを中止します。${RESET}`);
   for (const p of problems) console.log(`  ${RED}・${p}${RESET}`);
   console.log("");
-  console.log(`${DIM}  設定する場所と一覧: docs/launch-checklist.md 2-3${RESET}`);
+  console.log(`${DIM}  設定する場所と一覧: docs/launch-checklist.md 手順4${RESET}`);
   process.exit(1);
 }
 

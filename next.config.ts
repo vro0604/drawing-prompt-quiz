@@ -16,6 +16,9 @@ import type { NextConfig } from "next";
  *   multipart の区切りやヘッダのぶんだけ余裕を足して 6MB にする。
  *   **画像そのものの上限は 5MB のまま**で、それはバケットの
  *   file_size_limit と投稿処理の両方が見ている。
+ *
+ * 【3】検索除外（限定公開のあいだだけ）
+ *   下の headers() を参照。一般公開に切り替えるときに消す。
  */
 
 const supabaseHost = (() => {
@@ -45,6 +48,30 @@ const nextConfig: NextConfig = {
     serverActions: {
       bodySizeLimit: "6mb",
     },
+  },
+
+  // ───────── 【限定公開】検索除外（1/2）─────────
+  //
+  // もう1か所は src/app/layout.tsx の metadata.robots（<meta>）。
+  // **一般公開に切り替えるときは、この headers() と
+  //   layout.tsx の robots ブロックの2か所だけを消す。**
+  //
+  // ヘッダにするのは、HTML でない応答にも付けるため。
+  // 画像・OGP画像・Server Action の応答・404 の本文にも同じ札が付く。
+  // meta タグだけだと、そこに穴が残る。
+  //
+  // `/:path*` は全経路。静的ファイルより先に評価される。
+  // 環境で切り替えない（新しい環境変数を増やさない）。
+  // 限定公開をやめる判断は、コードを消すことで表す。
+  headers() {
+    return [
+      {
+        source: "/:path*",
+        headers: [
+          { key: "X-Robots-Tag", value: "noindex, nofollow, noarchive" },
+        ],
+      },
+    ];
   },
 };
 

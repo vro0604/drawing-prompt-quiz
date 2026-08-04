@@ -30,6 +30,44 @@ export const metadata: Metadata = {
   },
   description:
     "引いたお題で絵を描き、見た人が絵だけからお題を当てるクイズ。ゲストのまま遊べます。",
+
+  // ───────── 【限定公開】検索除外（2/2）─────────
+  //
+  // もう1か所は next.config.ts の headers()（X-Robots-Tag）。
+  // **一般公開に切り替えるときは、この robots ブロックと
+  //   next.config.ts の該当ブロックの2か所だけを消す。**
+  //
+  // 【なぜ meta とヘッダの両方を出すか】
+  //   meta は HTML を解釈できたクローラーにしか届かない。
+  //   画像・JSON・OGP画像のような HTML でない応答には書けない。
+  //   ヘッダなら全部の応答に付く。どちらか片方では穴が残る。
+  //
+  // 【robots.txt を置かない理由】
+  //   `Disallow: /` を書くと、クローラーはページを**取得しなくなる**。
+  //   取得しないので、下の noindex を読むこともない。
+  //   その結果 URL だけが検索結果に残ることがある。
+  //   **取得はさせて、noindex を読ませる**のが正しい。
+  //   SNS の共有カードも robots.txt を見るものがあるため、
+  //   置かないほうが共有が壊れない。
+  //
+  // 【sitemap を作らない理由】
+  //   出せば「見に来てください」と言うことになる。限定公開と矛盾する。
+  //   いまリポジトリに sitemap.ts は無い（作らない）。
+  //
+  // index / follow を false で書く。noindex / nofollow という
+  // キーは Next.js 16 で非推奨（型が never）になっている。
+  robots: {
+    index: false,
+    follow: false,
+    noarchive: true,
+    // googleBot だけは別のタグに分けて出るため、同じ内容を明示する。
+    // 書かないと googlebot 向けタグが出ず、既定の解釈に委ねることになる。
+    googleBot: {
+      index: false,
+      follow: false,
+      noarchive: true,
+    },
+  },
 };
 
 export default function RootLayout({

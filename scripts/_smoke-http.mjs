@@ -260,7 +260,7 @@ export function session(name, initialCookies) {
  *   匿名サインインは**1時間あたり30回・IPアドレス単位**が既定。
  *   スモークは1周で十数人ぶん使うので、続けて何周も回すと必ず当たる。
  *   上げるのは Supabase ダッシュボードの
- *   Authentication → Rate limits（docs/launch-checklist.md 2-1）。
+ *   Authentication → Rate limits（docs/launch-checklist.md 手順5）。
  */
 export function assertNotRateLimited(text) {
   if (typeof text !== "string") return;

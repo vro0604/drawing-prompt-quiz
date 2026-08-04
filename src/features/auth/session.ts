@@ -19,7 +19,7 @@ const ANONYMOUS_DISABLED = "anonymous_provider_disabled";
  * 学校・会社・携帯回線のように多人数が同じ出口IPを共有する場所では、
  * 31人目が始められなくなる。上限は
  * ダッシュボードの Authentication → Rate limits で上げられる
- * （docs/launch-checklist.md 2-1）。
+ * （docs/launch-checklist.md 手順5）。
  */
 const RATE_LIMITED = "over_request_rate_limit";
 
