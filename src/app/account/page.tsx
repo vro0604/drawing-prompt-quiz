@@ -1,5 +1,6 @@
 import Link from "next/link";
 import { getCurrentUser, getMyProfile } from "@/features/auth/session";
+import { SubmitButton } from "@/app/_pending";
 import { LINK_FIELDS } from "@/features/profile/rpc";
 import { VISIBILITY_FIELDS } from "@/features/profile/types";
 import type { Profile } from "@/types/database";
@@ -211,9 +212,9 @@ export default async function AccountPage({
               ))}
             </div>
 
-            <button type="submit" className={primary}>
+            <SubmitButton pendingLabel="保存しています…" className={primary}>
               プロフィールを保存する
-            </button>
+            </SubmitButton>
           </form>
 
           {profile?.handle ? (
@@ -259,9 +260,9 @@ export default async function AccountPage({
               </label>
             ))}
 
-            <button type="submit" className={primary}>
+            <SubmitButton pendingLabel="保存しています…" className={primary}>
               公開設定を保存する
-            </button>
+            </SubmitButton>
           </form>
 
           <p className="border-t border-black/10 pt-4 text-sm dark:border-white/10">
@@ -288,9 +289,9 @@ export default async function AccountPage({
           </div>
           <form action={registerAction} className="space-y-4">
             <Credentials idPrefix="promote" />
-            <button type="submit" className={primary}>
+            <SubmitButton pendingLabel="登録中…" className={primary}>
               このゲストのまま登録する
-            </button>
+            </SubmitButton>
           </form>
         </section>
       ) : null}
@@ -302,9 +303,9 @@ export default async function AccountPage({
             <h2 className="text-sm font-bold">新しく登録する</h2>
             <form action={registerAction} className="space-y-4">
               <Credentials idPrefix="signup" />
-              <button type="submit" className={primary}>
+              <SubmitButton pendingLabel="登録中…" className={primary}>
                 登録する
-              </button>
+              </SubmitButton>
             </form>
           </section>
 
@@ -312,9 +313,9 @@ export default async function AccountPage({
             <h2 className="text-sm font-bold">登録済みの方はこちら</h2>
             <form action={signInAction} className="space-y-4">
               <Credentials idPrefix="signin" />
-              <button type="submit" className={secondary}>
+              <SubmitButton pendingLabel="サインイン中…" className={secondary}>
                 サインインする
-              </button>
+              </SubmitButton>
             </form>
           </section>
         </>
@@ -324,9 +325,9 @@ export default async function AccountPage({
       {user !== null ? (
         <section className={`${box} space-y-3`}>
           <form action={signOutAction}>
-            <button type="submit" className={secondary}>
+            <SubmitButton pendingLabel="サインアウト中…" className={secondary}>
               サインアウトする
-            </button>
+            </SubmitButton>
           </form>
           {isGuest ? (
             <p className="text-xs text-rose-700 dark:text-rose-300">

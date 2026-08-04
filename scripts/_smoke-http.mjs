@@ -323,7 +323,17 @@ export function workImageUrl(userId, workId, ext = "png") {
  * 「投稿できない」のか「登録できていないだけ」なのか分からなくなるので、
  * 先に切り分けておく。
  */
-export async function requireAutoConfirm() {
+/**
+ * いま Confirm email が OFF（＝登録がその場で完了する）か。
+ *
+ * 【なぜ真偽値で欲しいか】
+ *   本番は Confirm email が **ON**。ON のときの昇格は
+ *   「確認メールを送ったところで止まる」のが正しい姿で、
+ *   **止まること自体を検査したい。**
+ *   一律に「OFF でなければ実行しない」にすると、
+ *   本番と同じ設定での検査ができなくなる。
+ */
+export async function isAutoConfirm() {
   const env = { ...readEnvLocal(), ...process.env };
   const url = env.NEXT_PUBLIC_SUPABASE_URL;
   const key = env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY;
@@ -335,20 +345,9 @@ export async function requireAutoConfirm() {
 
   const res = await fetch(`${url}/auth/v1/settings`, { headers: { apikey: key } });
   const settings = await res.json();
-
-  if (!settings.mailer_autoconfirm) {
-    console.error(
-      [
-        "Supabase の Confirm email が ON になっています。",
-        "",
-        "この検査は画面の登録フローをそのまま通すため、確認メールの受信が挟まると進めません。",
-        "対処: ダッシュボード → Authentication → Sign In / Providers → Email",
-        "      → Confirm email を OFF にしてから、もう一度実行してください。",
-      ].join("\n"),
-    );
-    process.exit(1);
-  }
+  return settings.mailer_autoconfirm === true;
 }
+
 
 // ── 検査用の PNG を組み立てる ────────────────────────────
 //
@@ -535,19 +534,57 @@ export async function throwawaySession(role) {
   return { session: s, ...user };
 }
 
-/** /account の登録フォームを送る。ゲストなら昇格、未サインインなら新規作成 */
-export async function register(s, label) {
-  const email = `dpq-smoke-${label}-${process.pid}-${Math.floor(Math.random() * 1e6)}@example.com`;
-  const password = `smoke-${Math.random().toString(36).slice(2)}A1!`;
+/** 検査用の資格情報。実在しないドメインにする */
+function newCredentials(label) {
+  return {
+    email: `dpq-smoke-${label}-${process.pid}-${Math.floor(Math.random() * 1e6)}@example.com`,
+    password: `smoke-${Math.random().toString(36).slice(2)}A1!`,
+  };
+}
 
+/** /account の登録フォームを探す */
+async function registerForm(s) {
   const page = await s.get("/account");
   const form = forms(page.html).find(
     (f) => /登録する/.test(f.text) && !/サインインする/.test(f.text),
   );
   if (!form?.actionId) throw new Error("/account に登録フォームが見つかりません");
+  return form;
+}
+
+/** /account の登録フォームを送る。ゲストなら昇格、未サインインなら新規作成 */
+export async function register(s, label) {
+  const { email, password } = newCredentials(label);
+  const form = await registerForm(s);
 
   const after = await s.post("/account", { [form.actionId]: "", email, password });
   return { email, password, page: after };
+}
+
+/**
+ * 登録フォームを**同時に n 本**送る（二重送信の再現）。
+ *
+ * 【何を再現しているか】
+ *   本番でボタンに反応が無く、利用者が続けて2回押していた。
+ *   1回目でパスワードが確定し、2回目が同じパスワードを送ったため
+ *   Supabase が same_password を返して「登録できませんでした」と出た。
+ *
+ *   Enter とクリックが重なった場合も、届くのは同じ POST が2本。
+ *   ここでは**まったく同時**に投げて、いちばん厳しい形で確かめる。
+ *
+ * @returns すべての応答ページ。1本でも失敗表示が出たら不合格
+ */
+export async function registerConcurrent(s, label, times) {
+  const { email, password } = newCredentials(label);
+  const form = await registerForm(s);
+
+  const pages = await Promise.all(
+    Array.from({ length: times }, () =>
+      s.post("/account", { [form.actionId]: "", email, password }),
+    ),
+  );
+
+  return { email, password, pages };
 }
 
 /**

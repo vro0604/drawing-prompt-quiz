@@ -39,8 +39,6 @@ import {
   forms,
   makePng,
   must,
-  register,
-  requireAutoConfirm,
   section,
   session,
   fixtureSession,
@@ -48,7 +46,6 @@ import {
   textOf,
 } from "./_smoke-http.mjs";
 
-await requireAutoConfirm();
 
 const stamp = `${process.pid}${Math.floor(Math.random() * 1000)}`.slice(-8);
 const RANKING_PAGE_SIZE = 20;
@@ -101,9 +98,11 @@ async function post(s, promptId, title, extra) {
   return id;
 }
 
-const artist = session("artist");
-const fanA = session("fanA");
-const fanB = session("fanB");
+// 画面からの登録は使わない。**本番は Confirm email が ON** で、
+// 確認メールの受信を挟むと検査が進められないため（D84）。
+const artist = await fixtureSession("artist");
+const fanA = await fixtureSession("fanA");
+const fanB = await fixtureSession("fanB");
 // 回答者5人。**ゲストではなく固定の検査用利用者。**
 // ここの本題はランキングの並びであって「ゲストでも答えられること」ではない。
 // ゲストで回すと 1回の実行で匿名サインインを5回使い、
@@ -116,9 +115,6 @@ const visitor = session("visitor"); // 未サインイン
 // ── 1. 作品を用意する ────────────────────────────────────
 section("1. 作品を用意する（通常3件・AI 1件・下書き1件）");
 
-await register(artist, "artist");
-await register(fanA, "fanA");
-await register(fanB, "fanB");
 
 // 制限時間を分けて、時間区分の検査に使う。
 //   1800秒 → medium ／ 600秒 → short ／ 無制限 → unlimited ／ 3600秒 → long

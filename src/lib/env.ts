@@ -24,6 +24,28 @@ export const SUPABASE_PUBLISHABLE_KEY =
 /** サーバー専用。未設定なら空文字。値そのものは絶対にログへ出さない。 */
 export const SUPABASE_SECRET_KEY = process.env.SUPABASE_SECRET_KEY ?? "";
 
+/**
+ * このサービスの**正規URL**。
+ *
+ * 確認メールの戻り先に使う。ここを個別 Deployment URL
+ * （`…-<ハッシュ>-….vercel.app`）にしてはいけない。
+ *
+ * 戻り先が正規URLと違うと、確認の引き換えに要る控えが読めない
+ * （控えは Cookie にあり、Cookie はホストごとに分かれるため）。
+ * だから**環境変数に書いた1つの値だけ**を使い、
+ * リクエストのホスト名からは組み立てない。
+ *
+ * 手元では未設定なので localhost に落とす。
+ */
+export const SITE_URL = (
+  process.env.NEXT_PUBLIC_SITE_URL ?? "http://localhost:3000"
+).replace(/\/+$/, "");
+
+/** 正規URL上の絶対パスを作る。`/account` → `https://…/account` */
+export function siteUrl(path: string): string {
+  return `${SITE_URL}${path.startsWith("/") ? path : `/${path}`}`;
+}
+
 /** Admin API を使えるか。使えないときは退会の第2段階を掃除へ回す。 */
 export function hasSupabaseSecretKey(): boolean {
   return SUPABASE_SECRET_KEY.trim() !== "";

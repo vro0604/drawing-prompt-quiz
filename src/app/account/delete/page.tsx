@@ -1,6 +1,7 @@
 import Link from "next/link";
 import { fetchAccountState } from "@/features/account/rpc";
 import { deleteAccountAction } from "./actions";
+import { SubmitButton } from "@/app/_pending";
 
 /**
  * /account/delete ／ 退会の確認画面。
@@ -189,12 +190,12 @@ export default async function DeleteAccountPage({
         </label>
 
         <div className="flex flex-wrap gap-3">
-          <button
-            type="submit"
+          <SubmitButton
+            pendingLabel="退会の手続き中…"
             className="rounded-xl bg-rose-600 px-6 py-3 text-sm font-bold text-white hover:opacity-85"
           >
             退会する（取り消せません）
-          </button>
+          </SubmitButton>
           <Link
             href="/account"
             className="rounded-xl border border-black/20 px-6 py-3 text-sm font-bold hover:bg-black/[0.04] dark:border-white/25 dark:hover:bg-white/10"

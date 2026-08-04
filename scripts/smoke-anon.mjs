@@ -55,8 +55,8 @@ import {
   forms,
   makePng,
   must,
-  register,
-  requireAutoConfirm,
+  registerConcurrent,
+  isAutoConfirm,
   section,
   session,
   submitWork,
@@ -64,7 +64,16 @@ import {
   fixtureSession,
 } from "./_smoke-http.mjs";
 
-await requireAutoConfirm();
+// 本番は Confirm email が **ON**。ON のときは
+// 「確認メールを送ったところで止まる」のが正しい姿なので、
+// **OFF を要求せず、設定に合わせて期待値を変える。**
+const autoConfirm = await isAutoConfirm();
+
+console.log(
+  autoConfirm
+    ? "  Confirm email: OFF（登録はその場で完了する設定）"
+    : "  Confirm email: ON（本番と同じ。昇格は確認メールで止まる）",
+);
 
 const stamp = `${process.pid}${Math.floor(Math.random() * 1000)}`.slice(-8);
 
@@ -123,28 +132,126 @@ section("2. ゲストは作品を投稿できない（spec C3 / D27-1）");
 // ── 3. 昇格しても uid が変わらず、お題を引き継げる ────────
 section("3. ゲストから昇格しても uid とお題が引き継がれる（spec 11-2）");
 
+/** 失敗したページから、原因が分かる部分を短く取り出す */
+function whyFailed(html) {
+  const t = textOf(html);
+  const m = /(登録できませんでした[^。]*。|うまく処理できませんでした[^。]*。|New password[^.]*\.|same_password)/.exec(t);
+  return m ? m[0].slice(0, 120) : "（該当箇所なし）";
+}
+
+/** 登録の失敗表示。英語の生エラーが出ていないことも見る */
+function registerFailed(html) {
+  const t = textOf(html);
+  return (
+    /登録できませんでした/.test(t) ||
+    /New password should be different/i.test(t) ||
+    /same_password/i.test(t) ||
+    /うまく処理できませんでした/.test(t)
+  );
+}
+
 let promotedWorkId;
 {
-  const { page } = await register(guest, `anon${stamp}`);
+  // **同時に2本**送る（Enter とクリックが重なった状態）。
+  // 以前はここで2本目が same_password になり、登録できなかった。
+  const { pages } = await registerConcurrent(guest, `anon${stamp}`, 2);
+
   must(
-    /登録ユーザーとしてサインインしています/.test(textOf(page.html)),
-    "登録ユーザーになった",
+    pages.every((p) => !registerFailed(p.html)),
+    "同時2本でも失敗表示が出ない",
+    pages.map((p) => (registerFailed(p.html) ? whyFailed(p.html) : "OK")).join(" / "),
   );
+
+  const page = pages[pages.length - 1];
+  const text = pages.map((p) => textOf(p.html)).join(" ");
+
+  if (autoConfirm) {
+    must(
+      /登録ユーザーとしてサインインしています/.test(textOf(page.html)),
+      "登録ユーザーになった",
+    );
+  } else {
+    // 確認メールが要る設定。ここで止まるのが正しい
+    must(
+      /確認メール/.test(text),
+      "確認メールの案内が出る",
+    );
+    must(
+      /ゲストとして/.test(textOf(page.html)),
+      "確認が済むまではゲストのまま",
+    );
+  }
+
   must(
     accountUserId(page.html) === guestId,
     "昇格しても uid が変わらない",
     `${guestId} → ${accountUserId(page.html)}`,
   );
 
-  // ゲストのときに引いたお題で、そのまま投稿できる
-  const posted = await submitWork(
-    guest,
-    drawn.promptId,
-    { title: `昇格して投稿${stamp}`, division: "original" },
-    makePng(80, 60),
+  if (autoConfirm) {
+    // ゲストのときに引いたお題で、そのまま投稿できる
+    const posted = await submitWork(
+      guest,
+      drawn.promptId,
+      { title: `昇格して投稿${stamp}`, division: "original" },
+      makePng(80, 60),
+    );
+    promotedWorkId = /^\/works\/([0-9a-f-]{36})/.exec(posted.path)?.[1];
+    must(!!promotedWorkId, "ゲストのときのお題でそのまま投稿できた", posted.path);
+  } else {
+    // 確認が済んでいないので投稿はできない。
+    // 代わりに、回答の的になる作品を固定利用者で用意する
+    const owner = await fixtureSession("anon-work-owner");
+    const ownerPrompt = await drawPrompt(owner, "standard");
+    const posted = await submitWork(
+      owner,
+      ownerPrompt.promptId,
+      { title: `回答の的${stamp}`, division: "original" },
+      makePng(80, 60),
+    );
+    promotedWorkId = /^\/works\/([0-9a-f-]{36})/.exec(posted.path)?.[1];
+    must(!!promotedWorkId, "回答の的になる作品を用意した", posted.path);
+    drawn.answers = ownerPrompt.answers;
+  }
+}
+
+// ── 3-b. 5連打でもメールは増えず、失敗表示も出ない ────────
+section("3-b. 登録を同時に5本送っても失敗しない");
+
+{
+  const rapid = session("rapid");
+  await drawPrompt(rapid, "easy");
+  const before = accountUserId((await rapid.get("/account")).html);
+  must(!!before, "ゲストとして発行された");
+
+  const { pages } = await registerConcurrent(rapid, `rapid${stamp}`, 5);
+
+  must(
+    pages.every((p) => !registerFailed(p.html)),
+    "同時5本でも失敗表示が出ない",
+    pages.map((p) => (registerFailed(p.html) ? whyFailed(p.html) : "OK")).join(" / "),
   );
-  promotedWorkId = /^\/works\/([0-9a-f-]{36})/.exec(posted.path)?.[1];
-  must(!!promotedWorkId, "ゲストのときのお題でそのまま投稿できた", posted.path);
+
+  const after = (await rapid.get("/account")).html;
+  if (autoConfirm) {
+    must(
+      /登録ユーザーとしてサインインしています/.test(textOf(after)),
+      "5連打でも登録は1回ぶんとして完了する",
+    );
+  } else {
+    must(
+      pages.some((p) => /確認メール/.test(textOf(p.html))),
+      "5連打でも確認メールの案内は出る",
+    );
+    must(
+      pages.filter((p) => /確認メールを送りました/.test(textOf(p.html))).length <= 1,
+      "「送りました」は1回だけ（2本目以降は「送信済み」）",
+      pages
+        .map((p) => (/確認メールを送りました/.test(textOf(p.html)) ? "送信" : "送信済み"))
+        .join(" / "),
+    );
+  }
+  must(accountUserId(after) === before, "5連打でも uid が変わらない");
 }
 
 // ── 4. 別のゲストは、答えられるが いいねはできない ────────

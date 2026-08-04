@@ -43,18 +43,16 @@ import {
   makePng,
   must,
   parseQuiz,
-  register,
-  requireAutoConfirm,
   section,
-  session,
   fixtureSession,
   submitWork,
   textOf,
 } from "./_smoke-http.mjs";
 
-await requireAutoConfirm();
 
-const author = session("author");
+// 画面からの登録は使わない。**本番は Confirm email が ON** で、
+// 確認メールの受信を挟むと検査が進められないため（D84）。
+const author = await fixtureSession("author");
 // **ゲストではなく固定の検査用利用者。**
 // この検査の本題は採点と集計で、「ゲストでも答えられること」は
 // smoke:anon が持つ。ゲストで回すと匿名サインインの上限に当たる（D83）。
@@ -64,7 +62,6 @@ const guesser = await fixtureSession("guesser"); // わざと外す側
 // ── 1. 作品を2件用意する（通常1件・AI 1件）────────────────
 section("1. 作品を用意する（オリジナル1件・AI 1件）");
 
-await register(author, "author");
 
 const original = await drawPrompt(author, "standard");
 let page = await submitWork(

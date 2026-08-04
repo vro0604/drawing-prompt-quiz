@@ -5,6 +5,7 @@ import {
   type DraftSlot,
   type DraftState,
 } from "@/features/draft/types";
+import { SubmitButton } from "@/app/_pending";
 import {
   abandonDraftAction,
   completeDraftAction,
@@ -92,12 +93,12 @@ export function StartForm({ modes }: { modes: DraftMode[] }) {
         </p>
       </div>
 
-      <button
-        type="submit"
+      <SubmitButton
+        pendingLabel="始めています…"
         className="w-full rounded-xl bg-black px-5 py-3 text-sm font-bold text-white hover:opacity-85 dark:bg-white dark:text-black"
       >
         ドラフトを始める
-      </button>
+      </SubmitButton>
     </form>
   );
 }
@@ -154,12 +155,13 @@ function CandidateButton({
       <input type="hidden" name="sessionId" value={sessionId} />
       <input type="hidden" name="cardSlotKey" value={slot.card_slot_key} />
       <input type="hidden" name="candidateIndex" value={candidateIndex} />
-      <button
-        type="submit"
+      <SubmitButton
+        pendingLabel="…"
+        title="このカードをめくる"
         className={`${base} cursor-pointer border-black/25 hover:border-black/60 hover:bg-black/[0.04] dark:border-white/25 dark:hover:border-white/60 dark:hover:bg-white/10`}
       >
         ?
-      </button>
+      </SubmitButton>
     </form>
   );
 }
@@ -236,35 +238,35 @@ export function DraftBoard({ state }: { state: DraftState }) {
         {state.is_ready_to_complete ? (
           <form action={completeDraftAction}>
             <input type="hidden" name="sessionId" value={state.session_id} />
-            <button
-              type="submit"
+            <SubmitButton
+              pendingLabel="確定しています…"
               className="rounded-xl bg-black px-6 py-3 text-sm font-bold text-white hover:opacity-85 dark:bg-white dark:text-black"
             >
               このお題で確定する
-            </button>
+            </SubmitButton>
           </form>
         ) : null}
 
         {state.rerolls_left > 0 ? (
           <form action={rerollDraftAction}>
             <input type="hidden" name="sessionId" value={state.session_id} />
-            <button
-              type="submit"
+            <SubmitButton
+              pendingLabel="引き直しています…"
               className="rounded-xl border border-black/20 px-6 py-3 text-sm font-bold hover:bg-black/[0.04] dark:border-white/25 dark:hover:bg-white/10"
             >
               全部引き直す（残り {state.rerolls_left} 回）
-            </button>
+            </SubmitButton>
           </form>
         ) : null}
 
         <form action={abandonDraftAction}>
           <input type="hidden" name="sessionId" value={state.session_id} />
-          <button
-            type="submit"
+          <SubmitButton
+            pendingLabel="捨てています…"
             className="rounded-xl px-6 py-3 text-sm text-black/45 hover:text-black/70 dark:text-white/45 dark:hover:text-white/70"
           >
             このドラフトを捨てる
-          </button>
+          </SubmitButton>
         </form>
       </div>
 

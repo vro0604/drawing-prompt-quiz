@@ -6,6 +6,7 @@ import {
 } from "@/features/quiz/types";
 import { slotAccuracy, type SlotStat } from "@/features/work/types";
 import { submitAnswerAction } from "./actions";
+import { SubmitButton } from "@/app/_pending";
 
 /**
  * 作品ページのクイズ部分。
@@ -81,12 +82,12 @@ export function QuizForm({ quiz }: { quiz: WorkQuiz }) {
       </div>
 
       <div className="space-y-2">
-        <button
-          type="submit"
+        <SubmitButton
+          pendingLabel="採点しています…"
           className="w-full rounded-xl bg-black px-6 py-3 text-sm font-bold text-white hover:opacity-85 dark:bg-white dark:text-black"
         >
           回答する
-        </button>
+        </SubmitButton>
         <p className="text-xs text-black/45 dark:text-white/45">
           サインインしていない場合、送信した時点でゲストとして記録されます。
           アカウント登録は不要です。

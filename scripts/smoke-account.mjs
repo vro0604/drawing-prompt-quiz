@@ -38,8 +38,7 @@ import {
   forms,
   makePng,
   must,
-  register,
-  requireAutoConfirm,
+  throwawaySession,
   section,
   session,
   submitWork,
@@ -47,7 +46,6 @@ import {
   workImageUrl,
 } from "./_smoke-http.mjs";
 
-await requireAutoConfirm();
 
 const stamp = `${process.pid}${Math.floor(Math.random() * 1000)}`.slice(-8);
 
@@ -75,19 +73,24 @@ async function submitPageForm(s, path, buttonText, fields) {
   return s.post(path, { [form.actionId]: "", ...form.fields, ...fields });
 }
 
-const leaver = session("leaver"); // 退会する人（この検査で作る）
-const stayer = session("stayer"); // 残る人。回答といいねを持つ
-const other = session("other"); // 旧IDを取ろうとする人
+// 画面からの登録は使わない。**本番は Confirm email が ON** で、
+// 確認メールの受信を挟むと検査が進められないため。
+// Admin API で作った使い捨ての利用者を使う（D84 / D85）。
+// 使い捨てにするのは、この検査が ID の変更と退会を行うから
+// （固定利用者だと2周目で ID 変更の間隔制限に当たる）。
+const leaverUser = await throwawaySession("leaver");
+const stayerUser = await throwawaySession("stayer");
+const otherUser = await throwawaySession("other");
+
+const leaver = leaverUser.session; // 退会する人（この検査で作る）
+const stayer = stayerUser.session; // 残る人。回答といいねを持つ
+const other = otherUser.session; // 旧IDを取ろうとする人
 
 const leaverHandle = `smoke-bye${stamp}`;
 const secretKey = hasSecretKey();
 
 // ── 1. 規約に同意しないと投稿できない ─────────────────────
 section("1. 規約に同意しないと投稿できない（P3）");
-
-const leaverLogin = await register(leaver, "leaver");
-await register(stayer, "stayer");
-await register(other, "other");
 
 {
   const terms = await leaver.get("/terms");
@@ -372,8 +375,8 @@ if (secretKey) {
   // **新しいセッション**で試す。退会した本人の Cookie は当てにしない。
   const ghost = session("ghost");
   const tried = await submitAccountForm(ghost, "サインインする", {
-    email: leaverLogin.email,
-    password: leaverLogin.password,
+    email: leaverUser.email,
+    password: leaverUser.password,
   });
   const text = textOf(tried.html);
 
@@ -389,6 +392,48 @@ if (secretKey) {
   );
 } else {
   must(true, "鍵が無いので再ログインの検査は省略（auth.users が残るため）");
+}
+
+// ── 確認リンクの受け口 ───────────────────────────────
+section("確認メールの戻り先（/auth/confirm）");
+
+{
+  const visitor = session("confirm-visitor");
+
+  // code が無い（リンクを途中で切った／直接開いた）
+  const none = await visitor.get("/auth/confirm");
+  must(none.path.startsWith("/account"), "code が無ければ /account へ戻る", none.path.slice(0, 40));
+  must(
+    /確認用の情報が見つかりませんでした/.test(textOf(none.html)),
+    "何をすればよいか日本語で出る",
+  );
+
+  // code はあるが通らない（期限切れ／使用済み／別のブラウザ）
+  const bad = await visitor.get("/auth/confirm?code=not-a-real-code");
+  must(bad.path.startsWith("/account"), "無効な code でも /account へ戻る", bad.path.slice(0, 40));
+  must(
+    /確認を完了できませんでした/.test(textOf(bad.html)),
+    "無効な code は日本語で断る",
+  );
+  must(
+    !/[A-Za-z]{6,}\s+[A-Za-z]{6,}/.test(
+      (/確認を完了できませんでした[^。]*。/.exec(textOf(bad.html)) ?? [""])[0],
+    ),
+    "英語の生エラーをそのまま出していない",
+  );
+
+  // Supabase 側が断った場合（error 付きで戻ってくる）
+  const denied = await visitor.get("/auth/confirm?error=access_denied");
+  must(denied.path.startsWith("/account"), "error 付きでも /account へ戻る", denied.path.slice(0, 40));
+  must(
+    /確認を完了できませんでした/.test(textOf(denied.html)),
+    "断られたときも日本語で案内する",
+  );
+
+  must(
+    !/code=|access_token|refresh_token/.test(denied.path),
+    "戻り先の URL に確認用の値を残していない",
+  );
 }
 
 console.log("");

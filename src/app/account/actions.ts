@@ -3,6 +3,7 @@
 import { redirect } from "next/navigation";
 import { revalidatePath } from "next/cache";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
+import { siteUrl } from "@/lib/env";
 import {
   LINK_FIELDS,
   callUpdateMyProfile,
@@ -37,6 +38,23 @@ import { VISIBILITY_FIELDS } from "@/features/profile/types";
 
 const PAGE = "/account";
 
+/**
+ * 入力したパスワードが、いま設定されているものと同じときに Supabase が返す印。
+ * **二重送信の合図**として使う（同じ値を2回送ったということ）。
+ */
+const SAME_PASSWORD = "same_password";
+
+/** 確認メールの送りすぎ。Supabase 側の制限 */
+const EMAIL_RATE_LIMITED = "over_email_send_rate_limit";
+
+/**
+ * 確認メールのリンクから戻ってくる場所。
+ *
+ * **必ず正規URLを使う**（siteUrl）。個別 Deployment URL を混ぜると、
+ * 引き換えに要る控えが読めず、確認が完了しない。
+ */
+const CONFIRM_URL = siteUrl("/auth/confirm");
+
 function str(form: FormData, key: string): string {
   const v = form.get(key);
   return typeof v === "string" ? v.trim() : "";
@@ -64,11 +82,78 @@ export async function signInAction(form: FormData): Promise<void> {
   back(undefined, "サインインしました。");
 }
 
+/** 送信済みのときに出す文。再送していないことが伝わる言葉にする */
+const ALREADY_SENT =
+  "確認メールは送信済みです。受信箱をご確認ください。" +
+  "（迷惑メールに入っていることがあります）";
+
+/** メールは大文字小文字を区別しない。比較の前にそろえる */
+function sameEmail(a: string | undefined | null, b: string): boolean {
+  return typeof a === "string" && a.trim().toLowerCase() === b.trim().toLowerCase();
+}
+
+/**
+ * 昇格の途中で失敗したとき、**いまの状態を読み直して**判定する。
+ *
+ * 【なぜ状態を見るか】
+ *   エラーの文面で分岐すると、Supabase 側の文言が変わった日に壊れる。
+ *   すでにメールが入った／確認待ちになったのなら、
+ *   **利用者にとっては成功している。**そこを見て決める。
+ *
+ * @returns 成功として扱ってよければ画面に出す文。だめなら null
+ */
+async function successFromCurrentState(
+  supabase: Awaited<ReturnType<typeof createSupabaseServerClient>>,
+  email: string,
+): Promise<string | null> {
+  const { data } = await supabase.auth.getUser();
+  const user = data.user;
+  if (!user) return null;
+
+  // すでにそのメールで確定している（確認が要らない設定のとき、または確認済み）
+  if (sameEmail(user.email, email) && !user.is_anonymous) {
+    return "登録は完了しています。ゲストのときに引いたお題はそのまま使えます。";
+  }
+
+  // 確認待ちに入っている。**もう一通は送らない**
+  if (sameEmail(user.new_email, email) || sameEmail(user.email, email)) {
+    return ALREADY_SENT;
+  }
+
+  return null;
+}
+
 /**
  * アカウントを登録する。
  *
  * ゲストとして来ている場合は昇格（同じ uid のまま）、
  * まったくの未サインインなら新規作成。
+ *
+ * 【二重送信への備え（本番で実際に起きた）】
+ *   ボタンに反応が無かったため、利用者が2回押していた。
+ *   1回目の updateUser は**パスワードを即座に確定**させ、
+ *   メールは確認待ちに入れて確認メールを送る。
+ *   2回目は同じパスワードを送るので Supabase が same_password を返し、
+ *   **リクエスト全体が失敗**して「登録できませんでした」と出ていた。
+ *
+ *   対策は3つ重ねる。
+ *
+ *   1. 押した瞬間にボタンを塞ぐ（SubmitButton）
+ *   2. **送る前に**、同じメールが既に入っている／確認待ちなら送らない
+ *   3. それでも失敗したら、**状態を読み直して**成功か判断する
+ *
+ *   2 と 3 があるので、同時に何本届いても**メールは増えない。**
+ *
+ * 【同じメールの再送と、別のメールへの変更を混同しない】
+ *   確認待ちのメールと入力が**同じ**なら、何もせず「送信済み」と返す。
+ *   **違う**なら、宛先を変える操作なので updateUser を実行する。
+ *   このとき既にパスワードが確定していると same_password になるので、
+ *   その1回だけ**メールだけ**で送り直す。
+ *
+ * 【いまの構造で判定できないこと】
+ *   Auth のユーザー情報には「パスワードが設定済みか」が入っていない。
+ *   そのため、パスワードを送ってよいかを**事前には決められない。**
+ *   same_password が返ってきたことを、設定済みの合図として使っている。
  */
 export async function registerAction(form: FormData): Promise<void> {
   const email = str(form, "email");
@@ -79,9 +164,59 @@ export async function registerAction(form: FormData): Promise<void> {
 
   // --- ゲストからの昇格（uid を保つ）-----------------------------------------
   if (current.user?.is_anonymous) {
-    const { error } = await supabase.auth.updateUser({ email, password });
+    // 送る前に見る。ここで止まれば、メールは1通も増えない
+    const already = await successFromCurrentState(supabase, email);
+    if (already) {
+      revalidatePath(PAGE);
+      back(undefined, already);
+    }
 
-    if (error) back(`登録できませんでした: ${error.message}`);
+    let { error } = await supabase.auth.updateUser(
+      { email, password },
+      { emailRedirectTo: CONFIRM_URL },
+    );
+
+    // same_password は「同じ合言葉が既に設定されている」という意味。
+    // **一度も設定していなければ起きない。**
+    // つまりこれは、同じ内容の送信が既に通っていた証拠になる。
+    const duplicate = error?.code === SAME_PASSWORD;
+
+    // パスワードは既に決まっているので、宛先だけを送り直す。
+    // 同じメールならここへは来ない（上で止まる）
+    if (duplicate) {
+      ({ error } = await supabase.auth.updateUser(
+        { email },
+        { emailRedirectTo: CONFIRM_URL },
+      ));
+    }
+
+    if (error) {
+      // 送信の回数制限に当たった場合も含めて、いまの状態で判断する。
+      // 状態から成功と言えるなら、そう返す（生のエラーは出さない）
+      const recovered = await successFromCurrentState(supabase, email);
+      if (recovered) {
+        revalidatePath(PAGE);
+        back(undefined, recovered);
+      }
+
+      // **状態がまだ見えないことがある。**
+      //   同時に届いた1本目が書き込みを終える前に、2本目がここへ来ると
+      //   getUser にはまだ確認待ちが映らない。それでも same_password が
+      //   出た以上、同じ送信が通っているのは確かなので、成功として返す。
+      if (duplicate) {
+        revalidatePath(PAGE);
+        back(undefined, ALREADY_SENT);
+      }
+
+      if (error.code === EMAIL_RATE_LIMITED || /rate limit/i.test(error.message)) {
+        back(undefined, ALREADY_SENT);
+      }
+
+      back(
+        "登録できませんでした。入力を確かめて、もう一度お試しください。" +
+          "（同じメールで何度も試した場合は、届いているメールをご確認ください）",
+      );
+    }
 
     // JWT を取り直して is_anonymous を false にする（上のコメント参照）
     const { data: refreshed, error: refreshError } = await supabase.auth.refreshSession();
@@ -108,7 +243,14 @@ export async function registerAction(form: FormData): Promise<void> {
   }
 
   // --- 新規作成 ---------------------------------------------------------------
-  const { data, error } = await supabase.auth.signUp({ email, password });
+  //
+  // 戻り先を昇格と同じ /auth/confirm にそろえる。そうしないと
+  // 確認リンクがトップに落ちて、サインインし直しを求めることになる。
+  const { data, error } = await supabase.auth.signUp({
+    email,
+    password,
+    options: { emailRedirectTo: CONFIRM_URL },
+  });
 
   if (error) back(`登録できませんでした: ${error.message}`);
 

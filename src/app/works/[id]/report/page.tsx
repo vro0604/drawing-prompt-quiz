@@ -1,5 +1,6 @@
 import Link from "next/link";
 import { notFound } from "next/navigation";
+import { SubmitButton } from "@/app/_pending";
 import { REPORT_REASONS } from "@/features/report/rpc";
 import { fetchWorkDetail } from "@/features/work/rpc";
 import { createReportAction } from "../actions";
@@ -120,12 +121,12 @@ export default async function ReportWorkPage({
           </div>
         ) : null}
 
-        <button
-          type="submit"
+        <SubmitButton
+          pendingLabel="送信しています…"
           className="w-full rounded-xl bg-black px-5 py-3 text-sm font-bold text-white hover:opacity-85 dark:bg-white dark:text-black"
         >
           報告する
-        </button>
+        </SubmitButton>
 
         <p className="text-center text-sm">
           <Link href={`/works/${work.id}`} className="underline">

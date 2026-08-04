@@ -1,6 +1,7 @@
 import Image from "next/image";
 import Link from "next/link";
 import { notFound } from "next/navigation";
+import { SubmitButton } from "@/app/_pending";
 import { getCurrentUser } from "@/features/auth/session";
 import { formatDuration } from "@/features/draft/types";
 import { fetchMyAnswer, fetchWorkQuiz } from "@/features/quiz/rpc";
@@ -204,16 +205,22 @@ function Reactions({ work, canReact }: { work: WorkDetail; canReact: boolean }) 
     <div className="flex flex-wrap gap-3">
       <form action={toggleLikeAction}>
         <input type="hidden" name="workId" value={work.id} />
-        <button type="submit" className={`${base} ${work.liked_by_me ? on : off}`}>
+        <SubmitButton
+          pendingLabel="送信中…"
+          className={`${base} ${work.liked_by_me ? on : off}`}
+        >
           {work.liked_by_me ? "いいね済み" : "いいね"} {work.likes_count}
-        </button>
+        </SubmitButton>
       </form>
 
       <form action={toggleSaveAction}>
         <input type="hidden" name="workId" value={work.id} />
-        <button type="submit" className={`${base} ${work.saved_by_me ? on : off}`}>
+        <SubmitButton
+          pendingLabel="送信中…"
+          className={`${base} ${work.saved_by_me ? on : off}`}
+        >
           {work.saved_by_me ? "保存済み" : "保存"} {work.saves_count}
-        </button>
+        </SubmitButton>
       </form>
     </div>
   );
@@ -287,12 +294,12 @@ function PublicView({
         <div className="space-y-3 border-t border-black/10 pt-6 dark:border-white/10">
           <form action={unpublishWorkAction}>
             <input type="hidden" name="workId" value={work.id} />
-            <button
-              type="submit"
+            <SubmitButton
+              pendingLabel="切り替えています…"
               className="rounded-xl border border-black/20 px-6 py-3 text-sm font-bold hover:bg-black/[0.04] dark:border-white/25 dark:hover:bg-white/10"
             >
               下書きに戻す（他の人から見えなくする）
-            </button>
+            </SubmitButton>
           </form>
           <p className="text-xs text-black/45 dark:text-white/45">
             下書きに戻しても画像は残ります。いつでも公開に戻せます。
@@ -362,12 +369,12 @@ function OwnerOnlyView({ work }: { work: MyWork }) {
       {!work.is_published && !work.deleted_at && work.review_status === "ok" ? (
         <form action={publishWorkAction} className="space-y-3">
           <input type="hidden" name="workId" value={work.id} />
-          <button
-            type="submit"
+          <SubmitButton
+            pendingLabel="公開しています…"
             className="rounded-xl bg-black px-6 py-3 text-sm font-bold text-white hover:opacity-85 dark:bg-white dark:text-black"
           >
             公開する
-          </button>
+          </SubmitButton>
           <p className="text-xs text-black/45 dark:text-white/45">
             公開すると実制作時間は変更できなくなります（D25）。
           </p>

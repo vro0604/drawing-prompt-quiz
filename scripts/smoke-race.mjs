@@ -34,16 +34,11 @@ import {
   forms,
   makePng,
   must,
-  register,
-  requireAutoConfirm,
   section,
-  session,
   fixtureSession,
   submitWork,
   textOf,
 } from "./_smoke-http.mjs";
-
-await requireAutoConfirm();
 
 const stamp = `${process.pid}${Math.floor(Math.random() * 1000)}`.slice(-8);
 
@@ -72,8 +67,9 @@ async function pressTogether(s, path, buttonText, fields, times) {
 }
 
 // ── 下ごしらえ ────────────────────────────────────────────
-const author = session("author");
-await register(author, `race${stamp}`);
+// 画面からの登録は使わない。Confirm email が ON でも通るようにするため
+// （本番は ON。D84「検査は外の設定に依存しない」）
+const author = await fixtureSession("race-author");
 
 // ── 1. 下ごしらえ：ふつうに1件投稿して規約へ同意しておく ──────
 section("1. 準備（通常の投稿を1件）");
@@ -219,6 +215,73 @@ section("4. 回答を同時に2回送る");
       "2件目に一意索引のエラーが出ていない",
     );
   }
+}
+
+// ── 5. ドラフト開始の二重送信 ───────────────────────────
+section("5. ドラフト開始を同時に押しても1件（同一条件は合流）");
+
+{
+  const drafter = await fixtureSession("race-drafter");
+
+  /** 前回の残りを片づけて、進行中が無い状態から始める */
+  async function clearDraft() {
+    const page = await drafter.get("/play");
+    const f = forms(page.html).find((x) => /このドラフトを捨てる/.test(x.text));
+    if (!f) return page;
+    return drafter.post("/play", { [f.actionId]: "", ...f.fields });
+  }
+
+  /** いま画面に出ているドラフトの session_id（無ければ null） */
+  function sessionIdOf(html) {
+    const f = forms(html).find((x) => x.fields.sessionId !== undefined);
+    return f?.fields.sessionId ?? null;
+  }
+
+  await clearDraft();
+
+  const startForm = forms((await drafter.get("/play")).html).find((f) =>
+    /ドラフトを始める/.test(f.text),
+  );
+  must(!!startForm?.actionId, "開始フォームが出ている");
+
+  const send = (modeKey, timeLimitSeconds) =>
+    drafter.post("/play", {
+      [startForm.actionId]: "",
+      modeKey,
+      timeLimitSeconds,
+    });
+
+  // 同一条件で5本。**まったく同時**に投げる
+  const pages = await Promise.all(
+    Array.from({ length: 5 }, () => send("standard", "3600")),
+  );
+  const texts = pages.map((p) => textOf(p.html));
+
+  must(
+    texts.every((t) => !/進行中のドラフトがあります/.test(t)),
+    "5連打しても「進行中があります」が出ない",
+  );
+  must(
+    texts.every((t) => !/うまく処理できませんでした/.test(t)),
+    "5連打しても失敗表示が出ない",
+  );
+  must(texts.every((t) => !leaksInternals(t)), "内部の言葉が漏れていない");
+
+  const ids = pages.map((p) => sessionIdOf(p.html)).filter(Boolean);
+  must(ids.length === pages.length, "どの応答でもドラフトが開いている", `${ids.length}/5`);
+  must(new Set(ids).size === 1, "5本とも同じドラフトに合流した", `種類 ${new Set(ids).size}`);
+
+  // 条件が違えば、従来どおり案内を出す（勝手に別のドラフトへ連れて行かない）
+  const other = await send("easy", "3600");
+  must(
+    /進行中のドラフトがあります/.test(textOf(other.html)),
+    "条件が違えば従来の案内が出る",
+  );
+
+  const still = sessionIdOf((await drafter.get("/play")).html);
+  must(still === ids[0], "案内を出しても進行中のドラフトは変わらない");
+
+  await clearDraft();
 }
 
 await finish();

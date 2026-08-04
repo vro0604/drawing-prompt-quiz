@@ -35,7 +35,6 @@ import {
   forms,
   makePng,
   must,
-  requireAutoConfirm,
   section,
   session,
   fixtureSession,
@@ -44,8 +43,6 @@ import {
   textOf,
   workImageUrl,
 } from "./_smoke-http.mjs";
-
-await requireAutoConfirm();
 
 const stamp = `${process.pid}${Math.floor(Math.random() * 1000)}`.slice(-8);
 

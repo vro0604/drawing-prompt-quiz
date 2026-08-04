@@ -4,6 +4,7 @@ import { getCurrentUser } from "@/features/auth/session";
 import { fetchMyWork, fetchWorkDetail, workImageUrl } from "@/features/work/rpc";
 import type { MyWork } from "@/features/work/types";
 import { deleteWorkAction } from "../actions";
+import { SubmitButton } from "@/app/_pending";
 import Image from "next/image";
 
 /**
@@ -163,12 +164,12 @@ export default async function DeleteWorkPage({
           />
         </label>
 
-        <button
-          type="submit"
+        <SubmitButton
+          pendingLabel="削除しています…"
           className="w-full rounded-xl bg-rose-600 px-5 py-3 text-sm font-bold text-white hover:opacity-85"
         >
           この作品を削除する
-        </button>
+        </SubmitButton>
 
         <p className="text-center text-sm">
           <Link href={`/works/${work.id}`} className="underline">

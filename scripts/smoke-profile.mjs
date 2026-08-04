@@ -33,15 +33,13 @@ import {
   forms,
   makePng,
   must,
-  register,
-  requireAutoConfirm,
   section,
+  throwawaySession,
   session,
   submitWork,
   textOf,
 } from "./_smoke-http.mjs";
 
-await requireAutoConfirm();
 
 const stamp = `${process.pid}${Math.floor(Math.random() * 1000)}`.slice(-8);
 
@@ -77,8 +75,10 @@ function tabsOf(html) {
   );
 }
 
-const artist = session("artist"); // 作品を出す側
-const fan = session("fan");       // 保存する側
+// 画面からの登録は使わない。**本番は Confirm email が ON** で、
+// 確認メールの受信を挟むと検査が進められないため（D84）。
+const artist = (await throwawaySession("artist")).session;
+const fan = (await throwawaySession("fan")).session;
 const visitor = session("visitor"); // 未サインイン
 
 const artistHandle = `smoke-p${stamp}`;
@@ -89,8 +89,6 @@ const fanName = `スモーク読者${stamp}`;
 // ── 1. ID と表示名を決める ───────────────────────────────
 section("1. ID を決めると公開プロフィールができる");
 
-await register(artist, "artist");
-await register(fan, "fan");
 
 {
   const page = await submitAccountForm(artist, "プロフィールを保存する", {

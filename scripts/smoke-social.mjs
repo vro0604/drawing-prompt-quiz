@@ -28,15 +28,13 @@ import {
   forms,
   makePng,
   must,
-  register,
-  requireAutoConfirm,
   section,
+  throwawaySession,
   session,
   submitWork,
   textOf,
 } from "./_smoke-http.mjs";
 
-await requireAutoConfirm();
 
 /** プロフィールの保存フォームを送る */
 async function saveProfile(s, fields) {
@@ -65,8 +63,10 @@ function reactionCounts(html) {
   };
 }
 
-const artist = session("artist");   // 作品を投稿する側
-const fan = session("fan");         // いいねを押す側
+// 画面からの登録は使わない。**本番は Confirm email が ON** で、
+// 確認メールの受信を挟むと検査が進められないため（D84）。
+const artist = (await throwawaySession("artist")).session;
+const fan = (await throwawaySession("fan")).session;
 // 以前はここでゲストを発行していたが、匿名サインインの上限に当たるため
 // やめた（D83）。「ゲストはいいねできない」「ゲストは ID を取れない」は
 // smoke:anon が持っている。この検査に別の利用者は要らない。
@@ -84,7 +84,6 @@ const artistName = `スモーク絵師${stamp}`;
 // ── 2. 登録して表示名と ID を決める ───────────────────────
 section("2. 表示名と ID を決める");
 
-await register(artist, "artist");
 {
   const page = await saveProfile(artist, {
     handle: artistHandle,
@@ -112,7 +111,6 @@ section("3. ID の形式と重複を断る");
   must(new RegExp(artistHandle).test(after.html), "断られても元の ID は残っている");
 }
 
-await register(fan, "fan");
 {
   const taken = await saveProfile(fan, { handle: artistHandle });
   must(

@@ -1,6 +1,7 @@
 "use client";
 
 import { useState } from "react";
+import { SubmitButton } from "@/app/_pending";
 import {
   ACTUAL_TIME_CHOICES,
   DIVISIONS,
@@ -237,20 +238,20 @@ export function WorkForm({
       {/* --- 送信 ------------------------------------------------------------ */}
       <div className="space-y-3 border-t border-black/10 pt-6 dark:border-white/10">
         <div className="flex flex-wrap gap-3">
-          <button
-            type="submit"
+          <SubmitButton
+            pendingLabel="投稿しています…"
             className="rounded-xl bg-black px-6 py-3 text-sm font-bold text-white hover:opacity-85 dark:bg-white dark:text-black"
           >
             公開して投稿する
-          </button>
-          <button
-            type="submit"
+          </SubmitButton>
+          <SubmitButton
+            pendingLabel="保存しています…"
             name="saveAs"
             value="draft"
             className="rounded-xl border border-black/20 px-6 py-3 text-sm font-bold hover:bg-black/[0.04] dark:border-white/25 dark:hover:bg-white/10"
           >
             下書きとして保存する
-          </button>
+          </SubmitButton>
         </div>
         <p className="text-xs text-black/45 dark:text-white/45">
           下書きは自分だけが見られます。他の人からは、そのURLを開いても存在しないのと

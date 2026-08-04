@@ -39,7 +39,6 @@ import {
   forms,
   makePng,
   must,
-  requireAutoConfirm,
   section,
   session,
   fixtureSession,
@@ -47,8 +46,6 @@ import {
   textOf,
   textOutsideQuiz,
 } from "./_smoke-http.mjs";
-
-await requireAutoConfirm();
 
 // **ゲストからは始めない。**
 //

@@ -1,4 +1,5 @@
 import Link from "next/link";
+import { NavButton } from "@/app/_pending";
 
 /**
  * / ／ トップページ。
@@ -70,18 +71,23 @@ export default function Home() {
 
       {/* --- 次の一手。ゲストのままできることを先に置く --------------------- */}
       <div className="flex flex-col gap-3 sm:flex-row">
-        <Link
+        {/* この2つは行き先が動的ページで、開くまでに間がある。
+            押した反応が出ないと「効いていない」と読まれて二度押しになるので、
+            その場で読み込み中を出す（loading.tsx と二段構え）。 */}
+        <NavButton
           href="/play"
+          pendingLabel="読み込み中…"
           className="flex-1 rounded-xl bg-black px-6 py-4 text-center text-sm font-bold text-white hover:opacity-85 dark:bg-white dark:text-black"
         >
           お題を引く
-        </Link>
-        <Link
+        </NavButton>
+        <NavButton
           href="/works"
+          pendingLabel="読み込み中…"
           className="flex-1 rounded-xl border border-black/15 px-6 py-4 text-center text-sm font-bold hover:bg-black/[0.04] dark:border-white/20 dark:hover:bg-white/10"
         >
           みんなの作品を見る
-        </Link>
+        </NavButton>
       </div>
 
       {/* --- 遊びかた --------------------------------------------------------- */}
