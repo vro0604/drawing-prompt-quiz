@@ -1,5 +1,6 @@
 import { createServerClient } from "@supabase/ssr";
 import { cookies } from "next/headers";
+import type { NextResponse } from "next/server";
 import { SUPABASE_PUBLISHABLE_KEY, SUPABASE_URL, assertSupabaseEnv } from "@/lib/env";
 
 /**
@@ -34,4 +35,53 @@ export async function createSupabaseServerClient() {
       },
     },
   });
+}
+
+/**
+ * Route Handler 用。**自分で作った応答へ Cookie を確実に載せる**。
+ *
+ * 【なぜ別に要るか】
+ *   確認メールの受け口は、引き換えたあと `NextResponse.redirect` を
+ *   自分で組み立てて返す。このとき Supabase が書いた Cookie が
+ *   その応答に載っていないと、**戻った先でサインインしていない**。
+ *
+ *   `cookies()` 経由の書き込みが自作の応答にも反映されるかは、
+ *   その時々の実装に依る。**依存したくない。**
+ *   書かれた内容を控えておいて、返す応答へ自分で貼り直す。
+ *
+ * @returns supabase と、応答へ Cookie を貼る applyCookies
+ */
+export async function createSupabaseRouteClient() {
+  assertSupabaseEnv();
+  const cookieStore = await cookies();
+
+  /** Supabase が「これを書いて」と言ってきた Cookie */
+  const pending: { name: string; value: string; options?: Record<string, unknown> }[] = [];
+
+  const supabase = createServerClient(SUPABASE_URL, SUPABASE_PUBLISHABLE_KEY, {
+    cookies: {
+      getAll() {
+        return cookieStore.getAll();
+      },
+      setAll(cookiesToSet) {
+        pending.push(...cookiesToSet);
+        try {
+          for (const { name, value, options } of cookiesToSet) {
+            cookieStore.set(name, value, options);
+          }
+        } catch {
+          // 応答へは applyCookies で貼るので、ここが失敗しても構わない
+        }
+      },
+    },
+  });
+
+  function applyCookies<T extends NextResponse>(response: T): T {
+    for (const { name, value, options } of pending) {
+      response.cookies.set({ name, value, ...(options ?? {}) });
+    }
+    return response;
+  }
+
+  return { supabase, applyCookies };
 }

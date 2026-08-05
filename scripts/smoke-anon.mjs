@@ -261,12 +261,14 @@ section("3-b. 登録を同時に5本送っても失敗しない");
       const t = textOf(p.html);
       if (/確認メールを送りました/.test(t)) return "送信";
       if (/確認メールは送信済み/.test(t)) return "送信済み";
+      if (/登録は完了しています/.test(t)) return "完了済み";
       if (/送信上限に達しました/.test(t)) return "上限";
-      return "不明";
+      // 何が出たか分からないときは、判断できるだけの本文を残す
+      return `不明(${(t.match(/(いまの状態|アカウント)([\s\S]{0,60})/) ?? ["", "", ""])[2].trim()})`;
     });
 
     must(
-      outcomes.every((o) => o !== "不明"),
+      outcomes.every((o) => !o.startsWith("不明")),
       "5本とも、送信・送信済み・上限のどれかに落ちる",
       outcomes.join(" / "),
     );

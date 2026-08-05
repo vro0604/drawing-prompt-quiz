@@ -1,39 +1,114 @@
 import { NextResponse, type NextRequest } from "next/server";
-import { createSupabaseServerClient } from "@/lib/supabase/server";
+import { createSupabaseRouteClient } from "@/lib/supabase/server";
 import { siteUrl } from "@/lib/env";
 
 /**
  * /auth/confirm ／ 確認メールのリンクが戻ってくる場所。
  *
- * 【なぜ必要か】
- *   `@supabase/ssr` は PKCE という方式を強制している。
- *   この方式では、確認メールのリンクを開いても**それだけでは終わらない**。
- *   戻ってきた `?code=` を、**手元に残した控えと突き合わせて**
- *   はじめてログイン状態が確定する。
+ * ============================================================================
+ * 【なぜ token_hash に変えたか】
+ * ============================================================================
  *
- *   この受け口が無いと、リンクを開いた人は
- *   「押したのに何も起きない」画面に落ちる。
+ *   最初は `?code=` を `exchangeCodeForSession` で引き換えていた。
+ *   これは PKCE という方式で、**引き換えに要る控え（code verifier）が
+ *   登録を始めたブラウザの Cookie に入っている。**
  *
- * 【Route Handler にする理由】
- *   引き換えるとセッションの Cookie を書き換える。
- *   Server Component からは Cookie を書けないので、
- *   ページではなく Route Handler で受ける。
+ *   本番で実際に起きたこと:
+ *     PC で登録 → スマホでメールを開く → **確認できない**
+ *
+ *   控えは PC にあるので、スマホには無い。当然の結果で、
+ *   リンクが壊れているわけでも、期限が切れているわけでもない。
+ *
+ *   **メールは、送った端末で開かれるとは限らない。**
+ *   むしろ登録は PC、メールはスマホ、という組み合わせのほうが普通にある。
+ *
+ *   token_hash 方式は控えを使わない。リンクに入っている使い捨ての印を
+ *   そのまま Supabase へ渡して確かめる。**どの端末で開いても通る。**
+ *
+ * ============================================================================
+ * 【メール本文の形（ダッシュボードで手で直す）】
+ * ============================================================================
+ *
+ *   {{ .SiteURL }}/auth/confirm?token_hash={{ .TokenHash }}&type=<種類>
+ *
+ *   種類はテンプレートごとに違う。
+ *     Confirm signup        … email
+ *     Change Email Address  … email_change   ← 匿名からの昇格はこちら
+ *
+ *   手順は docs/launch-checklist.md 手順7-b。
+ *
+ *   **種類が食い違っても通るようにしてある。**
+ *   テンプレートは手で設定するもので、取り違えは起こる。
+ *   1つ試して駄目なら、近い種類をもう一度だけ試す（下の ALSO_TRY）。
+ *   確かめに失敗した印は使われないので、試しても減らない。
+ *
+ * ============================================================================
+ * 【code 方式も残す】
+ * ============================================================================
+ *
+ *   テンプレートを直す前に送った確認メールが、まだ受信箱にある。
+ *   それを開いた人を切り捨てないため、`?code=` も引き続き受ける。
+ *   （同じ端末で開けば通る）
  *
  * 【戻り先を正規URLで組み立てる理由】
  *   `request.url` から組み立てると、個別 Deployment URL で開かれたときに
- *   **そのホストへ戻してしまう。**控えは Cookie にあり、Cookie は
- *   ホストごとに分かれるので、別のホストへ渡ると確認が完了しない。
- *   環境変数に書いた正規URL1つだけを使う。
+ *   **そのホストへ戻してしまう。**環境変数の正規URL1つだけを使う。
  *
  * 【uid は変わらない】
- *   引き換えは**既にあるユーザーのセッションを更新する**だけで、
+ *   確認は**既にあるユーザーのセッションを更新する**だけで、
  *   新しいユーザーを作らない。ゲストのときに引いたお題・回答・下書きは
  *   持ち主が変わらないのでそのまま残る。
  */
 
 export const dynamic = "force-dynamic";
 
-/** /account へ戻す。理由や結果は短い文で渡す（値そのものは載せない） */
+/** 確かめに失敗したときの文。**原因を決めつけない** */
+const FAILED =
+  "確認を完了できませんでした。" +
+  "メールのリンクをもう一度開いてください。" +
+  "それでも進めない場合は、同じメールアドレスで登録をやり直してください。";
+
+/** リンクに必要な値が入っていなかった */
+const NO_TOKEN =
+  "確認用の情報が見つかりませんでした。メールのリンクをそのまま開いてください。";
+
+const DONE =
+  "メールアドレスの確認が完了しました。" +
+  "ゲストのときに引いたお題も、これまでの記録もそのまま使えます。";
+
+/** 受け付けたが、まだこのブラウザに反映されていない */
+const ACCEPTED =
+  "確認を受け付けました。まだ反映されていない場合は、" +
+  "この画面を読み込み直してください。";
+
+/** メールのリンクに入りうる種類。**知らない値は Supabase へ渡さない** */
+const KNOWN_TYPES = ["email", "email_change", "signup", "magiclink", "recovery", "invite"];
+
+/**
+ * 1回目が駄目だったときに、もう一度だけ試す種類。
+ *
+ * テンプレートは人が手で設定するので、`email` と `email_change` の
+ * 取り違えが起こる。**そのために利用者が確認できないのは割に合わない。**
+ */
+const ALSO_TRY: Record<string, string[]> = {
+  email: ["email_change"],
+  email_change: ["email"],
+  signup: ["email", "email_change"],
+};
+
+/** 試す順に種類を並べる。指定が無ければ、ありがちなものから */
+function typesToTry(raw: string | null): string[] {
+  const type = raw && KNOWN_TYPES.includes(raw) ? raw : null;
+  if (!type) return ["email", "email_change"];
+  return [type, ...(ALSO_TRY[type] ?? [])];
+}
+
+/**
+ * /account へ戻す。
+ *
+ * **token_hash・type・code は載せない。**戻り先の URL は履歴にも
+ * 共有先にも残るので、確認用の値をそこへ置かない。
+ */
 function backToAccount(params: { notice?: string; error?: string }): NextResponse {
   const query = new URLSearchParams();
   if (params.notice) query.set("notice", params.notice);
@@ -50,56 +125,61 @@ function backToAccount(params: { notice?: string; error?: string }): NextRespons
 }
 
 export async function GET(request: NextRequest) {
-  const code = request.nextUrl.searchParams.get("code");
+  const params = request.nextUrl.searchParams;
 
-  // Supabase 側で断られた場合は、理由が付いて戻ってくることがある。
-  // **その文面はそのまま出さない**（英語のまま出ると読めない）。
-  const failed = request.nextUrl.searchParams.get("error");
-
-  if (failed) {
-    return backToAccount({
-      error:
-        "確認を完了できませんでした。リンクの有効期限が切れているかもしれません。" +
-        "もう一度、同じメールアドレスで登録をお試しください。",
-    });
+  // Supabase 側が断ると、理由が付いて戻ってくることがある。
+  // **その文面はそのまま出さない**（英語のまま出ると読めない）
+  if (params.get("error") || params.get("error_code")) {
+    return backToAccount({ error: FAILED });
   }
 
-  if (!code) {
-    return backToAccount({
-      error:
-        "確認用の情報が見つかりませんでした。" +
-        "メールのリンクをそのまま開いてください。",
-    });
+  const tokenHash = params.get("token_hash");
+  const code = params.get("code");
+
+  if (!tokenHash && !code) {
+    return backToAccount({ error: NO_TOKEN });
   }
 
-  const supabase = await createSupabaseServerClient();
-  const { data, error } = await supabase.auth.exchangeCodeForSession(code);
+  const { supabase, applyCookies } = await createSupabaseRouteClient();
 
-  if (error) {
-    // 起きうるのは「期限切れ」「もう使った」「別のブラウザで開いた」。
-    // どれも利用者の操作としては同じなので、区別せず同じ案内にする。
-    return backToAccount({
-      error:
-        "確認を完了できませんでした。" +
-        "リンクの有効期限が切れているか、登録を始めたブラウザと違う可能性があります。" +
-        "登録したブラウザで、もう一度お試しください。",
-    });
+  let verified = false;
+  let user = null;
+  let session = null;
+
+  if (tokenHash) {
+    for (const type of typesToTry(params.get("type"))) {
+      const { data, error } = await supabase.auth.verifyOtp({ token_hash: tokenHash, type });
+      if (error) continue;
+
+      verified = true;
+      user = data.user;
+      session = data.session;
+      break;
+    }
+  } else if (code) {
+    // 昔の形のリンク。控えを持っているブラウザでだけ通る
+    const { data, error } = await supabase.auth.exchangeCodeForSession(code);
+    if (!error) {
+      verified = true;
+      user = data.user;
+      session = data.session;
+    }
   }
 
-  // ここまで来ればセッションは更新されている。
-  // まだ匿名のままなら、確認は通ったが反映が遅れている状態。
-  // **成功を装わない。**何をすればよいかだけ伝える。
-  if (data.user?.is_anonymous) {
-    return backToAccount({
-      notice:
-        "確認を受け付けました。反映まで少し時間がかかることがあります。" +
-        "この画面を読み込み直してください。",
-    });
+  if (!verified) {
+    // 起きうるのは「期限切れ」「もう使った」「別のブラウザで開いた（code 方式）」。
+    // **どれなのかは決めつけない。**利用者の次の一手は同じなので、文も同じにする
+    return backToAccount({ error: FAILED });
   }
 
-  return backToAccount({
-    notice:
-      "メールアドレスの確認が完了しました。" +
-      "ゲストのときに引いたお題も、これまでの記録もそのまま使えます。",
-  });
+  // セッションが返らない、またはまだ匿名のまま。
+  // 確かめ自体は通っているが、このブラウザはまだ登録済みになっていない。
+  // **成功を装わない。**
+  if (!session || user?.is_anonymous) {
+    return applyCookies(backToAccount({ notice: ACCEPTED }));
+  }
+
+  // Supabase が書いた Cookie を、この応答へ貼ってから返す。
+  // これをしないと、戻った先でサインインしていない
+  return applyCookies(backToAccount({ notice: DONE }));
 }

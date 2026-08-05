@@ -18,6 +18,7 @@ import {
   createThrowawayUser,
   deleteReportsBy,
   ensureFixtureUser,
+  generateSignupConfirm,
   loadCookies,
   storeCookies,
 } from "./_smoke-users.mjs";
@@ -594,6 +595,12 @@ export async function throwawaySession(role) {
 
   return { session: s, ...user };
 }
+
+/**
+ * 確認メールの印を1つ作る（メールは送らない）。
+ * 検査から「メールのリンクを開いた」状態を再現するために使う。
+ */
+export { generateSignupConfirm };
 
 /** 検査用の資格情報。実在しないドメインにする */
 function newCredentials(label) {

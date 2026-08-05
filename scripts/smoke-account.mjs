@@ -36,6 +36,7 @@ import {
   drawPrompt,
   finish,
   forms,
+  generateSignupConfirm,
   isSignedIn,
   makePng,
   must,
@@ -410,7 +411,7 @@ section("確認メールの戻り先（/auth/confirm）");
     "何をすればよいか日本語で出る",
   );
 
-  // code はあるが通らない（期限切れ／使用済み／別のブラウザ）
+  // code はあるが通らない（昔の形のリンク。控えを持つブラウザでだけ通る）
   const bad = await visitor.get("/auth/confirm?code=not-a-real-code");
   must(bad.path.startsWith("/account"), "無効な code でも /account へ戻る", bad.path.slice(0, 40));
   must(
@@ -422,6 +423,18 @@ section("確認メールの戻り先（/auth/confirm）");
       (/確認を完了できませんでした[^。]*。/.exec(textOf(bad.html)) ?? [""])[0],
     ),
     "英語の生エラーをそのまま出していない",
+  );
+  must(
+    !/期限/.test(textOf(bad.html)),
+    "原因を決めつけていない（期限切れと言い切らない）",
+  );
+
+  // 印はあるが通らない
+  const badHash = await visitor.get("/auth/confirm?token_hash=not-a-real-hash&type=email");
+  must(
+    badHash.path.startsWith("/account") && /確認を完了できませんでした/.test(textOf(badHash.html)),
+    "無効な token_hash も日本語で断る",
+    badHash.path.slice(0, 40),
   );
 
   // Supabase 側が断った場合（error 付きで戻ってくる）
@@ -435,6 +448,61 @@ section("確認メールの戻り先（/auth/confirm）");
   must(
     !/code=|access_token|refresh_token/.test(denied.path),
     "戻り先の URL に確認用の値を残していない",
+  );
+}
+
+// ── 別の端末でメールを開いても確認できる ─────────────
+section("確認リンクは別の端末で開いても通る（D92）");
+
+{
+  // 本物の確認メールに入るのと同じ印を作る（メールは送らない）
+  const link = await generateSignupConfirm("confirm");
+
+  // **登録したのとは別のブラウザ**を用意する。
+  // Cookie は空なので、控えを使う方式ならここで必ず失敗する
+  const phone = session("other-device");
+  must(!isSignedIn((await phone.get("/account")).html), "別の端末はサインインしていない");
+
+  const done = await phone.get(`/auth/confirm?token_hash=${link.tokenHash}&type=email`);
+
+  must(done.path.startsWith("/account"), "確認後は /account へ戻る", done.path.slice(0, 30));
+  must(
+    /確認が完了しました/.test(textOf(done.html)),
+    "成功したことが日本語で出る",
+    textOf(done.html).slice(0, 60),
+  );
+  must(isSignedIn(done.html), "別の端末でサインイン状態になった");
+  must(
+    accountUserId(done.html) === link.userId,
+    "確認しても uid が変わらない",
+    accountUserId(done.html) === link.userId ? "" : "別人になった",
+  );
+  must(
+    !/token_hash|type=|code=|access_token|refresh_token/.test(done.path),
+    "戻り先の URL に印を残していない",
+    done.path.slice(0, 40),
+  );
+  must(rawAuthError(done.html) === null, "生のエラーが出ていない");
+
+  // 同じリンクをもう一度開く。**安全に失敗する**（サインインは保たれる）
+  const twice = await phone.get(`/auth/confirm?token_hash=${link.tokenHash}&type=email`);
+  must(
+    /確認を完了できませんでした/.test(textOf(twice.html)),
+    "2回目は日本語で断る",
+    textOf(twice.html).slice(0, 60),
+  );
+  must(isSignedIn(twice.html), "2回目でもサインインは外れない");
+
+  // 型がテンプレートとずれていても通る（email ↔ email_change の取り違え）
+  const other = await generateSignupConfirm("confirm-type");
+  const swapped = session("other-device-2");
+  const ok = await swapped.get(
+    `/auth/confirm?token_hash=${other.tokenHash}&type=email_change`,
+  );
+  must(
+    isSignedIn(ok.html) && /確認が完了しました/.test(textOf(ok.html)),
+    "type がずれていても確認できる",
+    textOf(ok.html).slice(0, 60),
   );
 }
 

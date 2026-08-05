@@ -175,6 +175,57 @@ export async function registerAction(form: FormData): Promise<void> {
 
   // --- ゲストからの昇格（uid を保つ）-----------------------------------------
   if (current.user?.is_anonymous) {
+    // 同じ人の昇格は1本ずつ通す。**まったく同時に届いた場合の備え**
+    return oneAtATime(current.user.id, () => promoteGuest(supabase, email, password));
+  }
+
+  return createNewAccount(supabase, email, password);
+}
+
+/**
+ * 同じ鍵の処理を、この処理系の中では**1本ずつ**にする。
+ *
+ * 【なぜ要るか】
+ *   状態を読み直す備え（D87）は、**1本目の書き込みが終わっていれば**効く。
+ *   ところが本当に同時だと、5本とも「まだメールは入っていない」を読み、
+ *   5本とも送ってしまう。実測で**確認メールが4通よけいに出た。**
+ *
+ *   Enter とクリックが同じ瞬間に重なると、これが起こりうる。
+ *   届く順を1本ずつにすれば、2本目は1本目の結果を読める。
+ *
+ * 【できないこと】
+ *   これは**この処理系の中だけ**の順番付け。
+ *   本番で処理系が複数に分かれると、またぎ越して同時に届くことはある。
+ *   それでも「送る前に読む」「same_password なら読み直す」が残るので、
+ *   増えるとしても稀な1通で、**壊れることはない。**
+ *   完全に1通にするには記録を持つ場所が要る（テーブルを増やすことになる）。
+ */
+const inFlight = new Map<string, Promise<void>>();
+
+async function oneAtATime<T>(key: string, run: () => Promise<T>): Promise<T> {
+  const previous = inFlight.get(key) ?? Promise.resolve();
+  const mine = previous.then(run, run);
+
+  // 待ち行列は失敗で止めない。redirect も例外として飛んでくる
+  const tail = mine.then(
+    () => {},
+    () => {},
+  );
+  inFlight.set(key, tail);
+  void tail.then(() => {
+    if (inFlight.get(key) === tail) inFlight.delete(key);
+  });
+
+  return mine;
+}
+
+/** ゲストに メールとパスワードを結び付ける（uid はそのまま） */
+async function promoteGuest(
+  supabase: Awaited<ReturnType<typeof createSupabaseServerClient>>,
+  email: string,
+  password: string,
+): Promise<never> {
+  {
     // 送る前に見る。ここで止まれば、メールは1通も増えない
     const already = await successFromCurrentState(supabase, email);
     if (already) {
@@ -192,9 +243,22 @@ export async function registerAction(form: FormData): Promise<void> {
     // つまりこれは、同じ内容の送信が既に通っていた証拠になる。
     const duplicate = error?.code === SAME_PASSWORD;
 
-    // パスワードは既に決まっているので、宛先だけを送り直す。
-    // 同じメールならここへは来ない（上で止まる）
     if (duplicate) {
+      // **ここでもう一度、状態を読み直す。**
+      //   same_password が返るのは、同じ内容の書き込みが**既に終わっている**
+      //   ということ。パスワードと確認待ちは1回の更新で一緒に入るので、
+      //   この時点で読めば必ず確認待ちが見える。
+      //
+      //   読まずに送り直すと、同時に届いた本数だけ**確認メールが増える。**
+      //   実測で、5本同時に送ると4通よけいに出ていた。
+      const sent = await successFromCurrentState(supabase, email);
+      if (sent) {
+        revalidatePath(PAGE);
+        back(undefined, sent);
+      }
+
+      // 確認待ちが**別のメール**だった。宛先を変える操作なので、
+      // パスワードを外して送り直す（同じ合言葉は2度送れない）
       ({ error } = await supabase.auth.updateUser(
         { email },
         { emailRedirectTo: CONFIRM_URL },
@@ -255,9 +319,14 @@ export async function registerAction(form: FormData): Promise<void> {
         : "登録が完了しました。ゲストのときに引いたお題はそのまま使えます。",
     );
   }
+}
 
-  // --- 新規作成 ---------------------------------------------------------------
-  //
+/** まったくの未サインインから、新しくアカウントを作る */
+async function createNewAccount(
+  supabase: Awaited<ReturnType<typeof createSupabaseServerClient>>,
+  email: string,
+  password: string,
+): Promise<never> {
   // 戻り先を昇格と同じ /auth/confirm にそろえる。そうしないと
   // 確認リンクがトップに落ちて、サインインし直しを求めることになる。
   const { data, error } = await supabase.auth.signUp({

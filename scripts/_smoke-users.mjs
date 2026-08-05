@@ -266,6 +266,41 @@ export async function deleteReportsBy(userIds) {
   }
 }
 
+/**
+ * 確認メールに入るのと**同じ印**（token_hash）を作る。
+ *
+ * 【なぜ Admin API で作るか】
+ *   本物の確認メールは受け取れないので、検査からは中身を読めない。
+ *   `generateLink` は**メールを送らずに**同じ印だけを返してくれる。
+ *   これで「メールのリンクを開いた」状態を、そのまま再現できる。
+ *
+ * 【何が確かめられるか】
+ *   印はリンクの中に入っていて、控え（Cookie）を使わない。
+ *   だから**登録したのと違うブラウザで開いても通る**はずで、
+ *   そこが本番で壊れていた（PCで登録 → スマホで確認 → 失敗。D92）。
+ *   検査では、まっさらな Cookie 入れ物で開いて確かめる。
+ *
+ * @returns 印と、その人の ID・メール・合言葉
+ */
+export async function generateSignupConfirm(label) {
+  const admin = adminClient();
+  const suffix = `${process.pid}-${Math.floor(Math.random() * 1e6)}`;
+  const email = fixtureEmail(`${label}-${suffix}`);
+  const password = newPassword();
+
+  const { data, error } = await admin.auth.admin.generateLink({
+    type: "signup",
+    email,
+    password,
+  });
+  if (error) throw new Error(`確認用の印を作れません: ${error.message}`);
+
+  const tokenHash = data?.properties?.hashed_token;
+  if (!tokenHash) throw new Error("確認用の印が返りませんでした");
+
+  return { email, password, userId: data.user.id, tokenHash };
+}
+
 /** メールアドレスで1人だけ探す */
 async function findByEmail(admin, email) {
   // listUsers はページ送りなので、見つかるまで進む。
