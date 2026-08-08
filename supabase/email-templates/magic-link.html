@@ -1,0 +1,26 @@
+<!--
+  Magic Link ／ パスワードを使わないサインイン
+
+  type=magiclink … KNOWN_TYPES に入っている。
+  いま画面からは使っていないが、既定の本文が ?code= のままだと、
+  何かの拍子に送られたときに別の端末で開けない。**塞いでおく。**
+-->
+<h2>サインイン</h2>
+
+<p>下のリンクを開くと、つたわるかな にサインインできます。</p>
+
+<p>
+  <a href="{{ .SiteURL }}/auth/confirm?token_hash={{ .TokenHash }}&type=magiclink">
+    サインインする
+  </a>
+</p>
+
+<p>リンクが開けない場合は、次のURLをブラウザに貼り付けてください。</p>
+
+<p>{{ .SiteURL }}/auth/confirm?token_hash={{ .TokenHash }}&type=magiclink</p>
+
+<hr />
+
+<p>このリンクは、別の端末で開いても使えます。</p>
+
+<p>心当たりがない場合は、このメールを捨ててください。何も起こりません。</p>

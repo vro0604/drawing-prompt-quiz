@@ -1,0 +1,35 @@
+<!--
+  Change Email Address ／ ゲストからの昇格はこちら。**いちばん重要**
+
+  匿名で遊んでいた人が updateUser({email}) で登録すると、
+  Supabase はこのテンプレートを送る。**登録の主経路がここ。**
+
+  type=email_change … 確認用の印は auth.users.email_change_token_new に入る（D92 で実測）。
+
+  ここが通らないと、ゲストが登録できない。
+-->
+<h2>メールアドレスの確認</h2>
+
+<p>つたわるかな のアカウント登録を受け付けました。</p>
+
+<p>下のリンクを開くと、確認が完了します。</p>
+
+<p>
+  <a href="{{ .SiteURL }}/auth/confirm?token_hash={{ .TokenHash }}&type=email_change">
+    メールアドレスを確認する
+  </a>
+</p>
+
+<p>リンクが開けない場合は、次のURLをブラウザに貼り付けてください。</p>
+
+<p>{{ .SiteURL }}/auth/confirm?token_hash={{ .TokenHash }}&type=email_change</p>
+
+<hr />
+
+<p>このリンクは、別の端末で開いても使えます。</p>
+
+<p>
+  ゲストのときに引いたお題や、これまでの記録は、そのまま引き継がれます。
+</p>
+
+<p>心当たりがない場合は、このメールを捨ててください。何も起こりません。</p>

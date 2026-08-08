@@ -53,3 +53,6 @@ next-env.d.ts
 
 # スモークの固定利用者（Cookie と合言葉。Git へは入れない）
 .smoke-fixtures.json
+
+# setup:auth が控える変更前の設定（外部サービスの設定が入る。Git へは入れない）
+/backup

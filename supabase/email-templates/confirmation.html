@@ -1,0 +1,31 @@
+<!--
+  Confirm signup ／ 未サインインからの新規登録
+
+  type=email  … src/app/auth/confirm/route.ts の KNOWN_TYPES に合わせる。
+  取り違えても通るようにしてあるが（ALSO_TRY）、正しい値を入れる。
+
+  token_hash 方式にする理由は D92。
+  ?code= だと、登録を始めたブラウザの Cookie に控えが要るので、
+  PC で登録してスマホで開くと通らない。
+-->
+<h2>メールアドレスの確認</h2>
+
+<p>つたわるかな へのご登録ありがとうございます。</p>
+
+<p>下のリンクを開くと、確認が完了します。</p>
+
+<p>
+  <a href="{{ .SiteURL }}/auth/confirm?token_hash={{ .TokenHash }}&type=email">
+    メールアドレスを確認する
+  </a>
+</p>
+
+<p>リンクが開けない場合は、次のURLをブラウザに貼り付けてください。</p>
+
+<p>{{ .SiteURL }}/auth/confirm?token_hash={{ .TokenHash }}&type=email</p>
+
+<hr />
+
+<p>このリンクは、別の端末で開いても使えます。</p>
+
+<p>心当たりがない場合は、このメールを捨ててください。何も起こりません。</p>
