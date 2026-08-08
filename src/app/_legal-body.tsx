@@ -13,7 +13,7 @@
 
 type Block =
   | { kind: "h1" | "h2" | "h3"; text: string }
-  | { kind: "li"; text: string }
+  | { kind: "li"; text: string; depth: 0 | 1 }
   | { kind: "p"; text: string }
   | { kind: "table"; rows: string[][] };
 
@@ -41,12 +41,20 @@ function parse(body: string): Block[] {
     }
     flushTable();
 
-    if (line === "") continue;
-    if (line.startsWith("### ")) out.push({ kind: "h3", text: line.slice(4) });
-    else if (line.startsWith("## ")) out.push({ kind: "h2", text: line.slice(3) });
-    else if (line.startsWith("# ")) out.push({ kind: "h1", text: line.slice(2) });
-    else if (line.startsWith("- ")) out.push({ kind: "li", text: line.slice(2) });
-    else out.push({ kind: "p", text: line });
+    if (line.trim() === "") continue;
+
+    // 字下げされた箇条書き（`   - 〜`）を平文に落とさない。
+    // 規約の「投稿できないもの」は番号付きの下に箇条書きがぶら下がる形なので、
+    // 印を落とすと、**どれがどれの下にあるのかが読めなくなる。**
+    const indent = line.length - line.trimStart().length;
+    const body = line.trimStart();
+
+    if (body.startsWith("### ")) out.push({ kind: "h3", text: body.slice(4) });
+    else if (body.startsWith("## ")) out.push({ kind: "h2", text: body.slice(3) });
+    else if (body.startsWith("# ")) out.push({ kind: "h1", text: body.slice(2) });
+    else if (body.startsWith("- ")) {
+      out.push({ kind: "li", text: body.slice(2), depth: indent >= 2 ? 1 : 0 });
+    } else out.push({ kind: "p", text: line });
   }
   flushTable();
 
@@ -105,7 +113,12 @@ export function LegalBody({
         }
         if (b.kind === "li") {
           return (
-            <li key={i} className="ml-5 list-disc text-sm leading-relaxed">
+            <li
+              key={i}
+              className={`list-disc text-sm leading-relaxed ${
+                b.depth === 1 ? "ml-10" : "ml-5"
+              }`}
+            >
               {withBold(b.text, `l${i}`)}
             </li>
           );
