@@ -6,14 +6,20 @@ import { getCurrentUser } from "@/features/auth/session";
 import { formatDuration } from "@/features/draft/types";
 import { fetchMyAnswer, fetchWorkQuiz } from "@/features/quiz/rpc";
 import type { MyAnswer, WorkQuiz } from "@/features/quiz/types";
-import { fetchMyWork, fetchWorkDetail, workImageUrl } from "@/features/work/rpc";
+import {
+  fetchMyWork,
+  fetchMyWorkResult,
+  fetchWorkDetail,
+  workImageUrl,
+} from "@/features/work/rpc";
 import {
   divisionLabel,
   formatActualTime,
   type MyWork,
+  type MyWorkResult,
   type WorkDetail,
 } from "@/features/work/types";
-import { AnswerResult, AuthorNotice, QuizForm, SlotStats } from "./_quiz";
+import { AnswerResult, AuthorNotice, MyResult, QuizForm, SlotStats } from "./_quiz";
 import {
   publishWorkAction,
   toggleLikeAction,
@@ -232,11 +238,15 @@ function PublicView({
   quiz,
   myAnswer,
   canReact,
+  result,
+  resultOpen,
 }: {
   work: WorkDetail;
   quiz: WorkQuiz | null;
   myAnswer: MyAnswer | null;
   canReact: boolean;
+  result: MyWorkResult | null;
+  resultOpen: boolean;
 }) {
   return (
     <>
@@ -288,7 +298,20 @@ function PublicView({
         <QuizForm quiz={quiz} />
       )}
 
-      <SlotStats stats={work.slot_stats} />
+      {/*
+        **他人には項目別の伝達率を出さない**（D112）。
+        「他人の作品ページ＝絵とタイトルだけ」と決めてあるのに、
+        ここは誰にでも見えていた。仕様の取りこぼし。
+
+        回答した人が自分の正誤を見るのは AnswerResult のほうで、
+        そちらは変えていない。
+      */}
+      {result ? (
+        <>
+          <MyResult result={result} open={resultOpen} workId={work.id} />
+          {resultOpen ? <SlotStats stats={work.slot_stats} /> : null}
+        </>
+      ) : null}
 
       {work.is_author ? (
         <div className="space-y-3 border-t border-black/10 pt-6 dark:border-white/10">
@@ -401,10 +424,10 @@ export default async function WorkPage({
   searchParams,
 }: {
   params: Promise<{ id: string }>;
-  searchParams: Promise<{ error?: string; notice?: string }>;
+  searchParams: Promise<{ error?: string; notice?: string; result?: string }>;
 }) {
   const { id } = await params;
-  const { error, notice } = await searchParams;
+  const { error, notice, result: rawResult } = await searchParams;
 
   // まず公開の経路で引く。ここで取れたものは誰が見ても同じ。
   const publicWork = await fetchWorkDetail(id);
@@ -437,6 +460,15 @@ export default async function WorkPage({
     if (quiz?.answered_by_me) myAnswer = await fetchMyAnswer(id);
   }
 
+  // 自分の作品の結果。他人と未サインインには null が返る（DB 側で判定）。
+  // **画面で捨てる形にしない。**捨てても通信には数字が乗ってしまう。
+  const result =
+    publicWork?.is_author && user ? await fetchMyWorkResult(id) : null;
+
+  // 封を開けたかどうかは URL で持つ。Client Component にしないので、
+  // JavaScript が無効でも開ける
+  const resultOpen = rawResult === "open";
+
   return (
     <main className="mx-auto w-full max-w-3xl space-y-8 p-6 sm:p-10">
       {error ? (
@@ -457,6 +489,8 @@ export default async function WorkPage({
           quiz={quiz}
           myAnswer={myAnswer}
           canReact={canReact}
+          result={result}
+          resultOpen={resultOpen}
         />
       ) : myWork ? (
         <OwnerOnlyView work={myWork} />

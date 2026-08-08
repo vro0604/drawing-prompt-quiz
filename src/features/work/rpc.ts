@@ -6,6 +6,7 @@ import {
   WORKS_BUCKET,
   type Division,
   type MyWork,
+  type MyWorkResult,
   type PublicWorkListItem,
   type WorkDetail,
   type WorkWriteResult,
@@ -149,6 +150,22 @@ export async function callSetCompleteness(
   });
 
   if (error) throw new Error(readableRpcError(error.message));
+}
+
+/**
+ * 自分の作品の結果。他人の作品・未サインインなら null。
+ *
+ * **null と「まだ誰も答えていない」は違う。**前者は見る権利が無い、
+ * 後者は answers_count が 0。画面はこの2つを別に扱う。
+ */
+export async function fetchMyWorkResult(workId: string): Promise<MyWorkResult | null> {
+  const supabase = await createSupabaseServerClient();
+  const { data, error } = await supabase.rpc("get_my_work_result", {
+    p_work_id: workId,
+  });
+
+  if (error) throw new Error(readableRpcError(error.message));
+  return (data as MyWorkResult | null) ?? null;
 }
 
 /** 下書きを公開する（update_work のうち、画面から使うのはこれだけ） */

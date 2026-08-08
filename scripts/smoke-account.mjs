@@ -201,7 +201,10 @@ await answerWork(stayer, leaverWorkId, leaverPrompt.answers, { correct: true });
   //   ・start_account_deletion が works / answers を delete しない
   //   ・works.user_id を null にするだけ
   // ここで見ているのは「退会前には確かに回答が付いていた」という前提のほう。
-  const res = await stayer.get(`/works/${leaverWorkId}`);
+  // **D112 で、記録は作者本人が開いたときにだけ出るようになった。**
+  // stayer（他人）で開いても数字は出ない。持ち主の leaver で、
+  // 封を開けた状態を取る。
+  const res = await leaver.get(`/works/${leaverWorkId}?result=open`);
   must(/1\s*\/\s*1/.test(textOf(res.html)), "退会前：作品に回答の記録が付いている");
 }
 

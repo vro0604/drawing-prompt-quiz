@@ -225,6 +225,29 @@ export type MyWork = {
   slot_stats: SlotStat[];
 };
 
+/**
+ * 自分の作品の結果（get_my_work_result）。他人・未サインインには null。
+ *
+ * **予告と中身が同じ型に入っている。**分けないのは、
+ * 開いたかどうかは画面側の状態であって、データの性質ではないため。
+ */
+export type MyWorkResult = {
+  /** 予告の1行目 */
+  answers_count: number;
+  /**
+   * 予告の2行目。**全部の枠を外した人の数**（D134）。
+   *
+   * 「間違えた人の数」にすると、回答人数と並べたときに
+   * 正答率が計算できてしまう。全部外すのは珍しいので、
+   * これなら復元されない。
+   */
+  blind_count: number;
+  /** ここから下は「開く」を押したときだけ画面に出す */
+  total_items: number;
+  correct_items: number;
+  misreads: { slot_label: string; tag_label: string; count: number }[];
+};
+
 /** create_work / update_work の戻り値 */
 export type WorkWriteResult = {
   work_id: string;

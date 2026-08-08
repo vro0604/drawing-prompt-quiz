@@ -4,7 +4,11 @@ import {
   type QuizQuestion,
   type WorkQuiz,
 } from "@/features/quiz/types";
-import { slotAccuracy, type SlotStat } from "@/features/work/types";
+import {
+  slotAccuracy,
+  type MyWorkResult,
+  type SlotStat,
+} from "@/features/work/types";
 import { submitAnswerAction } from "./actions";
 import { SubmitButton } from "@/app/_pending";
 
@@ -225,6 +229,145 @@ export function SlotStats({ stats }: { stats: SlotStat[] }) {
           );
         })}
       </ul>
+    </section>
+  );
+}
+
+/**
+ * 自分の作品の結果。**封を切るまで数字を出さない**（D112 / D134）。
+ *
+ * 【なぜ既定で見せないのか】
+ *   D8 は「未選択カードは自動開示しない。見せると気持ちが先に来て、
+ *   描く意欲を削ぐ」と決めている。**数字も同じ。**
+ *
+ *   そして序列は「装飾」ではなく「比較可能性」から生まれる。
+ *   自分だけが自分の数字を見るなら比較対象が存在せず、序列は生まれない。
+ *
+ * 【プル型の弱点と、その裏返し】
+ *   開かれなければ核が届かない。だから「開きたくさせる」必要がある。
+ *   ここで良いことが起きる。
+ *
+ *     常に見えている → 驚きが分散して消える
+ *     封を切る       → 驚きがその一瞬に集中する
+ *
+ * 【予告に人数を出しても正答率にならない理由】
+ *   2行目は「間違えた人」ではなく **「全部の枠を外した人」** の数。
+ *   「3人中2人が間違えた」なら 1/3 と計算できてしまうが、
+ *   全部外すのは珍しいので、そこから正答率は復元できない。
+ *
+ * 開くかどうかは `?result=open` で持つ。Client Component にしないのは、
+ * JavaScript が無効でも開けるようにするため。
+ */
+export function MyResult({
+  result,
+  open,
+  workId,
+}: {
+  result: MyWorkResult;
+  open: boolean;
+  workId: string;
+}) {
+  // まだ誰も答えていない。**0% とは書かない。**
+  // 「誰にも伝わらなかった」と「まだ誰も見ていない」は別のこと
+  if (result.answers_count === 0) {
+    return (
+      <section className={`${box} space-y-2`}>
+        <h2 className="text-sm font-bold">まだ誰も答えていません</h2>
+        <p className="text-sm text-black/55 dark:text-white/55">
+          誰かが答えると、ここで結果を見られるようになります。
+        </p>
+      </section>
+    );
+  }
+
+  if (!open) {
+    return (
+      <section className={`${box} space-y-4 text-center`}>
+        <div className="space-y-2">
+          <p className="text-base font-bold">
+            {result.answers_count}人が、あなたの絵を読み解きました
+          </p>
+          {result.blind_count > 0 ? (
+            <p className="text-sm text-black/60 dark:text-white/60">
+              うち{result.blind_count}人は、まったく違うものを見ていました
+            </p>
+          ) : null}
+        </div>
+
+        <p>
+          <a
+            href={`/works/${workId}?result=open`}
+            className="inline-block rounded-xl bg-black px-8 py-3 text-sm font-bold text-white dark:bg-white dark:text-black"
+          >
+            開く
+          </a>
+        </p>
+      </section>
+    );
+  }
+
+  const percent =
+    result.total_items === 0
+      ? null
+      : Math.round((result.correct_items / result.total_items) * 100);
+
+  return (
+    <section className={`${box} space-y-5`}>
+      <div className="flex flex-wrap items-baseline justify-between gap-2">
+        <h2 className="text-sm font-bold">結果</h2>
+        <a
+          href={`/works/${workId}`}
+          className="text-xs text-black/45 underline dark:text-white/45"
+        >
+          閉じる
+        </a>
+      </div>
+
+      <div className="flex items-baseline gap-3">
+        <span className="text-3xl font-bold tabular-nums">
+          {percent === null ? "—" : `${percent}%`}
+        </span>
+        <span className="text-xs text-black/45 dark:text-white/45">
+          {result.correct_items} / {result.total_items} の項目が伝わりました
+        </span>
+      </div>
+
+      {/*
+        伝達率は上手さの物差しではない（D105）。
+        **絵の巧拙とは独立した軸**なので、そう書いておく。
+        「上手くなくていい」は、慰めではなく、この数字が示す事実。
+      */}
+      <p className="rounded-xl bg-black/[0.03] px-4 py-3 text-xs text-black/55 dark:bg-white/5 dark:text-white/55">
+        伝わりやすさは、絵の上手さとは別の軸です。
+        線が荒くても伝わることも、丁寧に描いても伝わらないこともあります。
+      </p>
+
+      {result.misreads.length > 0 ? (
+        <div className="space-y-2 border-t border-black/10 pt-4 dark:border-white/10">
+          <h3 className="text-xs text-black/45 dark:text-white/45">
+            代わりに選ばれたもの
+          </h3>
+          <ul className="space-y-1 text-sm">
+            {result.misreads.map((m) => (
+              <li
+                key={`${m.slot_label}:${m.tag_label}`}
+                className="flex items-baseline justify-between gap-4"
+              >
+                <span>
+                  <span className="text-black/45 dark:text-white/45">{m.slot_label}</span>
+                  <span className="pl-2">{m.tag_label}</span>
+                </span>
+                <span className="shrink-0 text-xs text-black/45 tabular-nums dark:text-white/45">
+                  {m.count}人
+                </span>
+              </li>
+            ))}
+          </ul>
+          <p className="text-xs text-black/40 dark:text-white/40">
+            誰が選んだかは記録していません。
+          </p>
+        </div>
+      ) : null}
     </section>
   );
 }
