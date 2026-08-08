@@ -1,36 +1,225 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# つたわるかな
 
-## Getting Started
+**絵だけを見て、描き手がどんなお題を引いたのかを当てるサービス。**
 
-First, run the development server:
+描き手はランダムに配られた「お題カード」を引いて絵を描く。
+見る人は、絵だけを手がかりに、そのお題が何だったかを選択式で当てる。
 
-```bash
-npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
+当たれば「伝わった」、外れれば「別のものが見えていた」。
+**上手さではなく、伝わりやすさを測る。**この2つは別の軸である、というのが
+このサービスの中心にある考えかた。
+
+> **状態：限定公開の準備中。**URL を渡した人だけが入れる形で出す。
+> 検索には載せない（`X-Robots-Tag: noindex` ＋ `<meta name="robots">` の2か所）。
+
+---
+
+## 何を作ったか
+
+```
+お題を引く  ──→  外部ツールで絵を描く  ──→  投稿する
+                                              │
+                            他の人が絵だけを見て、お題を当てる
+                                              │
+                              ┌───────────────┘
+                              ▼
+             「3人が、あなたの絵を読み解きました」
+             「うち1人は、まったく違うものを見ていました」
+                            [ 開く ]
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+サイト内に描画機能は持たない。CLIP STUDIO でも紙でも、
+描く場所は描き手が選ぶ。
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+| | |
+|---|---|
+| **描き手** | お題が自動で出る。自分の絵が**どう読まれたか**が返ってくる |
+| **見る人** | クイズとして遊べる。正解を知ってから絵を見返す面白さがある |
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+ゲストのまま遊べる。回答も共有も、アカウント登録なしでできる。
 
-## Learn More
+---
 
-To learn more about Next.js, take a look at the following resources:
+## 設計の見どころ 3つ
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+コードより先に、**なぜそうしたか**を読んでほしい。
+判断は144個すべて [`docs/decisions.md`](docs/decisions.md) に残してある。
+その中から3つ選ぶ。
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
+### 1. 正解が漏れない構造を、出口の本数で保証する
 
-## Deploy on Vercel
+→ [D52](docs/decisions.md#d52-採点は-db-の中だけで行い正解の出口は1本にする) ／
+[`20260803041353_answer_rpc_and_stats.sql`](supabase/migrations/20260803041353_answer_rpc_and_stats.sql)
 
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
+クイズなので、**正解を先にブラウザへ送ってはいけない。**
+画面に出さなくても、通信の中身を見れば分かってしまう。
 
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+そこで採点を DB の関数の中だけで行う。ブラウザから上がってくるのは
+「どの問で、どのタグを選んだか」だけ。
+そして**正解が外へ出る経路を1本に絞った。**
+
+面白いのはその先で、**「1本のまま」を機械に見張らせている。**
+
+```
+[漏洩] prompt_cards（＝答え）に触れる関数が4本のまま
+```
+
+4本目が増えたら、それが新しい漏洩経路になりうる。
+`npm run db:verify` が本数を数えて、増えていれば落ちる
+（[`scripts/db-checks.mjs`](scripts/db-checks.mjs) の「漏洩」の節）。
+**レビューで気をつける、ではなく、増えたら止まる形にした。**
+
+### 2. 「メールは、送った端末で開かれるとは限らない」を本番で踏んだ
+
+→ [D92](docs/decisions.md#d92-メールは送った端末で開かれるとは限らない) ／
+[`src/app/auth/confirm/route.ts`](src/app/auth/confirm/route.ts)
+
+本番でこうなった。
+
+> PC で登録 → **スマホ**でメールを開く → 「確認を完了できませんでした」
+
+原因は PKCE だった。`?code=` を引き換えるには**控え**が要り、
+それは**登録を始めたブラウザにしか無い。**スマホには無い。
+リンクが壊れていたわけでも、期限が切れていたわけでもない。
+
+それなのに画面は「有効期限が切れているかもしれません」と言っていた。
+**推測を断定として書くと、利用者は無駄な作業に時間を使う。**
+
+`token_hash` 方式に変えて、控えを使わない形にした。
+そのうえで本番と同じ流れを1本通し、
+**別の Cookie 入れ物から開いても uid が変わらず、登録前に引いたお題が
+そのまま残っている**ことを実測した。
+
+### 3. 検査が「あってはいけないもの」を見ていなかった
+
+→ [D123](docs/decisions.md#d123-検査用の作品は掃除では消えない)
+
+公開手順書の項目に全部○がついた状態で、**本番の作品一覧を実際に取得した。**
+
+```
+同時投稿192500 ／ ランキング上位71078207 ／ 自作いいねだけ66442806
+スモークテスト・オリジナル ／ 受け取らないはず
+```
+
+**並んでいたのは全部、検査用の作品だった。**278件。本物は0件。
+
+掃除の仕組みは3つあるのに、どれも作品を消さない。
+中でも「退会しても作品は消さず、持ち主を外す」という決定（D70）が、
+**正しい決定のまま裏目に出ていた。**検査データには適用されてはいけなかった。
+
+**問題の本質は、全項目に○がついても公開できない状態だった、ということ。**
+検査は「あるべきものがあるか」しか見ておらず、
+**「あってはいけないものが無いか」を見ていなかった。**
+
+`npm run verify:launch` を書いて、本番を外から叩いて確かめる形にした。
+判定は作品名ではなく**持ち主のメールアドレス**で行う。
+名前で判定していたときは109件を取りこぼしていた（D130）。
+
+---
+
+## 使っているもの
+
+| | |
+|---|---|
+| **Next.js 16**（App Router） | Server Components が既定。`searchParams` は Promise |
+| **React 19** / **TypeScript** / **Tailwind CSS 4** | |
+| **Supabase** | Postgres・RLS・匿名サインイン・Storage |
+| **Vercel** | ホスティングと Cron（1日1回の掃除） |
+| **Cloudflare Turnstile** | 通報フォームの CAPTCHA |
+
+**ライブラリを増やしていない。**依存は `next` / `react` / `@supabase/*` の4つだけ。
+
+### 作りの方針
+
+**ビジネスロジックを DB の関数（RPC）に置いている。**
+アプリ側は `security definer` の関数を呼ぶだけで、表を直接読み書きしない。
+
+```
+src/app/          画面（Server Components が既定）
+src/features/     機能ごとの RPC 呼び出しと型
+src/lib/supabase/ クライアント4種（ブラウザ／サーバー／ルート／管理）
+supabase/migrations/  21本。スキーマと関数の全部
+```
+
+そうしている理由は、**権限を1か所に集めるため。**
+29の表すべてで RLS を有効にし、うち12の表は**ポリシーを1本も置いていない**。
+つまり利用者からは1行も見えず、通るのは関数の中だけになる。
+
+---
+
+## 検査の作り
+
+**3層ある。どれも `npm run` で回る。**
+
+| | 何を見るか | 本数 |
+|---|---|---|
+| `npm run db:verify` | **DB の作りが崩れていないか。**RLS・権限・`search_path`・索引・漏洩経路 | 168項目 |
+| `npm run smoke:*` | **利用者の一連の流れが通るか。**実際に HTTP を叩き、画面の文字を確かめる | 11本 |
+| `npm run verify:launch` | **本番に、あってはいけないものが無いか。**外から叩く | 18項目 |
+
+スモークは「引く」「描いて出す」「答える」「いいね」「ランキング」
+「プロフィール」「通報」「退会」「同時押し」「ゲスト」を1本ずつ持つ。
+
+**DB の検査は、設定を読むだけで終わらせていない。**
+最後に匿名の鍵で実際に叩く。
+
+```
+[実地確認] 拒否されるべき呼び出しがすべて拒否された   56 / 56
+[実地確認] 許可されるべき呼び出しがすべて成功した     12 / 12
+```
+
+権限表が正しく見えても、実際に読めてしまうことはある。
+**設定の確認と、動かしての確認は別物。**
+
+**検査の書きかたで1つ学んだことがある。**
+
+```
+✕  伝達率の欄が出ている
+◯  他人には出ていない ／ 作者が開いたときだけ出る
+```
+
+「画面に出ていること」で検査を書くと、
+**出す相手を変える変更で、検査のほうが古くなる。**
+「誰が見たときに」を主語に入れる（D144）。
+
+---
+
+## 動かす
+
+```bash
+npm install
+cp .env.example .env.local   # 値は自分の Supabase プロジェクトから
+npm run dev
+```
+
+`.env.local` に本番の鍵は置かない。ビルド時に
+`scripts/check-env.mjs` が必要な変数の**形**まで検査して落とす。
+
+### DB を変える
+
+```bash
+npm run db:status          # 何が流れるかを見る（送らない）
+npm run db:deploy          # 流す
+npm run db:verify:keychain # 崩れていないか全部見る
+```
+
+migration の中に検査を書く方針にしている（D69）。
+入れたその場で数えて、期待とずれていれば `raise exception` で巻き戻る。
+**「流したあとで確かめる」を別の作業にしない。**
+
+---
+
+## 文書
+
+| | |
+|---|---|
+| [`docs/decisions.md`](docs/decisions.md) | **決定ログ。D1〜D144。**なぜそうしたかは全部ここ |
+| [`docs/spec.md`](docs/spec.md) | 仕様 |
+| [`docs/roadmap.md`](docs/roadmap.md) | 公開までの順番と分量 |
+| [`docs/launch-checklist.md`](docs/launch-checklist.md) | 公開手順0〜10 |
+| [`docs/postlaunch-feature-architecture.md`](docs/postlaunch-feature-architecture.md) | 公開後に作るものの設計 |
+| [`docs/research-hit-patterns.md`](docs/research-hit-patterns.md) | 「なぜ描く手が止まるのか」の調査 |
+
+**このプロジェクトでいちばん時間をかけたのは、コードではなく決定ログ。**
+機能を足すたびに「なぜ足すのか」「何を捨てるのか」を書き、
+あとで矛盾したときはログのほうを直してから、コードを直している。
