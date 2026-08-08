@@ -1,7 +1,8 @@
 # drawing-prompt-quiz 仕様書
 
 - 仮フォルダ名: `drawing-prompt-quiz`
-- 公開サービス名: 未定
+- 公開サービス名: **つたわるかな**（2026-08-08 確定・D114）
+- 本番URL: `https://tsutawarukana.com`（D114〜D116）
 - 最終更新: 2026-08-03
 - 版: v2（B1/B3/B6確定＋7点修正を反映）
 
