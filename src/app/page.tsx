@@ -30,9 +30,9 @@ import { NavButton } from "@/app/_pending";
  */
 
 export const metadata = {
-  // レイアウトの template は「%s ｜ お題を引いて描くクイズ」。
+  // レイアウトの template は「%s ｜ つたわるかな」。
   // トップで使うと名前が二重になるので、ここだけ絶対指定にする。
-  title: { absolute: "お題を引いて描くクイズ" },
+  title: { absolute: "つたわるかな" },
 };
 
 const card =
@@ -60,7 +60,7 @@ export default function Home() {
   return (
     <main className="mx-auto w-full max-w-3xl space-y-10 p-6 sm:p-10">
       <header className="space-y-3">
-        <h1 className="text-3xl font-bold sm:text-4xl">お題を引いて描くクイズ</h1>
+        <h1 className="text-3xl font-bold sm:text-4xl">つたわるかな</h1>
         <p className="text-base leading-7 text-black/65 dark:text-white/65">
           ランダムに引いたお題で絵を描き、見た人が
           <strong>絵だけを手がかりに</strong>そのお題を当てるサービスです。

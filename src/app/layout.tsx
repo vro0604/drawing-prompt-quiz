@@ -24,9 +24,11 @@ const siteUrl = process.env.NEXT_PUBLIC_SITE_URL ?? "http://localhost:3000";
 
 export const metadata: Metadata = {
   metadataBase: new URL(siteUrl),
+  // サービス名は「つたわるかな」（D114）。
+  // 名前が説明を兼ねなくなったので、description が説明の役目を持つ。
   title: {
-    default: "お題を引いて描くクイズ",
-    template: "%s ｜ お題を引いて描くクイズ",
+    default: "つたわるかな",
+    template: "%s ｜ つたわるかな",
   },
   description:
     "引いたお題で絵を描き、見た人が絵だけからお題を当てるクイズ。ゲストのまま遊べます。",
