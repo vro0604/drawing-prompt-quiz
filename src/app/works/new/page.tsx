@@ -35,7 +35,7 @@ function Shell({ children }: { children: React.ReactNode }) {
     <main className="mx-auto w-full max-w-3xl space-y-8 p-6 sm:p-10">
       <header className="space-y-2">
         <h1 className="text-2xl font-bold">作品を投稿する</h1>
-        <p className="text-sm text-ink/55">
+        <p className="text-sm text-faint">
           描いた絵と、引いたお題を結びつけます。見た人は絵だけを見てお題を当てます。
         </p>
       </header>
@@ -48,7 +48,7 @@ function Notice({ title, children }: { title: string; children: React.ReactNode 
   return (
     <div className={`${surface} space-y-3`}>
       <h2 className="text-sm font-bold">{title}</h2>
-      <div className="space-y-2 text-sm text-ink/60">{children}</div>
+      <div className="space-y-2 text-sm text-muted">{children}</div>
     </div>
   );
 }
@@ -196,7 +196,7 @@ export default async function NewWorkPage({
       <section className={`${surface} space-y-4`}>
         <div className="flex flex-wrap items-baseline gap-x-4 gap-y-1">
           <h2 className="text-sm font-bold">{prompt.mode_label}のお題</h2>
-          <span className="text-xs text-ink/55">
+          <span className="text-xs text-faint">
             制作時間 {formatDuration(prompt.time_limit_seconds)}
           </span>
         </div>
@@ -206,12 +206,12 @@ export default async function NewWorkPage({
               key={c.card_slot_key}
               className="rounded-lg bg-hover px-3 py-1.5 text-xs"
             >
-              <span className="text-ink/45">{c.card_slot_label}</span>{" "}
+              <span className="text-faint">{c.card_slot_label}</span>{" "}
               <span className="font-bold">{c.tag_label}</span>
             </li>
           ))}
         </ul>
-        <p className="text-xs text-ink/40">
+        <p className="text-xs text-faint">
           この一覧は自分にしか見えません。投稿した作品のページには出ません。
         </p>
       </section>
@@ -228,7 +228,7 @@ export default async function NewWorkPage({
         }
       />
 
-      <footer className="border-t border-ink/10 pt-6 text-xs text-ink/40">
+      <footer className="border-t border-ink/10 pt-6 text-xs text-faint">
         <Link href={`/prompt/${promptId}`} className="underline">
           お題の画面へ戻る
         </Link>

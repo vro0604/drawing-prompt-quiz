@@ -34,12 +34,12 @@ export default function GlobalError({
     <main className="mx-auto flex w-full max-w-lg flex-1 flex-col justify-center gap-6 p-6 sm:p-10">
       <div className="space-y-3">
         <h1 className="text-2xl font-bold">うまく表示できませんでした</h1>
-        <p className="text-sm leading-7 text-ink/60">
+        <p className="text-sm leading-7 text-muted">
           一時的な不具合の可能性があります。
           もう一度お試しいただくか、しばらく待ってからお越しください。
         </p>
         {error.digest ? (
-          <p className="text-xs text-ink/35">
+          <p className="text-xs text-faint">
             参照番号: {error.digest}
           </p>
         ) : null}

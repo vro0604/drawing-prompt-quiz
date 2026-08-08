@@ -33,8 +33,31 @@
   --background: #ffffff;
   --foreground: #171717;
 
-  /* 文字と線の素。濃さは使う側で指定する（text-ink/55 など） */
+  /* 線の素。濃さは使う側で指定する（border-ink/10 など） */
   --ink: #000000;
+
+  /*
+   * 文字の濃さ。**3段しか作らない。**
+   *
+   * 【下限を決めた理由】
+   *   もとは 20% から 80% まで 11 段あり、そのうち /20〜/50 の 97 箇所が
+   *   AA（4.5:1）に届いていなかった。本文は 12px なので
+   *   「大きな文字は 3:1 でよい」は使えない
+   *   （24px 以上、または太字 18.66px 以上が条件）。
+   *
+   *   D136 は「既定は、いちばん弱い立場に合わせる」と決めている。
+   *   同じ判断をここにも当てた。
+   *
+   * 【段が減ると設計が良くなる】
+   *   薄いグレーで階層を作る手が使えなくなるので、
+   *   **大きさ・太さ・余白で作ることになる。**
+   *
+   *   下の比は実測（明るい地は白、暗い地はカード面 #161616 に対して）。
+   *                              明るい   暗い
+   */
+  --muted: rgb(0 0 0 / 0.7); /*   8.52    9.22  */
+  --faint: rgb(0 0 0 / 0.55); /*  4.76    6.12   ← ここが下限 */
+  --decor: rgb(0 0 0 / 0.25); /*  1.83    2.25   情報を持たない飾りだけ。例外 */
 
   /* 面 */
   --surface: rgb(255 255 255 / 0.6); /* カードの地 */
@@ -49,7 +72,20 @@
   /* 線。役目ごとに濃さが違う */
   --line-faint: rgb(0 0 0 / 0.05); /* 表の行の区切り */
   --line: rgb(0 0 0 / 0.1); /* カードの縁・区切り */
-  --line-mid: rgb(0 0 0 / 0.15); /* 入力欄 */
+  --line-mid: rgb(0 0 0 / 0.15); /* タブ・副ボタンの枠・表の行 */
+
+  /*
+   * 入力欄の枠だけ別扱い。
+   *
+   * WCAG 1.4.11 は「部品だと分かるために必要な輪郭」に 3:1 を求める。
+   * もとは line-mid（15%）で **約 1.4:1**、つまり枠がほぼ見えず、
+   * どこが入力欄か分からない状態だった。
+   *
+   * 45% にしたのは、42% だと明るい地で 3.04:1 しかなく余裕が無いため
+   * （45% で 3.35:1）。ボタンやタブの枠は文字で部品だと分かるので、
+   * ここには含めない。
+   */
+  --field: rgb(0 0 0 / 0.45);
   --line-firm: rgb(0 0 0 / 0.2); /* 副ボタン */
   --line-hover: rgb(0 0 0 / 0.3); /* 触れたときの縁 */
   --line-active: rgb(0 0 0 / 0.4); /* 選んであるもの */
@@ -86,6 +122,12 @@
 
     --ink: #ffffff;
 
+    --muted: rgb(255 255 255 / 0.7);
+    --faint: rgb(255 255 255 / 0.55);
+    --decor: rgb(255 255 255 / 0.25);
+
+    --field: rgb(255 255 255 / 0.45);
+
     --surface: rgb(255 255 255 / 0.05);
     --sunken: rgb(255 255 255 / 0.05);
     --sunken-strong: rgb(255 255 255 / 0.1);
@@ -118,6 +160,12 @@
 
   --color-ink: var(--ink);
 
+  --color-muted: var(--muted);
+  --color-faint: var(--faint);
+  --color-decor: var(--decor);
+
+  --color-field: var(--field);
+
   --color-surface: var(--surface);
   --color-sunken: var(--sunken);
   --color-sunken-strong: var(--sunken-strong);
@@ -142,12 +190,20 @@
   --color-notice: var(--notice);
   --color-notice-tint: var(--notice-tint);
 
+  /* 等幅は /health だけで使うので、そちらの部品の中で読む（layout には置かない） */
   --font-sans: var(--font-geist-sans);
-  --font-mono: var(--font-geist-mono);
 }
 
+/*
+ * 書体はここで指定しない。body の className に `font-sans` を付けて、
+ * 中身は layout.tsx の next/font が決める（日本語の並びもそこ）。
+ *
+ * もとはここに `font-family: Arial, Helvetica, sans-serif` と書いてあった。
+ * **Arial に日本語の字は無い**ので、日本語だけ OS の既定に落ちていた。
+ * しかも Geist を2つ読み込んでいるのに body には効いておらず、
+ * **読んで捨てている状態**だった。
+ */
 body {
   background: var(--background);
   color: var(--foreground);
-  font-family: Arial, Helvetica, sans-serif;
 }

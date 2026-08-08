@@ -29,7 +29,7 @@ export default async function TermsPage() {
           publishedAt={terms.published_at}
         />
       ) : (
-        <p className="text-sm text-ink/55">
+        <p className="text-sm text-faint">
           いま有効な利用規約が登録されていません。
         </p>
       )}

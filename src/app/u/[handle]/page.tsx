@@ -77,7 +77,7 @@ export async function generateMetadata({
 function SlotStatList({ stats }: { stats: SlotStatSummary[] }) {
   if (stats.length === 0) {
     return (
-      <p className="text-xs text-ink/40">
+      <p className="text-xs text-faint">
         まだ枠ごとの記録がありません。
       </p>
     );
@@ -89,11 +89,11 @@ function SlotStatList({ stats }: { stats: SlotStatSummary[] }) {
         const percent = percentOf(s.corrects, s.attempts);
         return (
           <li key={s.card_slot_key} className="flex items-center gap-3">
-            <span className="w-24 shrink-0 text-ink/45">{s.label}</span>
+            <span className="w-24 shrink-0 text-faint">{s.label}</span>
             <span className="font-bold tabular-nums">
               {percent === null ? "—" : `${percent}%`}
             </span>
-            <span className="text-ink/35">
+            <span className="text-faint">
               {s.corrects} / {s.attempts}
             </span>
           </li>
@@ -117,7 +117,7 @@ function CreatorStats({ profile }: { profile: PublicProfile }) {
     <section className={`${surface} space-y-4`}>
       <div className="space-y-1">
         <h2 className="text-sm font-bold">描き手としての記録</h2>
-        <p className="text-xs text-ink/45">
+        <p className="text-xs text-faint">
           {profile.is_self && !profile.show_creator_stats
             ? "公開設定が切れているので、他の人には出ていません。"
             : "公開した作品の集計です。"}
@@ -132,7 +132,7 @@ function CreatorStats({ profile }: { profile: PublicProfile }) {
           { label: "総制作時間", value: formatTotalTime(creator.total_actual_seconds) },
         ].map((item) => (
           <div key={item.label}>
-            <dt className="text-xs text-ink/45">{item.label}</dt>
+            <dt className="text-xs text-faint">{item.label}</dt>
             <dd className="text-lg font-bold tabular-nums">{item.value}</dd>
           </div>
         ))}
@@ -140,11 +140,11 @@ function CreatorStats({ profile }: { profile: PublicProfile }) {
 
       <div className="space-y-2 border-t border-ink/10 pt-4">
         <div className="flex items-baseline gap-3">
-          <h3 className="text-xs text-ink/45">伝わりやすさ</h3>
+          <h3 className="text-xs text-faint">伝わりやすさ</h3>
           <span className="text-lg font-bold tabular-nums">
             {accuracy === null ? "—" : `${accuracy}%`}
           </span>
-          <span className="text-xs text-ink/35">
+          <span className="text-xs text-faint">
             回答が5人以上集まった作品だけで平均しています
           </span>
         </div>
@@ -171,7 +171,7 @@ function AnswerStats({ profile }: { profile: PublicProfile }) {
             </span>
           ) : null}
         </h2>
-        <p className="text-xs text-ink/45">
+        <p className="text-xs text-faint">
           クイズにどれだけ当てられたかです。
         </p>
       </div>
@@ -183,7 +183,7 @@ function AnswerStats({ profile }: { profile: PublicProfile }) {
           { label: "答えた設問", value: `${stats.total_items}` },
         ].map((item) => (
           <div key={item.label}>
-            <dt className="text-xs text-ink/45">{item.label}</dt>
+            <dt className="text-xs text-faint">{item.label}</dt>
             <dd className="text-lg font-bold tabular-nums">{item.value}</dd>
           </div>
         ))}
@@ -199,7 +199,7 @@ function AnswerStats({ profile }: { profile: PublicProfile }) {
 function WorkGrid({ works }: { works: PublicWorkListItem[] }) {
   if (works.length === 0) {
     return (
-      <p className="text-sm text-ink/55">
+      <p className="text-sm text-faint">
         この部門の作品はまだありません。
       </p>
     );
@@ -226,11 +226,11 @@ function WorkGrid({ works }: { works: PublicWorkListItem[] }) {
             <div className="space-y-1 px-1 pb-1">
               <p className="truncate text-sm font-bold">{w.title}</p>
               {w.source_title ? (
-                <p className="truncate text-xs text-ink/45">
+                <p className="truncate text-xs text-faint">
                   {w.source_title}
                 </p>
               ) : null}
-              <p className="text-xs text-ink/40">
+              <p className="text-xs text-faint">
                 {divisionLabel(w.division)}・回答 {w.answers_count}・いいね {w.likes_count}
               </p>
             </div>
@@ -308,11 +308,11 @@ export default async function ProfilePage({
       <header className="space-y-3">
         <div className="space-y-1">
           <h1 className="text-2xl font-bold break-words">{profile.display_name}</h1>
-          <p className="text-sm text-ink/45">@{profile.handle}</p>
+          <p className="text-sm text-faint">@{profile.handle}</p>
         </div>
 
         {profile.bio ? (
-          <p className="text-sm whitespace-pre-wrap break-words text-ink/70">
+          <p className="text-sm whitespace-pre-wrap break-words text-muted">
             {profile.bio}
           </p>
         ) : null}
@@ -377,7 +377,7 @@ export default async function ProfilePage({
 
       {tab.key === "answers" ? (
         answers.length === 0 ? (
-          <p className="text-sm text-ink/55">
+          <p className="text-sm text-faint">
             回答した作品はまだありません。
           </p>
         ) : (
@@ -400,10 +400,10 @@ export default async function ProfilePage({
                   </div>
                   <div className="min-w-0 flex-1 space-y-1">
                     <p className="truncate text-sm font-bold">{a.title}</p>
-                    <p className="truncate text-xs text-ink/50">
+                    <p className="truncate text-xs text-faint">
                       {a.author_display_name}
                     </p>
-                    <p className="text-xs text-ink/40">
+                    <p className="text-xs text-faint">
                       {new Date(a.answered_at).toLocaleDateString("ja-JP")}・
                       {a.item_count}問中 {a.correct_count}問 正解
                     </p>

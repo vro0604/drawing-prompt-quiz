@@ -60,7 +60,7 @@ export default async function SavesPage() {
     <main className="mx-auto w-full max-w-3xl space-y-8 p-6 sm:p-10">
       <header className="space-y-2">
         <h1 className="text-2xl font-bold">お気に入り</h1>
-        <p className="text-sm text-ink/55">
+        <p className="text-sm text-faint">
           あとで見返すために保存した作品です。
           {profile?.show_saved_works
             ? "いまは他の人にも公開しています。"
@@ -84,7 +84,7 @@ export default async function SavesPage() {
           </Link>
         </p>
       ) : (
-        <p className="text-sm text-ink/55">
+        <p className="text-sm text-faint">
           公開プロフィールを持つには ID の設定が必要です。
           <Link href="/account" className="ml-1 underline">
             ID を決める

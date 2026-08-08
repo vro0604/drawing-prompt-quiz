@@ -6,7 +6,7 @@ import type { MyWork } from "@/features/work/types";
 import { deleteWorkAction } from "../actions";
 import { SubmitButton } from "@/app/_pending";
 import Image from "next/image";
-import { surface } from "@/app/_surface";
+import { field, surface } from "@/app/_surface";
 
 /**
  * /works/[id]/delete ／ 削除の確認画面。
@@ -29,9 +29,6 @@ import { surface } from "@/app/_surface";
 export const metadata = {
   title: "作品を削除する",
 };
-
-const input =
-  "w-full rounded-xl border border-line-mid bg-transparent px-4 py-3 text-sm";
 
 export default async function DeleteWorkPage({
   params,
@@ -72,7 +69,7 @@ export default async function DeleteWorkPage({
     <main className="mx-auto w-full max-w-lg space-y-6 p-6 sm:p-10">
       <header className="space-y-2">
         <h1 className="text-2xl font-bold">作品を削除する</h1>
-        <p className="text-sm text-ink/55">
+        <p className="text-sm text-faint">
           この操作は元に戻せません。
         </p>
       </header>
@@ -98,7 +95,7 @@ export default async function DeleteWorkPage({
           </div>
           <div className="min-w-0 flex-1 space-y-1">
             <p className="text-sm font-bold">{work.title}</p>
-            <p className="text-xs text-ink/45">
+            <p className="text-xs text-faint">
               {isPublic ? "公開中" : "下書き"}・回答 {work.answers_count}・いいね{" "}
               {work.likes_count}
             </p>
@@ -110,7 +107,7 @@ export default async function DeleteWorkPage({
       <section className={`${surface} space-y-3 text-sm`}>
         <div className="space-y-1">
           <p className="font-bold">削除するとどうなるか</p>
-          <ul className="list-disc space-y-1 pl-5 text-ink/70">
+          <ul className="list-disc space-y-1 pl-5 text-muted">
             <li>作品一覧・ランキング・他の人のお気に入りから消えます</li>
             <li>この作品のページは、ほかの人には「見つかりません」になります</li>
             <li>
@@ -129,13 +126,13 @@ export default async function DeleteWorkPage({
 
         <div className="space-y-1 border-t border-ink/10 pt-3">
           <p className="font-bold">消えないもの</p>
-          <ul className="list-disc space-y-1 pl-5 text-ink/70">
+          <ul className="list-disc space-y-1 pl-5 text-muted">
             <li>これまでにこの作品へ寄せられた回答の記録（集計に残ります）</li>
             <li>あなたの成績や、ほかの作品</li>
           </ul>
         </div>
 
-        <p className="text-xs text-ink/45">
+        <p className="text-xs text-faint">
           しばらく見せたくないだけなら、削除ではなく
           <Link href={`/works/${work.id}`} className="mx-1 underline">
             下書きに戻す
@@ -158,7 +155,7 @@ export default async function DeleteWorkPage({
             name="confirmTitle"
             required
             autoComplete="off"
-            className={input}
+            className={field}
           />
         </label>
 

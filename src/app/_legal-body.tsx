@@ -77,7 +77,7 @@ export function LegalBody({
 
   return (
     <article className="space-y-4">
-      <p className="text-xs text-ink/45">
+      <p className="text-xs text-faint">
         版 {version}（{new Date(publishedAt).toLocaleDateString("ja-JP")}）
       </p>
 

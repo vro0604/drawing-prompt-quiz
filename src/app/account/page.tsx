@@ -11,7 +11,7 @@ import {
   updateProfileAction,
   updateVisibilityAction,
 } from "./actions";
-import { surface } from "@/app/_surface";
+import { field, surface } from "@/app/_surface";
 
 /**
  * /account ／ アカウントの最小画面。
@@ -33,9 +33,6 @@ export const metadata = {
   title: "アカウント",
 };
 
-const input =
-  "w-full rounded-xl border border-line-mid bg-transparent px-4 py-3 text-sm";
-
 const primary =
   "w-full rounded-xl bg-accent px-5 py-3 text-sm font-bold text-on-accent hover:opacity-85";
 
@@ -47,18 +44,18 @@ function Credentials({ idPrefix }: { idPrefix: string }) {
   return (
     <>
       <label className="block space-y-1">
-        <span className="block text-xs text-ink/55">メールアドレス</span>
+        <span className="block text-xs text-faint">メールアドレス</span>
         <input
           id={`${idPrefix}-email`}
           type="email"
           name="email"
           required
           autoComplete="email"
-          className={input}
+          className={field}
         />
       </label>
       <label className="block space-y-1">
-        <span className="block text-xs text-ink/55">
+        <span className="block text-xs text-faint">
           パスワード（6文字以上）
         </span>
         <input
@@ -67,7 +64,7 @@ function Credentials({ idPrefix }: { idPrefix: string }) {
           name="password"
           required
           minLength={6}
-          className={input}
+          className={field}
         />
       </label>
     </>
@@ -94,7 +91,7 @@ export default async function AccountPage({
     <main className="mx-auto w-full max-w-lg space-y-8 p-6 sm:p-10">
       <header className="space-y-2">
         <h1 className="text-2xl font-bold">アカウント</h1>
-        <p className="text-sm text-ink/55">
+        <p className="text-sm text-faint">
           お題を引く・クイズに答えるはゲストのままできます。
           作品の投稿にはアカウントが必要です。
         </p>
@@ -120,12 +117,12 @@ export default async function AccountPage({
             <p>
               登録ユーザーとしてサインインしています（{user.email ?? "メール未設定"}）。
             </p>
-            <p className="text-xs text-ink/45">ID: {user.id}</p>
+            <p className="text-xs text-faint">ID: {user.id}</p>
           </div>
         ) : isGuest ? (
           <div className="space-y-1 text-sm">
             <p>ゲストとして遊んでいます。作品の投稿はできません。</p>
-            <p className="text-xs text-ink/45">ID: {user.id}</p>
+            <p className="text-xs text-faint">ID: {user.id}</p>
           </div>
         ) : (
           <p className="text-sm">まだサインインしていません。</p>
@@ -137,7 +134,7 @@ export default async function AccountPage({
         <section className={`${surface} space-y-4`}>
           <div className="space-y-1">
             <h2 className="text-sm font-bold">プロフィール</h2>
-            <p className="text-xs text-ink/55">
+            <p className="text-xs text-faint">
               ここで決めた表示名が、作品一覧や作品ページに出ます。
               空欄のままにした項目は変更されません。
             </p>
@@ -145,7 +142,7 @@ export default async function AccountPage({
 
           <form action={updateProfileAction} className="space-y-4">
             <label className="block space-y-1">
-              <span className="block text-xs text-ink/55">
+              <span className="block text-xs text-faint">
                 ID（3〜20字・小文字の英数字とハイフン）
               </span>
               <input
@@ -155,9 +152,9 @@ export default async function AccountPage({
                 maxLength={20}
                 pattern="[a-z0-9][a-z0-9\-]{1,18}[a-z0-9]"
                 placeholder="my-handle"
-                className={input}
+                className={field}
               />
-              <span className="block text-xs text-ink/40">
+              <span className="block text-xs text-faint">
                 {profile?.handle
                   ? "早い者勝ちです。変えると、いまの ID は他の人が取れるようになります。"
                   : "早い者勝ちです。ほかの人が使っている ID は取れません。"}
@@ -165,7 +162,7 @@ export default async function AccountPage({
             </label>
 
             <label className="block space-y-1">
-              <span className="block text-xs text-ink/55">
+              <span className="block text-xs text-faint">
                 表示名（30字まで）
               </span>
               <input
@@ -173,12 +170,12 @@ export default async function AccountPage({
                 name="displayName"
                 defaultValue={profile?.display_name ?? ""}
                 maxLength={30}
-                className={input}
+                className={field}
               />
             </label>
 
             <label className="block space-y-1">
-              <span className="block text-xs text-ink/55">
+              <span className="block text-xs text-faint">
                 自己紹介（500字まで）
               </span>
               <textarea
@@ -186,17 +183,17 @@ export default async function AccountPage({
                 defaultValue={profile?.bio ?? ""}
                 maxLength={500}
                 rows={3}
-                className={input}
+                className={field}
               />
             </label>
 
             <div className="space-y-3">
-              <span className="block text-xs text-ink/55">
+              <span className="block text-xs text-faint">
                 外部リンク（http:// または https:// で始まる URL）
               </span>
               {LINK_FIELDS.map((f) => (
                 <label key={f.key} className="block space-y-1">
-                  <span className="block text-xs text-ink/40">
+                  <span className="block text-xs text-faint">
                     {f.label}
                   </span>
                   <input
@@ -204,7 +201,7 @@ export default async function AccountPage({
                     name={`link_${f.key}`}
                     defaultValue={profile?.links?.[f.key] ?? ""}
                     placeholder={f.placeholder}
-                    className={input}
+                    className={field}
                   />
                 </label>
               ))}
@@ -222,7 +219,7 @@ export default async function AccountPage({
               </Link>
             </p>
           ) : (
-            <p className="border-t border-ink/10 pt-4 text-xs text-ink/45">
+            <p className="border-t border-ink/10 pt-4 text-xs text-faint">
               ID を決めると、公開プロフィールのページ（/u/あなたのID）ができます。
             </p>
           )}
@@ -234,7 +231,7 @@ export default async function AccountPage({
         <section className={`${surface} space-y-4`}>
           <div className="space-y-1">
             <h2 className="text-sm font-bold">公開設定</h2>
-            <p className="text-xs text-ink/55">
+            <p className="text-xs text-faint">
               すべて既定では公開しません。
               <strong>投稿した作品と、描き手としての記録は常に公開されます。</strong>
             </p>
@@ -251,7 +248,7 @@ export default async function AccountPage({
                 />
                 <span className="space-y-1">
                   <span className="block text-sm">{f.label}</span>
-                  <span className="block text-xs text-ink/45">
+                  <span className="block text-xs text-faint">
                     {f.note}
                   </span>
                 </span>
@@ -267,7 +264,7 @@ export default async function AccountPage({
             <Link href="/saves" className="underline">
               自分のお気に入りを見る
             </Link>
-            <span className="ml-2 text-xs text-ink/45">
+            <span className="ml-2 text-xs text-faint">
               公開設定に関わらず、自分では常に見られます
             </span>
           </p>
@@ -279,7 +276,7 @@ export default async function AccountPage({
         <section className={`${surface} space-y-4`}>
           <div className="space-y-1">
             <h2 className="text-sm font-bold">アカウントを登録する</h2>
-            <p className="text-xs text-ink/55">
+            <p className="text-xs text-faint">
               いまのゲストにメールとパスワードを結びつけます。
               <strong>IDは変わりません。</strong>
               引いたお題も、これまでの記録もそのまま残ります。
@@ -345,7 +342,7 @@ export default async function AccountPage({
       {user !== null && !isGuest ? (
         <section className={`${surface} space-y-2`}>
           <h2 className="text-sm font-bold">退会</h2>
-          <p className="text-xs text-ink/55">
+          <p className="text-xs text-faint">
             アカウントと投稿した作品を削除します。取り消せません。
             次の画面で、何が消えて何が残るかを確認できます。
           </p>
@@ -363,7 +360,7 @@ export default async function AccountPage({
             お題を引く画面へ
           </Link>
         </p>
-        <p className="text-xs text-ink/45">
+        <p className="text-xs text-faint">
           <Link href="/terms" className="underline">
             利用規約
           </Link>

@@ -35,7 +35,7 @@ export default async function DeletedPage({
     <main className="mx-auto w-full max-w-2xl space-y-8 p-6 sm:p-10">
       <header className="space-y-2">
         <h1 className="text-2xl font-bold">退会しました</h1>
-        <p className="text-sm text-ink/55">
+        <p className="text-sm text-faint">
           ご利用ありがとうございました。
         </p>
       </header>
@@ -64,7 +64,7 @@ export default async function DeletedPage({
               </li>
             ) : null}
           </ul>
-          <p className="text-xs text-ink/45">
+          <p className="text-xs text-faint">
             この画面を閉じて構いません。残りの処理に、あなたの操作は要りません。
           </p>
         </section>
@@ -72,7 +72,7 @@ export default async function DeletedPage({
 
       <section className={`${surface} space-y-2`}>
         <h2 className="text-sm font-bold">画像がまだ見えることがあります</h2>
-        <p className="text-sm text-ink/60">
+        <p className="text-sm text-muted">
           配信の仕組みの都合で、消したあとも最大1時間ほど同じURLから
           画像が見えることがあります。時間が経てば消えます。
         </p>

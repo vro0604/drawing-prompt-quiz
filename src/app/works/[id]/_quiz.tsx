@@ -93,7 +93,7 @@ export function QuizForm({ quiz }: { quiz: WorkQuiz }) {
 
       <div className="space-y-1">
         <h2 className="text-sm font-bold">この絵のお題を当てる</h2>
-        <p className="text-xs text-ink/55">
+        <p className="text-xs text-faint">
           全{quiz.questions.length}問。<strong>答えられるのは1回だけ</strong>
           で、やり直しはできません。送信すると正解が表示されます。
         </p>
@@ -112,7 +112,7 @@ export function QuizForm({ quiz }: { quiz: WorkQuiz }) {
         >
           回答する
         </SubmitButton>
-        <p className="text-xs text-ink/45">
+        <p className="text-xs text-faint">
           サインインしていない場合、送信した時点でゲストとして記録されます。
           アカウント登録は不要です。
         </p>
@@ -146,7 +146,7 @@ export function AnswerResult({ answer }: { answer: MyAnswer }) {
             }
           >
             <div className="flex items-baseline gap-3">
-              <span className="text-xs text-ink/50">
+              <span className="text-xs text-faint">
                 {item.card_slot_label}
               </span>
               <span
@@ -161,12 +161,12 @@ export function AnswerResult({ answer }: { answer: MyAnswer }) {
             </div>
 
             <div className="pt-1 text-sm">
-              <span className="text-ink/50">あなたの答え：</span>
+              <span className="text-faint">あなたの答え：</span>
               <span className="font-bold">{item.selected_label}</span>
               {item.is_correct ? null : (
                 <>
-                  <span className="px-2 text-ink/25">/</span>
-                  <span className="text-ink/50">正解：</span>
+                  <span className="px-2 text-decor">/</span>
+                  <span className="text-faint">正解：</span>
                   <span className="font-bold">{item.correct_label}</span>
                 </>
               )}
@@ -175,7 +175,7 @@ export function AnswerResult({ answer }: { answer: MyAnswer }) {
         ))}
       </ol>
 
-      <p className="text-xs text-ink/45">
+      <p className="text-xs text-faint">
         回答は1作品につき1回だけです。もう一度答えることはできません。
       </p>
     </section>
@@ -187,7 +187,7 @@ export function AuthorNotice() {
   return (
     <div className={`${surface} space-y-2`}>
       <h2 className="text-sm font-bold">この作品のクイズ</h2>
-      <p className="text-sm text-ink/60">
+      <p className="text-sm text-muted">
         自分の作品には回答できません。答えを知っているため、
         回答すると伝達率が実際より高く出てしまいます。
       </p>
@@ -209,7 +209,7 @@ export function SlotStats({ stats }: { stats: SlotStat[] }) {
     return (
       <div className={`${surface} space-y-2`}>
         <h2 className="text-sm font-bold">項目別の伝達率</h2>
-        <p className="text-sm text-ink/55">
+        <p className="text-sm text-faint">
           まだ回答がありません。誰かが答えると、項目ごとに何％の人が当てられたかが出ます。
         </p>
       </div>
@@ -220,7 +220,7 @@ export function SlotStats({ stats }: { stats: SlotStat[] }) {
     <section className={`${surface} space-y-4`}>
       <div className="space-y-1">
         <h2 className="text-sm font-bold">項目別の伝達率</h2>
-        <p className="text-xs text-ink/50">
+        <p className="text-xs text-faint">
           その項目を当てられた人の割合です。低い項目ほど、絵から読み取りにくかったことになります。
         </p>
       </div>
@@ -243,7 +243,7 @@ export function SlotStats({ stats }: { stats: SlotStat[] }) {
                 <span>{s.card_slot_label}</span>
                 <span className="font-bold">
                   {percent === null ? "—" : `${percent}%`}
-                  <span className="pl-2 text-xs font-normal text-ink/40">
+                  <span className="pl-2 text-xs font-normal text-faint">
                     {s.corrects} / {s.attempts}
                   </span>
                 </span>
@@ -302,7 +302,7 @@ export function MyResult({
     return (
       <section className={`${surface} space-y-2`}>
         <h2 className="text-sm font-bold">まだ誰も答えていません</h2>
-        <p className="text-sm text-ink/55">
+        <p className="text-sm text-faint">
           誰かが答えると、ここで結果を見られるようになります。
         </p>
       </section>
@@ -317,7 +317,7 @@ export function MyResult({
             {result.answers_count}人が、あなたの絵を読み解きました
           </p>
           {result.blind_count > 0 ? (
-            <p className="text-sm text-ink/60">
+            <p className="text-sm text-muted">
               うち{result.blind_count}人は、まったく違うものを見ていました
             </p>
           ) : null}
@@ -346,7 +346,7 @@ export function MyResult({
         <h2 className="text-sm font-bold">結果</h2>
         <a
           href={`/works/${workId}`}
-          className="text-xs text-ink/45 underline"
+          className="text-xs text-faint underline"
         >
           閉じる
         </a>
@@ -356,7 +356,7 @@ export function MyResult({
         <span className="text-3xl font-bold tabular-nums">
           {percent === null ? "—" : `${percent}%`}
         </span>
-        <span className="text-xs text-ink/45">
+        <span className="text-xs text-faint">
           {result.correct_items} / {result.total_items} の項目が伝わりました
         </span>
       </div>
@@ -366,14 +366,14 @@ export function MyResult({
         **絵の巧拙とは独立した軸**なので、そう書いておく。
         「上手くなくていい」は、慰めではなく、この数字が示す事実。
       */}
-      <p className="rounded-xl bg-sunken px-4 py-3 text-xs text-ink/55">
+      <p className="rounded-xl bg-sunken px-4 py-3 text-xs text-faint">
         伝わりやすさは、絵の上手さとは別の軸です。
         線が荒くても伝わることも、丁寧に描いても伝わらないこともあります。
       </p>
 
       {result.misreads.length > 0 ? (
         <div className="space-y-2 border-t border-ink/10 pt-4">
-          <h3 className="text-xs text-ink/45">
+          <h3 className="text-xs text-faint">
             代わりに選ばれたもの
           </h3>
           <ul className="space-y-1 text-sm">
@@ -383,16 +383,16 @@ export function MyResult({
                 className="flex items-baseline justify-between gap-4"
               >
                 <span>
-                  <span className="text-ink/45">{m.slot_label}</span>
+                  <span className="text-faint">{m.slot_label}</span>
                   <span className="pl-2">{m.tag_label}</span>
                 </span>
-                <span className="shrink-0 text-xs text-ink/45 tabular-nums">
+                <span className="shrink-0 text-xs text-faint tabular-nums">
                   {m.count}人
                 </span>
               </li>
             ))}
           </ul>
-          <p className="text-xs text-ink/40">
+          <p className="text-xs text-faint">
             誰が選んだかは記録していません。
           </p>
         </div>

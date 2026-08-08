@@ -1,15 +1,49 @@
 import type { Metadata } from "next";
-import { Geist, Geist_Mono } from "next/font/google";
+import { Geist } from "next/font/google";
 import "./globals.css";
 
+/**
+ * 書体。
+ *
+ * 【日本語は OS の書体に任せる】
+ *   Geist はラテン文字だけを持つ。CSS の font-family は**字ごとに**
+ *   前から順に探すので、日本語の字は fallback に並べた書体から拾われる。
+ *
+ *   日本語の Web フォント（Noto Sans JP など）を載せない理由は重さ。
+ *   日本語は unicode-range で100以上のファイルに分かれ、使う字に応じて
+ *   100〜400KB ほど増える。**このサービスの主役は作品の画像**なので、
+ *   帯域を絵と取り合わせたくない。
+ *
+ *   代償として日本語の字面は OS ごとに変わる。字面を揃えたくなったら
+ *   ここに1書体足すだけで済む。
+ *
+ * 【もとの状態】
+ *   globals.css の body に `font-family: Arial` と書いてあり、
+ *   **Arial に日本語の字が無い**ので日本語は OS の既定に落ちていた。
+ *   そのうえ Geist は読み込んでいるのに body に効いておらず、
+ *   ラテン文字も Arial のままだった。読んで捨てていた。
+ *
+ * 【Geist Mono を外した】
+ *   使っていたのは /health（内部の点検画面）1つだけなのに、
+ *   layout に置くと**全ページで読み込まれる。**
+ *   その画面の中で読むように移した。
+ */
 const geistSans = Geist({
   variable: "--font-geist-sans",
   subsets: ["latin"],
-});
-
-const geistMono = Geist_Mono({
-  variable: "--font-geist-mono",
-  subsets: ["latin"],
+  fallback: [
+    // macOS / iOS
+    "Hiragino Sans",
+    "Hiragino Kaku Gothic ProN",
+    // Windows
+    "Yu Gothic UI",
+    "Yu Gothic",
+    "Meiryo",
+    // Android・Linux
+    "Noto Sans JP",
+    "Noto Sans CJK JP",
+    "sans-serif",
+  ],
 });
 
 /**
@@ -81,11 +115,10 @@ export default function RootLayout({
   // 日本語の本文を英語として発音し、意味が取れなくなる。
   // 検索エンジンや翻訳の判定にも使われる。
   return (
-    <html
-      lang="ja"
-      className={`${geistSans.variable} ${geistMono.variable} h-full antialiased`}
-    >
-      <body className="min-h-full flex flex-col">{children}</body>
+    <html lang="ja" className={`${geistSans.variable} h-full antialiased`}>
+      {/* font-sans は globals.css の @theme で --font-geist-sans に繋いである。
+          ここで当てないと、書体を読み込んでいても本文に効かない（もとの状態）。 */}
+      <body className="min-h-full flex flex-col font-sans">{children}</body>
     </html>
   );
 }

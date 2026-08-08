@@ -1,9 +1,17 @@
+import { Geist_Mono } from "next/font/google";
+
 /**
  * 診断ページ（/health 以下）で共通して使う見た目の部品。
  *
  * app/ の中でも page.tsx / route.ts 以外のファイルは URL にならないので、
  * ここに置いても新しいページが増えることはない。
+ *
+ * 【等幅の書体をここで読む理由】
+ *   使っているのはこの画面だけ。layout.tsx に置くと**全ページで
+ *   読み込まれる**ので、内部の点検画面のために全員が払うことになる。
+ *   next/font は呼んだ部品の中に閉じるので、ここで呼ぶ。
  */
+const geistMono = Geist_Mono({ subsets: ["latin"] });
 
 export function Layout({
   title,
@@ -15,10 +23,10 @@ export function Layout({
   children: React.ReactNode;
 }) {
   return (
-    <main className="mx-auto max-w-2xl space-y-6 p-8 font-mono text-sm">
+    <main className={`${geistMono.className} mx-auto max-w-2xl space-y-6 p-8 text-sm`}>
       <h1 className="text-xl font-bold">{title}</h1>
       {children}
-      <p className="pt-4 text-xs text-ink/40">{note}</p>
+      <p className="pt-4 text-xs text-faint">{note}</p>
     </main>
   );
 }
@@ -27,7 +35,7 @@ export function Layout({
 export function Status({ ok, title }: { ok: boolean | null; title: string }) {
   const tone =
     ok === null
-      ? "bg-hover text-ink/60"
+      ? "bg-hover text-muted"
       : ok
         ? "bg-success-tint/15 text-success"
         : "bg-danger-tint/15 text-danger";
@@ -60,7 +68,7 @@ export function ActionButton({
 export function Section({ label, children }: { label: string; children: React.ReactNode }) {
   return (
     <section className="space-y-1">
-      <h2 className="text-xs uppercase tracking-wider text-ink/40">
+      <h2 className="text-xs uppercase tracking-wider text-faint">
         {label}
       </h2>
       <div className="leading-relaxed">{children}</div>
@@ -72,7 +80,7 @@ export function Section({ label, children }: { label: string; children: React.Re
 export function Field({ label, children }: { label: string; children: React.ReactNode }) {
   return (
     <div>
-      <dt className="inline text-ink/50">{label}: </dt>
+      <dt className="inline text-faint">{label}: </dt>
       <dd className="inline break-all">{children}</dd>
     </div>
   );

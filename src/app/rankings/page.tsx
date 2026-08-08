@@ -70,7 +70,7 @@ function LikeCounts({ item }: { item: RankingItem }) {
   return (
     <>
       いいね {item.likes_count}
-      <span className="text-ink/35">
+      <span className="text-faint">
         （順位に数えたのは {item.ranking_likes_count}）
       </span>
     </>
@@ -116,11 +116,11 @@ function RankingRow({ item }: { item: RankingItem }) {
 
         <div className="min-w-0 flex-1 space-y-1">
           <p className="truncate text-sm font-bold group-hover:underline">{item.title}</p>
-          <p className="truncate text-xs text-ink/50">
+          <p className="truncate text-xs text-faint">
             {item.author_display_name}
             {item.author_handle ? `（@${item.author_handle}）` : ""}
           </p>
-          <p className="text-xs text-ink/40">
+          <p className="text-xs text-faint">
             {divisionLabel(item.division)}・{timeBucketLabel(item.time_limit_bucket)}・回答{" "}
             {item.answers_count}・<LikeCounts item={item} />
           </p>
@@ -171,7 +171,7 @@ export default async function RankingsPage({
     <main className="mx-auto w-full max-w-3xl space-y-8 p-6 sm:p-10">
       <header className="space-y-2">
         <h1 className="text-2xl font-bold">ランキング</h1>
-        <p className="text-sm text-ink/55">
+        <p className="text-sm text-faint">
           反応を集めた作品です。
         </p>
       </header>
@@ -195,7 +195,7 @@ export default async function RankingsPage({
 
       {/* --- 部門 ------------------------------------------------------------- */}
       <div className="flex flex-wrap items-center gap-x-4 gap-y-2 text-xs">
-        <span className="text-ink/45">部門</span>
+        <span className="text-faint">部門</span>
         {RANKING_FEEDS.map((f) => (
           <Link
             key={f.value}
@@ -203,7 +203,7 @@ export default async function RankingsPage({
             className={
               f.value === feed.value
                 ? "font-bold underline"
-                : "text-ink/50 underline hover:text-ink/80"
+                : "text-faint underline hover:text-muted"
             }
           >
             {f.label}
@@ -214,7 +214,7 @@ export default async function RankingsPage({
       {/* --- 時間区分（時間別のときだけ）-------------------------------------- */}
       {type.value === "duration" ? (
         <div className="flex flex-wrap items-center gap-x-4 gap-y-2 text-xs">
-          <span className="text-ink/45">制限時間</span>
+          <span className="text-faint">制限時間</span>
           {TIME_BUCKETS.map((b) => (
             <Link
               key={b.value}
@@ -222,7 +222,7 @@ export default async function RankingsPage({
               className={
                 b.value === bucket.value
                   ? "font-bold underline"
-                  : "text-ink/50 underline hover:text-ink/80"
+                  : "text-faint underline hover:text-muted"
               }
             >
               {b.label}
@@ -231,7 +231,7 @@ export default async function RankingsPage({
         </div>
       ) : null}
 
-      <p className="rounded-xl bg-sunken px-4 py-3 text-xs text-ink/55">
+      <p className="rounded-xl bg-sunken px-4 py-3 text-xs text-faint">
         {type.note}
       </p>
 
@@ -265,7 +265,7 @@ export default async function RankingsPage({
           ) : (
             <span />
           )}
-          <span className="text-xs text-ink/40">{page} ページ目</span>
+          <span className="text-xs text-faint">{page} ページ目</span>
           {hasNext ? (
             <Link href={hrefWith(current, { page: page + 1 })} className="underline">
               次のページ →

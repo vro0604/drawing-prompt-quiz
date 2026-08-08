@@ -10,7 +10,7 @@ import {
   TURNSTILE_SITE_KEY,
   captchaEnabled,
 } from "@/features/report/captcha";
-import { surface } from "@/app/_surface";
+import { field, surface } from "@/app/_surface";
 
 /**
  * /works/[id]/report ／ 通報フォーム。
@@ -32,9 +32,6 @@ export const metadata = {
   title: "作品を報告する",
 };
 
-const input =
-  "w-full rounded-xl border border-line-mid bg-transparent px-4 py-3 text-sm";
-
 export default async function ReportWorkPage({
   params,
   searchParams,
@@ -52,7 +49,7 @@ export default async function ReportWorkPage({
     <main className="mx-auto w-full max-w-lg space-y-6 p-6 sm:p-10">
       <header className="space-y-2">
         <h1 className="text-2xl font-bold">この作品を報告する</h1>
-        <p className="text-sm text-ink/55">
+        <p className="text-sm text-faint">
           「{work.title}」（{work.author.display_name} さん）について報告します。
         </p>
       </header>
@@ -80,7 +77,7 @@ export default async function ReportWorkPage({
               />
               <span className="space-y-1">
                 <span className="block text-sm">{r.label}</span>
-                <span className="block text-xs text-ink/45">
+                <span className="block text-xs text-faint">
                   {r.note}
                 </span>
               </span>
@@ -92,10 +89,10 @@ export default async function ReportWorkPage({
           <span className="block text-sm">
             内容（1000字まで。「その他」を選んだ場合は必須）
           </span>
-          <textarea name="detail" maxLength={1000} rows={4} className={input} />
+          <textarea name="detail" maxLength={1000} rows={4} className={field} />
         </label>
 
-        <p className="text-xs text-ink/45">
+        <p className="text-xs text-faint">
           同じ作品を何度も報告することはできません。
           報告した内容は運営だけが見ます。作者には通知されません。
         </p>
@@ -113,7 +110,7 @@ export default async function ReportWorkPage({
               data-action={CAPTCHA_ACTION}
             />
             <script src={TURNSTILE_SCRIPT} async defer />
-            <p className="text-xs text-ink/45">
+            <p className="text-xs text-faint">
               自動での大量送信を防ぐための確認です。
             </p>
           </div>

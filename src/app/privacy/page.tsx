@@ -26,7 +26,7 @@ export default async function PrivacyPage() {
           publishedAt={privacy.published_at}
         />
       ) : (
-        <p className="text-sm text-ink/55">
+        <p className="text-sm text-faint">
           いま有効なプライバシーポリシーが登録されていません。
         </p>
       )}

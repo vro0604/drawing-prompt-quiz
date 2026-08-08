@@ -13,7 +13,7 @@ import {
   revealCardAction,
   startDraftAction,
 } from "./actions";
-import { surface } from "@/app/_surface";
+import { field, surface } from "@/app/_surface";
 
 /**
  * /play の見た目の部品。
@@ -62,7 +62,7 @@ export function StartForm({ modes }: { modes: DraftMode[] }) {
               />
               <span className="space-y-1">
                 <span className="block text-base font-bold">{mode.label}</span>
-                <span className="block text-xs text-ink/55">
+                <span className="block text-xs text-faint">
                   {/* 「3項目 × 候補3枚」のように、枠数と1枠あたりの枚数を分けて示す（D16） */}
                   候補 {mode.candidate_count} 枚／枠・引き直し {mode.max_rerolls} 回・
                   クイズ {mode.quiz_question_count} 問
@@ -78,7 +78,7 @@ export function StartForm({ modes }: { modes: DraftMode[] }) {
         <select
           name="timeLimitSeconds"
           defaultValue="3600"
-          className="w-full rounded-xl border border-line-mid bg-transparent px-4 py-3 text-sm"
+          className={field}
         >
           {TIME_LIMIT_CHOICES.map((c) => (
             <option key={c.label} value={c.value}>
@@ -86,7 +86,7 @@ export function StartForm({ modes }: { modes: DraftMode[] }) {
             </option>
           ))}
         </select>
-        <p className="text-xs text-ink/50">
+        <p className="text-xs text-faint">
           時間は運任せにせず自分で決める（D5）。あとから変更はできない。
         </p>
       </div>
@@ -134,7 +134,7 @@ function CandidateButton({
 
   if (revealed) {
     return (
-      <div className={`${base} border-ink/10 bg-sunken text-ink/45`}>
+      <div className={`${base} border-ink/10 bg-sunken text-faint`}>
         {label}
       </div>
     );
@@ -142,7 +142,7 @@ function CandidateButton({
 
   if (!selectable) {
     return (
-      <div className={`${base} border-dashed border-ink/15 text-ink/25`}>
+      <div className={`${base} border-dashed border-ink/15 text-decor`}>
         ?
       </div>
     );
@@ -182,7 +182,7 @@ function SlotRow({ state, slot }: { state: DraftState; slot: DraftSlot }) {
         ) : slot.is_current ? (
           <span className="text-xs font-bold">← いまここ。1枚めくると確定します</span>
         ) : (
-          <span className="text-xs text-ink/35">順番待ち</span>
+          <span className="text-xs text-faint">順番待ち</span>
         )}
       </div>
 
@@ -221,17 +221,17 @@ export function DraftBoard({ state }: { state: DraftState }) {
       >
         <div className="flex flex-wrap items-baseline gap-x-4 gap-y-1">
           <span className="text-base font-bold">{state.mode_label}</span>
-          <span className="text-xs text-ink/55">
+          <span className="text-xs text-faint">
             制作時間 {formatDuration(state.time_limit_seconds)}
           </span>
-          <span className="text-xs text-ink/55">
+          <span className="text-xs text-faint">
             {state.chosen_count} / {state.slot_count} 枠 決定
           </span>
-          <span className="text-xs text-ink/55">
+          <span className="text-xs text-faint">
             引き直し 残り {state.rerolls_left} 回
           </span>
         </div>
-        <p className="text-xs text-ink/45">
+        <p className="text-xs text-faint">
           めくったカードがそのまま答えになります。順番に1枚ずつ選んでください。
         </p>
       </div>
@@ -271,14 +271,14 @@ export function DraftBoard({ state }: { state: DraftState }) {
           <input type="hidden" name="sessionId" value={state.session_id} />
           <SubmitButton
             pendingLabel="捨てています…"
-            className="rounded-xl px-6 py-3 text-sm text-ink/45 hover:text-ink/70"
+            className="rounded-xl px-6 py-3 text-sm text-faint hover:text-muted"
           >
             このドラフトを捨てる
           </SubmitButton>
         </form>
       </div>
 
-      <p className="text-xs text-ink/40">
+      <p className="text-xs text-faint">
         引き直すと選んだカードは白紙に戻り、1番目の枠からやり直しになります。
       </p>
     </div>

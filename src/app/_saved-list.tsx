@@ -27,7 +27,7 @@ import {
  */
 
 const statusTone: Record<string, string> = {
-  public: "text-ink/40",
+  public: "text-faint",
   private: "text-notice",
   review: "text-notice",
   deleted: "text-danger",
@@ -52,11 +52,11 @@ function SavedCard({ item, showStatus }: { item: SavedWork; showStatus: boolean 
 
       <div className="min-w-0 flex-1 space-y-1">
         <p className="truncate text-sm font-bold">{item.title}</p>
-        <p className="truncate text-xs text-ink/50">
+        <p className="truncate text-xs text-faint">
           {item.author_display_name}
           {item.author_handle ? `（@${item.author_handle}）` : ""}
         </p>
-        <p className="text-xs text-ink/40">
+        <p className="text-xs text-faint">
           {divisionLabel(item.division)}・保存 {savedAt}
           {showStatus ? (
             <span className={statusTone[item.work_status] ?? statusTone.public}>
@@ -83,8 +83,8 @@ function SavedCard({ item, showStatus }: { item: SavedWork; showStatus: boolean 
 
       {/* 回答済みの人にだけ、DB がお題の答えを入れてくる */}
       {item.prompt_answer ? (
-        <div className="ml-24 flex flex-wrap gap-x-4 gap-y-1 text-xs text-ink/50">
-          <span className="text-ink/35">お題</span>
+        <div className="ml-24 flex flex-wrap gap-x-4 gap-y-1 text-xs text-faint">
+          <span className="text-faint">お題</span>
           {item.prompt_answer.map((card) => (
             <span key={card.card_slot_key}>
               {card.slot_label}: <strong className="font-bold">{card.tag_label}</strong>
@@ -106,7 +106,7 @@ export function SavedList({
   emptyMessage: string;
 }) {
   if (items.length === 0) {
-    return <p className="text-sm text-ink/55">{emptyMessage}</p>;
+    return <p className="text-sm text-faint">{emptyMessage}</p>;
   }
 
   return (

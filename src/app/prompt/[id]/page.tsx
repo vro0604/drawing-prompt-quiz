@@ -38,7 +38,7 @@ export default async function PromptPage({
           お題が確定しました
         </p>
         <h1 className="text-2xl font-bold">{prompt.mode_label}のお題</h1>
-        <p className="text-sm text-ink/55">
+        <p className="text-sm text-faint">
           制作時間 {formatDuration(prompt.time_limit_seconds)}
           {prompt.was_rerolled ? `・引き直し ${prompt.reroll_count} 回` : ""}
         </p>
@@ -64,7 +64,7 @@ export default async function PromptPage({
             data-tag-label={c.tag_label}
             className="flex items-baseline gap-4 rounded-2xl border border-line bg-surface px-6 py-5"
           >
-            <span className="w-28 shrink-0 text-xs text-ink/50">
+            <span className="w-28 shrink-0 text-xs text-faint">
               {c.card_slot_label}
             </span>
             <span className="text-lg font-bold">{c.tag_label}</span>
@@ -74,7 +74,7 @@ export default async function PromptPage({
 
       <div className="space-y-4 rounded-2xl bg-sunken p-6 text-sm">
         <p className="font-bold">この内容で描いてください。</p>
-        <p className="text-ink/60">
+        <p className="text-muted">
           描き終えたら作品を投稿します。見た人はこのお題を4択で当てることになります。
           出題されるのは {prompt.cards.length} 枠のうち一部です。
         </p>
@@ -113,7 +113,7 @@ export default async function PromptPage({
           </ul>
         </section>
       ) : (
-        <p className="text-xs text-ink/40">
+        <p className="text-xs text-faint">
           引かなかったカードは、作品を投稿したあと、または挑戦をやめたあとに見られます（D8）。
         </p>
       )}

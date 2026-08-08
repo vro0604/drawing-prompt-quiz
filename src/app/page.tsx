@@ -59,7 +59,7 @@ export default function Home() {
     <main className="mx-auto w-full max-w-3xl space-y-10 p-6 sm:p-10">
       <header className="space-y-3">
         <h1 className="text-3xl font-bold sm:text-4xl">つたわるかな</h1>
-        <p className="text-base leading-7 text-ink/65">
+        <p className="text-base leading-7 text-muted">
           ランダムに引いたお題で絵を描き、見た人が
           <strong>絵だけを手がかりに</strong>そのお題を当てるサービスです。
           お題を引くのも、クイズに答えるのも、
@@ -98,7 +98,7 @@ export default function Home() {
                 {s.n}
               </span>
               <h3 className="text-sm font-bold">{s.title}</h3>
-              <p className="text-xs leading-6 text-ink/55">{s.body}</p>
+              <p className="text-xs leading-6 text-faint">{s.body}</p>
             </li>
           ))}
         </ol>
@@ -107,12 +107,12 @@ export default function Home() {
       {/* --- 登録すると何ができるか ------------------------------------------- */}
       <section className={`${surface} space-y-3`}>
         <h2 className="text-sm font-bold">アカウント登録でできること</h2>
-        <ul className="space-y-2 text-sm text-ink/65">
+        <ul className="space-y-2 text-sm text-muted">
           <li>・描いた作品を投稿する</li>
           <li>・いいね と お気に入り を付ける</li>
           <li>・自分のページ（公開プロフィール）を持つ</li>
         </ul>
-        <p className="text-xs text-ink/45">
+        <p className="text-xs text-faint">
           ゲストのまま遊んでいる途中で登録しても、引いたお題はそのまま引き継がれます。
         </p>
         <p className="pt-1 text-sm">

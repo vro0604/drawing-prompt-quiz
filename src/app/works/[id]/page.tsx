@@ -152,7 +152,7 @@ function MetaList({
       <dl className="space-y-2">
         {rows.map((r) => (
           <div key={r.label} className="flex gap-4 text-sm">
-            <dt className="w-40 shrink-0 text-ink/50">{r.label}</dt>
+            <dt className="w-40 shrink-0 text-faint">{r.label}</dt>
             <dd className="font-bold">{r.value}</dd>
           </div>
         ))}
@@ -160,7 +160,7 @@ function MetaList({
 
       {fanartNote ? (
         <div className="space-y-1 border-t border-ink/10 pt-4">
-          <p className="text-xs text-ink/50">補足</p>
+          <p className="text-xs text-faint">補足</p>
           <p className="text-sm whitespace-pre-wrap">{fanartNote}</p>
         </div>
       ) : null}
@@ -195,7 +195,7 @@ function Reactions({ work, canReact }: { work: WorkDetail; canReact: boolean }) 
         <p className="text-sm">
           いいね {work.likes_count}・保存 {work.saves_count}
         </p>
-        <p className="text-xs text-ink/55">
+        <p className="text-xs text-faint">
           いいねと保存にはアカウント登録が必要です。クイズの回答はゲストのままできます。
           <Link href="/account" className="pl-2 underline">
             アカウントの画面へ
@@ -250,7 +250,7 @@ function PublicView({
     <>
       <header className="space-y-2">
         <h1 className="text-2xl font-bold break-words">{work.title}</h1>
-        <p className="text-sm text-ink/55">
+        <p className="text-sm text-faint">
           {/* handle がある人だけ公開プロフィールを持つ（001 の SELECT ポリシー） */}
           {/* 1つの式にまとめているのは、隣り合う値の境目に React が
               <!-- --> を挟み、「@handle」が繋がった文字列でなくなるため */}
@@ -322,7 +322,7 @@ function PublicView({
               下書きに戻す（他の人から見えなくする）
             </SubmitButton>
           </form>
-          <p className="text-xs text-ink/45">
+          <p className="text-xs text-faint">
             下書きに戻しても画像は残ります。いつでも公開に戻せます。
           </p>
           <p className="text-sm">
@@ -339,7 +339,7 @@ function PublicView({
         <p className="border-t border-ink/10 pt-6 text-xs">
           <Link
             href={`/works/${work.id}/report`}
-            className="text-ink/45 underline"
+            className="text-faint underline"
           >
             この作品を報告する
           </Link>
@@ -364,7 +364,7 @@ function OwnerOnlyView({ work }: { work: MyWork }) {
           {work.is_published ? "本人にのみ表示" : "下書き"}
         </p>
         <h1 className="text-2xl font-bold break-words">{work.title}</h1>
-        <p className="text-sm text-ink/55">{reason}</p>
+        <p className="text-sm text-faint">{reason}</p>
       </header>
 
       <WorkImage
@@ -396,7 +396,7 @@ function OwnerOnlyView({ work }: { work: MyWork }) {
           >
             公開する
           </SubmitButton>
-          <p className="text-xs text-ink/45">
+          <p className="text-xs text-faint">
             公開すると実制作時間は変更できなくなります（D25）。
           </p>
         </form>

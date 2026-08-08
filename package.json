@@ -7,6 +7,7 @@
     "build": "node scripts/check-env.mjs && next build",
     "check:env": "node scripts/check-env.mjs",
     "check:env:prod": "REQUIRE_PROD_ENV=1 node scripts/check-env.mjs",
+    "check:contrast": "node scripts/check-contrast.mjs",
     "verify:launch": "node scripts/verify-launch.mjs",
     "setup:domain": "node scripts/setup-domain.mjs",
     "setup:auth": "node scripts/setup-auth.mjs",

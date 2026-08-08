@@ -2,7 +2,7 @@ import Link from "next/link";
 import { fetchAccountState } from "@/features/account/rpc";
 import { deleteAccountAction } from "./actions";
 import { SubmitButton } from "@/app/_pending";
-import { surface } from "@/app/_surface";
+import { field, surface } from "@/app/_surface";
 
 /**
  * /account/delete ／ 退会の確認画面。
@@ -30,7 +30,7 @@ function Shell({ children }: { children: React.ReactNode }) {
     <main className="mx-auto w-full max-w-2xl space-y-8 p-6 sm:p-10">
       <header className="space-y-2">
         <h1 className="text-2xl font-bold">退会する</h1>
-        <p className="text-sm text-ink/55">
+        <p className="text-sm text-faint">
           アカウントと、あなたが投稿した作品を削除します。
         </p>
       </header>
@@ -131,34 +131,34 @@ export default async function DeleteAccountPage({
         <ul className="space-y-1.5 text-sm">
           <li>
             ・作品の記録そのもの。
-            <span className="text-ink/55">
+            <span className="text-faint">
               消すと、その作品に答えた他の方の記録と正答率まで壊れてしまうためです。
               作者が誰だったかは分からなくなります
             </span>
           </li>
           <li>
             ・あなたが他の方の作品に答えた記録。
-            <span className="text-ink/55">
+            <span className="text-faint">
               作者にとっては「何人に伝わったか」という自分の記録だからです。
               誰の回答かは分からなくなります
             </span>
           </li>
           <li>
             ・通報の記録。
-            <span className="text-ink/55">
+            <span className="text-faint">
               運営が対応するために残します。誰が通報したかは消えます
             </span>
           </li>
           <li>
             ・規約に同意した記録。
-            <span className="text-ink/55">
+            <span className="text-faint">
               5年で自動的に消えます。あなたとの結び付きは退会時に外れます
             </span>
           </li>
         </ul>
 
         <h2 className="pt-2 text-sm font-bold">そのほか知っておいていただきたいこと</h2>
-        <ul className="space-y-1.5 text-sm text-ink/55">
+        <ul className="space-y-1.5 text-sm text-faint">
           <li>
             ・使っていた ID は、しばらく他の方が取得できません。
             保存するのは ID そのものではなく、読み取れない形に変換した値です
@@ -183,7 +183,7 @@ export default async function DeleteAccountPage({
             required
             autoComplete="off"
             placeholder={state.confirm_word}
-            className="w-full rounded-xl border border-line-mid bg-transparent px-4 py-3 text-sm"
+            className={field}
           />
         </label>
 

@@ -11,7 +11,7 @@ import {
   type Division,
 } from "@/features/work/types";
 import { createWorkAction } from "./actions";
-import { surface } from "@/app/_surface";
+import { field, surface } from "@/app/_surface";
 
 /**
  * 投稿フォーム。
@@ -35,15 +35,12 @@ import { surface } from "@/app/_surface";
  *   POST は誰でも作れるので、本当の検査は create_work（D27 の6検査）が持つ。
  */
 
-const input =
-  "w-full rounded-xl border border-line-mid bg-transparent px-4 py-3 text-sm";
-
 function Label({ children, hint }: { children: React.ReactNode; hint?: string }) {
   return (
     <span className="block space-y-1">
       <span className="block text-sm font-bold">{children}</span>
       {hint ? (
-        <span className="block text-xs text-ink/50">{hint}</span>
+        <span className="block text-xs text-faint">{hint}</span>
       ) : null}
     </span>
   );
@@ -112,7 +109,7 @@ export function WorkForm({
               alt="選んだ画像のプレビュー"
               className="max-h-72 w-auto rounded-xl border border-line"
             />
-            <p className="text-xs text-ink/45">{fileName}</p>
+            <p className="text-xs text-faint">{fileName}</p>
           </div>
         ) : null}
       </div>
@@ -120,7 +117,7 @@ export function WorkForm({
       {/* --- タイトル -------------------------------------------------------- */}
       <div className="space-y-3">
         <Label hint="60字まで">タイトル</Label>
-        <input type="text" name="title" required maxLength={60} className={input} />
+        <input type="text" name="title" required maxLength={60} className={field} />
       </div>
 
       {/* --- 部門 ------------------------------------------------------------ */}
@@ -142,7 +139,7 @@ export function WorkForm({
               />
               <span className="space-y-1">
                 <span className="block text-sm font-bold">{d.label}</span>
-                <span className="block text-xs text-ink/55">{d.note}</span>
+                <span className="block text-xs text-faint">{d.note}</span>
               </span>
             </label>
           ))}
@@ -161,7 +158,7 @@ export function WorkForm({
       */}
       <div className="space-y-3">
         <Label hint="どこまで描いたか。あとから変更できます">完成度</Label>
-        <p className="text-xs text-ink/55">
+        <p className="text-xs text-faint">
           落書きのまま出して構いません。ここは上手さを測る欄ではなく、
           <strong>見る人が同じ土俵で見るための欄</strong>です。
         </p>
@@ -180,7 +177,7 @@ export function WorkForm({
               />
               <span className="space-y-1">
                 <span className="block text-sm font-bold">{c.label}</span>
-                <span className="block text-xs text-ink/55">{c.note}</span>
+                <span className="block text-xs text-faint">{c.note}</span>
               </span>
             </label>
           ))}
@@ -190,7 +187,7 @@ export function WorkForm({
       {/* --- ファンアートのときだけ ------------------------------------------ */}
       {division === "fanart" ? (
         <div className="space-y-5 rounded-xl bg-sunken p-5">
-          <p className="text-xs text-ink/60">
+          <p className="text-xs text-muted">
             権利者の許諾範囲を守って投稿してください。二次創作を禁止している作品や、
             公式が個別に定めたガイドラインがある場合はそれに従ってください（R12）。
           </p>
@@ -202,20 +199,20 @@ export function WorkForm({
               name="sourceTitle"
               required
               maxLength={100}
-              className={input}
+              className={field}
             />
           </div>
 
           <div className="space-y-2">
             <Label hint="任意・100字まで">キャラクター名</Label>
-            <input type="text" name="sourceCharacter" maxLength={100} className={input} />
+            <input type="text" name="sourceCharacter" maxLength={100} className={field} />
           </div>
 
           <div className="space-y-2">
             <Label hint="任意・500字まで。捏造設定・独自解釈などの断り書きに使えます">
               補足
             </Label>
-            <textarea name="fanartNote" maxLength={500} rows={3} className={input} />
+            <textarea name="fanartNote" maxLength={500} rows={3} className={field} />
           </div>
         </div>
       ) : null}
@@ -223,14 +220,14 @@ export function WorkForm({
       {/* --- 実制作時間 ------------------------------------------------------ */}
       <div className="space-y-3">
         <Label hint="自己申告です。公開したあとは変更できません（D25）">実制作時間</Label>
-        <select name="actualTimeSeconds" defaultValue="" className={input}>
+        <select name="actualTimeSeconds" defaultValue="" className={field}>
           {ACTUAL_TIME_CHOICES.map((c) => (
             <option key={c.label} value={c.value}>
               {c.label}
             </option>
           ))}
         </select>
-        <p className="text-xs text-ink/45">
+        <p className="text-xs text-faint">
           時間別ランキングの分類にはお題を引いたときの制限時間を使うため、
           ここでの申告は分類に影響しません。
         </p>
@@ -266,7 +263,7 @@ export function WorkForm({
               に同意します。
             </span>
           </label>
-          <p className="text-xs text-ink/45">
+          <p className="text-xs text-faint">
             同意した記録として、どの版にいつ同意したかを5年間だけ保存します。
             退会するとこの記録からあなたとの結び付きが外れます。
           </p>
@@ -291,7 +288,7 @@ export function WorkForm({
             下書きとして保存する
           </SubmitButton>
         </div>
-        <p className="text-xs text-ink/45">
+        <p className="text-xs text-faint">
           下書きは自分だけが見られます。他の人からは、そのURLを開いても存在しないのと
           同じ扱いになります。あとから作品ページで公開できます。
         </p>
