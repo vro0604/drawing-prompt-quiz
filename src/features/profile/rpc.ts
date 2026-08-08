@@ -53,6 +53,7 @@ export async function callUpdateMyProfile(update: ProfileUpdate): Promise<MyProf
 /** 公開設定3つ。渡さなかった項目は変更しない */
 export type VisibilityUpdate = {
   show_answer_stats?: boolean;
+  show_creator_stats?: boolean;
   show_answer_history?: boolean;
   show_saved_works?: boolean;
 };
@@ -71,6 +72,7 @@ export async function callUpdateMyVisibility(
   const supabase = await createSupabaseServerClient();
   const { data, error } = await supabase.rpc("update_my_visibility", {
     p_show_answer_stats: update.show_answer_stats ?? null,
+    p_show_creator_stats: update.show_creator_stats ?? null,
     p_show_answer_history: update.show_answer_history ?? null,
     p_show_saved_works: update.show_saved_works ?? null,
   });

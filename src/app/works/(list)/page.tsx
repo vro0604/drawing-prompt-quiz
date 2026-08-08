@@ -2,9 +2,11 @@ import Image from "next/image";
 import Link from "next/link";
 import { fetchPublicWorks, workImageUrl } from "@/features/work/rpc";
 import {
+  COMPLETENESS_FILTERS,
   FEED_PAGE_SIZE,
   FEED_SORTS,
   FEED_TABS,
+  completenessLabel,
   divisionLabel,
   type PublicWorkListItem,
 } from "@/features/work/types";
@@ -54,11 +56,15 @@ function resolveSort(raw: string | undefined) {
 }
 
 /** 現在の選択を保ったまま、一部だけ差し替えたリンク先を作る */
-function hrefWith(current: { tab: string; sort: string; page: number }, patch: Partial<{ tab: string; sort: string; page: number }>) {
+function hrefWith(
+  current: { tab: string; sort: string; page: number; done: string },
+  patch: Partial<{ tab: string; sort: string; page: number; done: string }>,
+) {
   const next = { ...current, ...patch };
   const params = new URLSearchParams();
   if (next.tab !== FEED_TABS[0].key) params.set("tab", next.tab);
   if (next.sort !== FEED_SORTS[0].value) params.set("sort", next.sort);
+  if (next.done !== "") params.set("done", next.done);
   if (next.page > 1) params.set("page", String(next.page));
   const query = params.toString();
   return query ? `/works?${query}` : "/works";
@@ -98,7 +104,7 @@ function WorkCard({ work }: { work: PublicWorkListItem }) {
             **隠すのではなく、取りに行かせる。**
           */}
           <p className="text-xs text-black/40 dark:text-white/40">
-            {divisionLabel(work.division)}
+            {divisionLabel(work.division)}・{completenessLabel(work.completeness)}
           </p>
         </div>
       </Link>
@@ -112,6 +118,7 @@ export default async function WorksPage({
   searchParams: Promise<{
     tab?: string;
     sort?: string;
+    done?: string;
     page?: string;
     notice?: string;
   }>;
@@ -119,6 +126,7 @@ export default async function WorksPage({
   const {
     tab: rawTab,
     sort: rawSort,
+    done: rawDone,
     page: rawPage,
     notice,
   } = await searchParams;
@@ -126,14 +134,21 @@ export default async function WorksPage({
   const tab = resolveTab(rawTab);
   const sort = resolveSort(rawSort);
 
+  // 知らない値は「すべて」に落とす。一覧が壊れるより空のほうが害が小さい、
+  // という get_public_works 側の考えかたに合わせる
+  const done = COMPLETENESS_FILTERS.some((f) => f.value !== null && f.value === rawDone)
+    ? (rawDone as string)
+    : "";
+
   const parsedPage = Number.parseInt(rawPage ?? "1", 10);
   const page = Number.isFinite(parsedPage) && parsedPage > 0 ? parsedPage : 1;
 
-  const current = { tab: tab.key, sort: sort.value, page };
+  const current = { tab: tab.key, sort: sort.value, page, done };
 
   const works = await fetchPublicWorks({
     division: tab.value,
     sort: sort.value,
+    completeness: done === "" ? null : done,
     limit: FEED_PAGE_SIZE,
     offset: (page - 1) * FEED_PAGE_SIZE,
   });
@@ -193,6 +208,31 @@ export default async function WorksPage({
             {s.label}
           </Link>
         ))}
+      </div>
+
+      {/* --- 完成度 ---------------------------------------------------------- */}
+      {/*
+        既定は「すべて」。**落書きを別の場所へ押し込めるための絞り込みではない。**
+        落書きにも居場所を作るための軸なので、既定で全部見える形にする（D135）。
+      */}
+      <div className="flex flex-wrap items-center gap-x-4 gap-y-2 text-xs">
+        <span className="text-black/45 dark:text-white/45">完成度</span>
+        {COMPLETENESS_FILTERS.map((f) => {
+          const value = f.value ?? "";
+          return (
+            <Link
+              key={f.label}
+              href={hrefWith(current, { done: value, page: 1 })}
+              className={
+                value === done
+                  ? "font-bold underline"
+                  : "text-black/50 underline hover:text-black/80 dark:text-white/50 dark:hover:text-white/80"
+              }
+            >
+              {f.label}
+            </Link>
+          );
+        })}
       </div>
 
       {tab.key === "ai" ? (

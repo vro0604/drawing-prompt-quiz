@@ -10,7 +10,8 @@
  *      表示用の総数には入るが、順位に使う票数からは除かれる。
  *      これが効いていないと、投稿者は誰でも自分を1票ぶん押し上げられる。
  *   2. 下書き・AI作品が通常ランキングに出ない（漏洩と部門分離）
- *   3. 伝達率は回答5人以上の作品だけが並ぶ（R6）
+ *   3. 伝達率ランキングは**外した**（D112）。?type=accuracy を指定しても
+ *      人気に落ちること
  *   4. 時間区分がお題の制限時間で決まる（自己申告の実績時間ではない。D25）
  *   5. ランキングのページにお題の正解が出ていない（D23）
  *
@@ -177,8 +178,13 @@ section("3. 未サインインでもランキングが見える");
   const res = await visitor.get("/rankings");
   must(res.status === 200, "ランキングが開ける", `実際 ${res.status}`);
   must(/ランキング/.test(textOf(res.html)), "見出しが出ている");
-  must(/人気/.test(res.html) && /伝達率/.test(res.html) && /時間別/.test(res.html),
-    "3種類の切り替えが出ている");
+  // D112 で伝達率ランキングを外したので2種類。
+  // 序列は「比較可能性」から生まれるので、並べ替えられる階層を潰した。
+  must(
+    /人気/.test(res.html) && /時間別/.test(res.html),
+    "2種類の切り替えが出ている（人気・時間別）",
+  );
+  must(!/伝達率/.test(res.html), "伝達率ランキングが出ていない（D112）");
 }
 
 // ── 4. 自作いいねが順位を動かさない（D57）────────────────
@@ -242,40 +248,35 @@ section("6. 時間別は「お題の制限時間」で分かれる（D25）");
   must(/順位に数えたのは 2/.test(mediumTop.text), "時間別でも自作いいねを除いている", mediumTop.text);
 }
 
-// ── 7. 伝達率は回答5人以上から ───────────────────────────
-section("7. 伝達率は回答が5人以上の作品だけ（R6）");
+// ── 7. 伝達率ランキングは外れている ──────────────────────
+section("7. 伝達率ランキングは選べない（D112）");
 {
-  // まず4人だけ答える。まだ並ばないこと。
-  for (const g of guests.slice(0, 4)) {
+  // 5人に答えさせる。**前は5人集まると伝達率ランキングに並んだ。**
+  for (const g of guests.slice(0, 5)) {
     await answerWork(g, topId, topPrompt.answers, { correct: true });
   }
 
-  let rows = await collectRanking(visitor, { type: "accuracy" });
-  must(!rows.some((r) => r.id === topId), "回答4人では伝達率ランキングに出ない");
-
   const page = await visitor.get("/rankings?type=accuracy");
+  const t = textOf(page.html);
+
+  // 知らない種類は人気に落とす（resolveRankingType）。
+  // 404 にしないのは、古いリンクを踏んだ人を突き放さないため。
+  must(page.status === 200, "?type=accuracy でも画面は開く", `実際 ${page.status}`);
+  must(!/伝達率/.test(t), "伝達率という語が画面に出ていない");
   must(
-    /回答が5人以上の作品だけが並びます/.test(textOf(page.html)),
-    "5人以上という条件が画面に書かれている",
+    !/回答が5人以上の作品だけが並びます/.test(t),
+    "5人以上という条件文も消えている",
   );
 
-  // 5人目が答えると並ぶ
-  await answerWork(guests[4], topId, topPrompt.answers, { correct: true });
+  // 順位の隣に % を出していたが、それも消した
+  const rows = await collectRanking(visitor, { type: "accuracy" });
+  must(
+    rows.every((r) => !/\d+%/.test(r.text)),
+    "順位の行に伝達率の % が出ていない",
+  );
 
-  rows = await collectRanking(visitor, { type: "accuracy" });
-  const top = rows.find((r) => r.id === topId);
-  must(!!top, "回答5人で伝達率ランキングに出る");
-  must(/100%/.test(top.text), "全員正解なので 100%", top.text);
-  must(/伝達率/.test(top.text), "伝達率であることが出ている");
-
-  // 4人しか答えていない作品は、そのままでは出ない
-  for (const g of guests.slice(0, 4)) {
-    await answerWork(g, lowId, lowPrompt.answers, { correct: false });
-  }
-
-  rows = await collectRanking(visitor, { type: "accuracy" });
-  must(!rows.some((r) => r.id === lowId), "回答4人の作品はやはり出ない");
-  must(rows.some((r) => r.id === topId), "5人の作品は出たまま");
+  // 人気ランキングは残っている（D137）。いいねの数は上手さの順位ではない
+  must(rows.some((r) => r.id === topId), "人気ランキングとしては並んでいる");
 }
 
 // ── 8. 正解が漏れていない ────────────────────────────────

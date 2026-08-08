@@ -6,10 +6,15 @@ import { getCurrentUser } from "@/features/auth/session";
 import { readImageInfo } from "@/features/work/image";
 import {
   callCreateWork,
+  callSetCompleteness,
   removeWorkImage,
   uploadWorkImage,
 } from "@/features/work/rpc";
-import { MAX_IMAGE_BYTES, type Division } from "@/features/work/types";
+import {
+  DEFAULT_COMPLETENESS,
+  MAX_IMAGE_BYTES,
+  type Division,
+} from "@/features/work/types";
 import { callAgreeToDocuments } from "@/features/account/rpc";
 
 /**
@@ -149,6 +154,23 @@ export async function createWorkAction(form: FormData): Promise<void> {
   } catch (e) {
     await removeWorkImage(imagePath);
     backWithError(promptId, e instanceof Error ? e.message : String(e));
+  }
+
+  // --- 5. 完成度を入れる（D135）----------------------------------------------
+  //
+  // **失敗しても投稿は取り消さない。**
+  // create_work は通っていて、作品はもう存在する。ここで巻き戻すと、
+  // 画像も作品も消えて「投稿できなかった」ことになる。
+  // 完成度が既定の「仕上げ」のまま残るほうが、はるかに害が小さい。
+  // あとから作品ページで直せる（update_work_completeness）。
+  const completeness = str(form, "completeness");
+
+  if (completeness !== "" && completeness !== DEFAULT_COMPLETENESS) {
+    try {
+      await callSetCompleteness(workId, completeness);
+    } catch {
+      // 握りつぶす。利用者に見せる失敗ではない（D89）
+    }
   }
 
   // redirect() は例外を投げて処理を打ち切るので try の外で呼ぶ。

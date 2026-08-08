@@ -36,6 +36,46 @@ export const DIVISIONS: { value: Division; label: string; note: string }[] = [
   },
 ];
 
+/**
+ * 完成度。works.completeness の CHECK 制約と同じ3つ（D135）。
+ *
+ * **division（何を描いたか）とは別の軸。**こちらは「どこまで描いたか」。
+ *
+ * この軸があること自体が目的で、絞り込みは付け足し。
+ * 10分の落書きと数十時間の作品が同じ棚に並ぶと、
+ * 「これを出したら見劣りする」が働いて気軽に出せなくなる。
+ * **落書きの棚があれば、落書きは落書きとして出せる。**
+ */
+export type Completeness = "sketch" | "lineart" | "finished";
+
+export const COMPLETENESS_CHOICES: {
+  value: Completeness;
+  label: string;
+  note: string;
+}[] = [
+  {
+    value: "sketch",
+    label: "落書き",
+    note: "思いついたまま描いたもの。線が荒くても、途中でも構いません",
+  },
+  {
+    value: "lineart",
+    label: "線画",
+    note: "線は引いたが、色は塗っていないもの",
+  },
+  {
+    value: "finished",
+    label: "仕上げ",
+    note: "色を塗って、自分なりに仕上げたもの",
+  },
+];
+
+export const DEFAULT_COMPLETENESS: Completeness = "finished";
+
+export function completenessLabel(value: string): string {
+  return COMPLETENESS_CHOICES.find((c) => c.value === value)?.label ?? value;
+}
+
 /** 実制作時間の選択肢。空 = 申告しない。DB の CHECK は 1〜600000 秒 */
 export const ACTUAL_TIME_CHOICES: { value: string; label: string }[] = [
   { value: "", label: "申告しない" },
@@ -63,6 +103,19 @@ export const FEED_TABS: { key: string; value: string | null; label: string }[] =
   { key: "ai", value: "ai", label: "AI生成" },
 ];
 
+/**
+ * 完成度での絞り込み。value が null なら絞らない。
+ *
+ * **既定は「すべて」。**落書きを別の場所へ押し込めるための機能ではなく、
+ * 落書きにも居場所を作るための機能なので、既定で全部見える形にする。
+ */
+export const COMPLETENESS_FILTERS: { value: string | null; label: string }[] = [
+  { value: null, label: "すべて" },
+  { value: "sketch", label: "落書き" },
+  { value: "lineart", label: "線画" },
+  { value: "finished", label: "仕上げ" },
+];
+
 /** 一覧の並び順。get_public_works の p_sort と同じ値 */
 export const FEED_SORTS: { value: string; label: string }[] = [
   { value: "new", label: "新着" },
@@ -81,6 +134,7 @@ export type PublicWorkListItem = {
   image_width: number;
   image_height: number;
   division: Division;
+  completeness: Completeness;
   source_title: string | null;
   source_character: string | null;
   fanart_note: string | null;

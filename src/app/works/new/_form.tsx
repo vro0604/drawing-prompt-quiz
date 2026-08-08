@@ -4,6 +4,8 @@ import { useState } from "react";
 import { SubmitButton } from "@/app/_pending";
 import {
   ACTUAL_TIME_CHOICES,
+  COMPLETENESS_CHOICES,
+  DEFAULT_COMPLETENESS,
   DIVISIONS,
   MAX_IMAGE_BYTES,
   type Division,
@@ -143,6 +145,44 @@ export function WorkForm({
               <span className="space-y-1">
                 <span className="block text-sm font-bold">{d.label}</span>
                 <span className="block text-xs text-black/55 dark:text-white/55">{d.note}</span>
+              </span>
+            </label>
+          ))}
+        </div>
+      </div>
+
+      {/* --- 完成度 ---------------------------------------------------------- */}
+      {/*
+        部門（何を描いたか）とは別の軸で、どこまで描いたかを選ぶ（D135）。
+
+        **落書きを最初に置いている。**並び順そのものが「出していい」の合図で、
+        仕上げを先頭にすると「まずここを目指すもの」に読める。
+
+        既定は「仕上げ」にしていない。選ばせる。既定があると、
+        選ばなかった人の作品が勝手にどこかの棚へ入る。
+      */}
+      <div className="space-y-3">
+        <Label hint="どこまで描いたか。あとから変更できます">完成度</Label>
+        <p className="text-xs text-black/55 dark:text-white/55">
+          落書きのまま出して構いません。ここは上手さを測る欄ではなく、
+          <strong>見る人が同じ土俵で見るための欄</strong>です。
+        </p>
+        <div className="grid gap-3 sm:grid-cols-3">
+          {COMPLETENESS_CHOICES.map((c) => (
+            <label
+              key={c.value}
+              className="flex cursor-pointer items-start gap-3 rounded-xl border border-black/10 p-4 hover:bg-black/[0.03] has-checked:border-black/40 dark:border-white/15 dark:hover:bg-white/5 dark:has-checked:border-white/50"
+            >
+              <input
+                type="radio"
+                name="completeness"
+                value={c.value}
+                defaultChecked={c.value === DEFAULT_COMPLETENESS}
+                className="mt-1"
+              />
+              <span className="space-y-1">
+                <span className="block text-sm font-bold">{c.label}</span>
+                <span className="block text-xs text-black/55 dark:text-white/55">{c.note}</span>
               </span>
             </label>
           ))}

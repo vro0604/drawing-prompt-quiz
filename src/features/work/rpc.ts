@@ -35,6 +35,7 @@ export async function fetchPublicWorks(params: {
   sort: string;
   limit: number;
   offset: number;
+  completeness?: string | null;
 }): Promise<PublicWorkListItem[]> {
   const supabase = await createSupabaseServerClient();
   const { data, error } = await supabase.rpc("get_public_works", {
@@ -42,6 +43,7 @@ export async function fetchPublicWorks(params: {
     p_sort: params.sort,
     p_limit: params.limit,
     p_offset: params.offset,
+    p_completeness: params.completeness ?? null,
   });
 
   if (error) throw new Error(readableRpcError(error.message));
@@ -123,6 +125,30 @@ export async function callCreateWork(input: CreateWorkInput): Promise<WorkWriteR
 
   if (error) throw new Error(readableRpcError(error.message));
   return data as WorkWriteResult;
+}
+
+/**
+ * 完成度を設定する（D135）。
+ *
+ * **create_work には足さなかった。**引数を1つ増やすと 12引数版と 13引数版が
+ * 並び、既存の呼び出しがどちらにも当てはまって Postgres が断る。
+ * 12引数版を drop して本体を書き写すと、D27 の6検査が二重になって
+ * **片方だけ直る事故**が起きる。だから作ったあとで、これを呼ぶ。
+ *
+ * 失敗しても作品は既定の 'finished' で残る。落書きが仕上げとして
+ * 並ぶだけなので、**壊れかたが軽い。**
+ */
+export async function callSetCompleteness(
+  workId: string,
+  completeness: string,
+): Promise<void> {
+  const supabase = await createSupabaseServerClient();
+  const { error } = await supabase.rpc("update_work_completeness", {
+    p_work_id: workId,
+    p_completeness: completeness,
+  });
+
+  if (error) throw new Error(readableRpcError(error.message));
 }
 
 /** 下書きを公開する（update_work のうち、画面から使うのはこれだけ） */

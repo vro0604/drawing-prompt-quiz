@@ -36,6 +36,19 @@ export type CreatorStats = {
   slot_stats: SlotStatSummary[];
 };
 
+/**
+ * 描き手としての記録。
+ *
+ * **show_creator_stats が false の他人には、投稿数だけが返る**（D136）。
+ * そのとき hidden が true になる。null にしないのは、
+ * 作品グリッドから数えられる投稿数まで消すと、
+ * 伏せている事実のほうが目立つため。
+ */
+export type MaskedCreatorStats = {
+  works_count: number;
+  hidden: true;
+};
+
 /** 回答者としての記録。show_answer_stats が false の他人には null */
 export type AnswerStats = {
   total_answers: number;
@@ -56,7 +69,8 @@ export type PublicProfile = {
   show_answer_stats: boolean;
   show_answer_history: boolean;
   show_saved_works: boolean;
-  creator: CreatorStats;
+  show_creator_stats: boolean;
+  creator: CreatorStats | MaskedCreatorStats;
   answer_stats: AnswerStats | null;
 };
 
@@ -123,14 +137,23 @@ export const PORTFOLIO_TABS: {
 
 /** 公開設定のチェックボックス。既定はすべて false（spec 12-0） */
 export const VISIBILITY_FIELDS: {
-  key: "show_answer_stats" | "show_answer_history" | "show_saved_works";
+  key:
+    | "show_answer_stats"
+    | "show_answer_history"
+    | "show_saved_works"
+    | "show_creator_stats";
   label: string;
   note: string;
 }[] = [
   {
+    key: "show_creator_stats",
+    label: "描き手としての成績を公開する",
+    note: "獲得いいね・総制作時間・伝わりやすさ・枠ごとの正答率。投稿した作品そのものは、この設定に関係なく見えます。",
+  },
+  {
     key: "show_answer_stats",
     label: "回答者としての成績を公開する",
-    note: "クイズにどれだけ当てられたか。描き手としての記録は、これとは別に常に公開されます。",
+    note: "クイズにどれだけ当てられたか。",
   },
   {
     key: "show_answer_history",
@@ -143,6 +166,13 @@ export const VISIBILITY_FIELDS: {
     note: "切っている間は、タブも件数も他の人には出ません。自分では常に見られます。",
   },
 ];
+
+/** 描き手の記録が伏せられているか（D136） */
+export function isCreatorHidden(
+  creator: CreatorStats | MaskedCreatorStats,
+): creator is MaskedCreatorStats {
+  return (creator as MaskedCreatorStats).hidden === true;
+}
 
 /** 状態の表示名。本人のお気に入り一覧でだけ使う */
 export const WORK_STATUS_LABELS: Record<WorkStatus, string> = {

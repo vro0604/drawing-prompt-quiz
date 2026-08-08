@@ -12,6 +12,7 @@ import {
 import {
   PORTFOLIO_TABS,
   formatTotalTime,
+  isCreatorHidden,
   percentOf,
   ratioPercent,
   type PublicProfile,
@@ -106,6 +107,12 @@ function SlotStatList({ stats }: { stats: SlotStatSummary[] }) {
 
 function CreatorStats({ profile }: { profile: PublicProfile }) {
   const { creator } = profile;
+
+  // 伏せられているときは、**そもそも節ごと出さない**（D136）。
+  // 「非公開です」と書くと、隠していること自体が情報になる。
+  // spec 12-1 が非公開のタブを「存在ごと見せない」としているのと同じ。
+  if (isCreatorHidden(creator)) return null;
+
   const accuracy = ratioPercent(creator.accuracy);
 
   return (
@@ -113,7 +120,9 @@ function CreatorStats({ profile }: { profile: PublicProfile }) {
       <div className="space-y-1">
         <h2 className="text-sm font-bold">描き手としての記録</h2>
         <p className="text-xs text-black/45 dark:text-white/45">
-          公開した作品の集計です。誰にでも見えます。
+          {profile.is_self && !profile.show_creator_stats
+            ? "公開設定が切れているので、他の人には出ていません。"
+            : "公開した作品の集計です。"}
         </p>
       </div>
 

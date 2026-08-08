@@ -17,5 +17,7 @@ export type Profile = {
   show_answer_stats: boolean;
   show_answer_history: boolean;
   show_saved_works: boolean;
+  /** 描き手としての成績を他人に見せるか。既定 false（D136） */
+  show_creator_stats: boolean;
   created_at: string;
 };

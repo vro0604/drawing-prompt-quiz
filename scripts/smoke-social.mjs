@@ -179,11 +179,17 @@ section("6. いいね・保存の件数が操作と一致する");
   must(counts.saves === 1, "保存が 1 件になった", `${counts.saves}`);
   must(/保存済み/.test(textOf(res.html)), "保存済みの表示になった");
 
-  // 一覧にも反映される
+  // **D112 で一覧のカードから数字を落とした。**
+  // 作品は出るが、いいね数は載らない。数字は作品ページで取りに行く。
   const list = await visitor.get("/works");
+  const listText = textOf(list.html);
   must(
-    new RegExp(`スモーク・反応対象${stamp}[\\s\\S]{0,200}いいね 1`).test(textOf(list.html)),
-    "一覧のいいね数も 1 になった",
+    new RegExp(`スモーク・反応対象${stamp}`).test(listText),
+    "作品は一覧に出ている",
+  );
+  must(
+    !/いいね \d/.test(listText),
+    "一覧のカードにいいね数が出ていない（D112）",
   );
 
   // もう一度押すと戻る

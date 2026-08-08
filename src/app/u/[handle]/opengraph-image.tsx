@@ -1,6 +1,6 @@
 import { ImageResponse } from "next/og";
 import { fetchHandleRedirect, fetchPublicProfile } from "@/features/profile/rpc";
-import { ratioPercent } from "@/features/profile/types";
+import { isCreatorHidden, ratioPercent } from "@/features/profile/types";
 
 /**
  * /u/[handle]/opengraph-image ／ プロフィールの共有カード。
@@ -61,7 +61,11 @@ export default async function Image({
     );
   }
 
-  const accuracy = ratioPercent(profile.creator.accuracy);
+  // 共有カードは**誰にでも見える**ので、伏せられている記録は載せない（D136）。
+  // ここが本人かどうかを見ないのは、カードを開くのは常に他人だから。
+  const creator = profile.creator;
+  const open = isCreatorHidden(creator) ? null : creator;
+  const accuracy = open ? ratioPercent(open.accuracy) : null;
 
   return new ImageResponse(
     (
@@ -95,9 +99,16 @@ export default async function Image({
 
         <div style={{ display: "flex", gap: 56, marginTop: "auto" }}>
           {[
-            { label: "投稿", value: `${profile.creator.works_count}` },
-            { label: "獲得いいね", value: `${profile.creator.likes_received}` },
-            { label: "伝わりやすさ", value: accuracy === null ? "—" : `${accuracy}%` },
+            { label: "投稿", value: `${creator.works_count}` },
+            ...(open
+              ? [
+                  { label: "獲得いいね", value: `${open.likes_received}` },
+                  {
+                    label: "伝わりやすさ",
+                    value: accuracy === null ? "—" : `${accuracy}%`,
+                  },
+                ]
+              : []),
           ].map((item) => (
             <div key={item.label} style={{ display: "flex", flexDirection: "column" }}>
               <div style={{ display: "flex", fontSize: 24, color: MUTED }}>
