@@ -177,13 +177,24 @@ section("作品一覧（あってはいけないものが無いか）");
 const works = await get("/works");
 must(works.status === 200, "/works が開く", String(works.status));
 
-const worksText = text(works.body);
-const found = SMOKE_MARKERS.filter((m) => worksText.includes(m));
+// **ページ全体を見ない。作品カードの中だけを見る。**
+//
+// 最初はページ全体の文字を見ていた。**作品が0件になった日に「ランキング」で
+// 引っかかった。**当たっていたのは見出しの「ランキングを見る」というリンクで、
+// 作品ではなかった。
+//
+// **あってはいけないものを探す検査は、探す範囲を先に絞る。**
+// 範囲が広いほど、関係ない文字に当たって「あることになる」。
+const cards = works.body.match(/<a[^>]+href="\/works\/[0-9a-f-]{36}"[\s\S]*?<\/a>/g) ?? [];
+const cardsText = text(cards.join("\n"));
+const found = SMOKE_MARKERS.filter((m) => cardsText.includes(m));
 
 must(
   found.length === 0,
   "検査用の作品が1件も出ていない",
-  found.length > 0 ? `見つかった目印: ${found.join(" / ")}` : "",
+  found.length > 0
+    ? `見つかった目印: ${found.join(" / ")}`
+    : `作品カード ${cards.length} 件を見た`,
 );
 
 // 掃除したあとフィードが空になる問題（D124）。
