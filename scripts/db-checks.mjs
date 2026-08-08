@@ -2301,6 +2301,40 @@ export const diagnostics = [
              and not exists (select 1 from public.work_slot_stats s
                               where s.work_id = w.id)`,
   },
+
+  // ── S18（F0 共通基盤）で足したもの ────────────────────────────
+
+  {
+    id: "A34",
+    // origin は CHECK で固定してあるので、知らない値は入らないはず。
+    // **CHECK が外れたことに気づくための検査**であって、値の検査ではない。
+    label: "お題の出どころに、決めた3つ以外の値が入っている",
+    sql: `select p.id::text from public.prompts p
+           where p.origin not in ('draft', 'saved', 'daily')`,
+  },
+  {
+    id: "A35",
+    // **索引は「あるはず」で終わらせない。**
+    // 誰かが drop しても、画面は動き続けるので気づけない。
+    // 遅くなってから探すことになるので、無いことを検査で言う。
+    label: "tag_id の索引3本のうち、無くなっているものがある",
+    sql: `select need.name from (values
+             ('prompt_cards_tag_id_idx'),
+             ('draft_candidates_tag_id_idx'),
+             ('answer_items_selected_tag_id_idx')
+           ) as need(name)
+           where not exists (
+             select 1 from pg_indexes i
+              where i.schemaname = 'public' and i.indexname = need.name
+           )`,
+  },
+  {
+    id: "A36",
+    // quiz_version は「混ぜずに数える」ためだけにある。
+    // 0 や負の版は、既定値の書き間違いでしか生まれない。
+    label: "クイズの版が 1 未満のお題がある",
+    sql: `select p.id::text from public.prompts p where p.quiz_version < 1`,
+  },
 ];
 
 /**
