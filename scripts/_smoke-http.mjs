@@ -53,12 +53,40 @@ export function section(title) {
 //
 // 【消すのはこの実行が作ったものだけ】
 //   一覧から拾ったIDは決して入れない。投稿の応答で受け取ったIDだけを積む。
+//
+// 【「作る場所」ではなく「着く場所」で押さえる】
+//   もとは submitWork() の中だけで積んでいて、コメントには
+//   「作る場所が1つしかないここで機械的に積む」と書いてあった。
+//   **その前提が崩れていた。** smoke-race は連打を試すために
+//   `/works/new` へ直に POST していて、submitWork を通らない。
+//   その結果「同時投稿◯◯」が本番に残り続けていた（D123 と同じ形）。
+//
+//   投稿の作りかたは今後も増える（連打・同時・異常系）。だから
+//   **投稿が成功したときに必ず通る場所**で積む。
+//   成功すると作品ページ（/works/{id}）へ移るので、
+//   「/works/new へ POST して /works/{id} に着いた」を目印にする。
+//   これは経路ではなく結果なので、新しい書きかたを足しても漏れない。
 
 const created = [];
 
 /** この実行が作った作品を、あとで片づけるために覚えておく */
-export function trackWork(s, workId, title) {
-  if (workId && title) created.push({ s, workId, title });
+function trackWork(s, workId, title) {
+  if (!workId || !title) return;
+  // 同じ作品を二重に積まない（関門が1つでも、念のため）
+  if (created.some((c) => c.workId === workId)) return;
+  created.push({ s, workId, title });
+}
+
+/**
+ * 「投稿が通った」かどうかを、送り先と着き先だけで見分ける。
+ *
+ * 断られたときは /works/new に留まる（同意なし・画像不正など）ので積まれない。
+ * いいねや削除の POST は送り先が /works/{id} なので、ここには入らない。
+ */
+function trackIfWorkCreated(s, requestPath, fields, landedPath) {
+  if (!/^\/works\/new(\?|$)/.test(requestPath)) return;
+  const workId = /^\/works\/([0-9a-f-]{36})$/.exec(landedPath)?.[1];
+  trackWork(s, workId, fields?.title);
 }
 
 /**
@@ -255,7 +283,11 @@ export function session(name, initialCookies) {
     const loc = res.headers.get("location");
     if (loc) {
       assertNotRateLimited(loc);
-      return get(loc.replace(BASE, ""));
+      const after = await get(loc.replace(BASE, ""));
+      // 投稿が通っていたら、ここで片づけ対象に入る。
+      // **どんな書きかたで投稿しても、成功すればこの1行を通る。**
+      trackIfWorkCreated(self, path, fields, after.path);
+      return after;
     }
     const html = await res.text();
     assertNotRateLimited(html);
@@ -265,7 +297,9 @@ export function session(name, initialCookies) {
   /** いまの Cookie を控えとして持ち出す（固定利用者の使い回しに使う） */
   const cookies = () => Object.fromEntries(jar);
 
-  return { name, get, post, cookies };
+  // 片づけは「この session が消す」ので、自分自身を渡せるように名前を付ける
+  const self = { name, get, post, cookies };
+  return self;
 }
 
 /**
@@ -712,12 +746,9 @@ export async function submitWork(s, promptId, fields, png) {
     file,
   );
 
-  // 作れたものは、その場で片づけ対象に入れておく。
-  // **各検査に覚えさせない。**忘れた1件が次の実行の前提を変えるので、
-  // 作る場所が1つしかないここで機械的に積む。
-  const workId = /^\/works\/([0-9a-f-]{36})/.exec(after.path)?.[1];
-  if (workId) trackWork(s, workId, fields.title);
-
+  // 片づけ対象に入れるのは session の post() が済ませている。
+  // **ここでは積まない。**積む場所を2つ持つと、片方を通らない
+  // 書きかた（smoke-race の連打）が生まれたときに気づけない。
   return after;
 }
 
