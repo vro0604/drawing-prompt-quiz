@@ -35,6 +35,33 @@ export function must(ok, label, extra = "") {
   return ok;
 }
 
+// ── 画面に開発の言葉が出ていないか ──────────────────────────
+//
+// 【なぜ全応答を見るか】
+//   `（D5）` `（spec 7-3）` のような**決定ログと仕様書の番号**が
+//   利用者の画面に出ていた。5箇所あり、スクリーンショットにも写る。
+//
+//   1箇所ずつ直しても、書くときに手が滑れば戻る。しかも
+//   `/works/new` や `/prompt/{id}` はサインインしないと開けないので、
+//   外から HTML を眺めるだけでは見つけられない。
+//
+//   スモークは**必ずサインインしてそれらの画面を通る。**
+//   だから応答をぜんぶ通りがけに見る。assertNotRateLimited と同じ置き方。
+//
+// 【止めずに溜める】
+//   回数制限のほうは、続けても巻き添えの失敗が並ぶだけなので即座に止める。
+//   こちらは進めても他の判定に影響しないので、**最後にまとめて出す。**
+
+const INTERNAL_REF = /（D\d{1,3}）|（spec [0-9][0-9-]*）/g;
+const internalRefs = new Map();
+
+function noteInternalRefs(path, html) {
+  for (const m of textOf(html).matchAll(INTERNAL_REF)) {
+    const key = `${m[0]}  ${path}`;
+    if (!internalRefs.has(key)) internalRefs.set(key, true);
+  }
+}
+
 export function section(title) {
   console.log(`\n${title}`);
 }
@@ -144,6 +171,17 @@ async function cleanupSmokeReports() {
 export async function finish() {
   await cleanupCreatedWorks();
   await cleanupSmokeReports();
+
+  // 通りがけに拾った分をまとめて出す。**開いた画面のぶんしか見ていない**ので、
+  // 「0件だった」は「この検査が通った画面には無かった」という意味。
+  console.log("");
+  if (internalRefs.size === 0) {
+    must(true, "開発の言葉（D番号・仕様書の節）が画面に出ていない");
+  } else {
+    must(false, "開発の言葉が画面に出ている", `${internalRefs.size}件`);
+    for (const key of internalRefs.keys()) console.log(`      ${key}`);
+  }
+
   console.log(failures === 0 ? "\n=== すべて期待どおり ===" : `\n=== ${failures}件 失敗 ===`);
   process.exit(failures === 0 ? 0 : 1);
 }
@@ -266,6 +304,7 @@ export function session(name, initialCookies) {
     }
     const html = await res.text();
     assertNotRateLimited(html);
+    noteInternalRefs(path, html);
     return { html, status: res.status, path };
   }
 
@@ -291,6 +330,7 @@ export function session(name, initialCookies) {
     }
     const html = await res.text();
     assertNotRateLimited(html);
+    noteInternalRefs(path, html);
     return { html, status: res.status, path };
   }
 

@@ -235,7 +235,7 @@ export default async function WorksPage({
 
       {tab.key === "ai" ? (
         <p className="rounded-xl bg-sunken px-4 py-3 text-xs text-faint">
-          AI生成の作品です。通常の一覧には出ません（spec 7-3）。
+          AI生成の作品です。通常の一覧には出ません。
         </p>
       ) : null}
 

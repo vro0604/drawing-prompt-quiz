@@ -114,7 +114,7 @@ export default async function PromptPage({
         </section>
       ) : (
         <p className="text-xs text-faint">
-          引かなかったカードは、作品を投稿したあと、または挑戦をやめたあとに見られます（D8）。
+          引かなかったカードは、作品を投稿したあと、または挑戦をやめたあとに見られます。
         </p>
       )}
 

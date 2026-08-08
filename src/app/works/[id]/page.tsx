@@ -397,7 +397,7 @@ function OwnerOnlyView({ work }: { work: MyWork }) {
             公開する
           </SubmitButton>
           <p className="text-xs text-faint">
-            公開すると実制作時間は変更できなくなります（D25）。
+            公開すると実制作時間は変更できなくなります。
           </p>
         </form>
       ) : null}

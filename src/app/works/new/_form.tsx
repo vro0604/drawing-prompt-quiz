@@ -219,7 +219,7 @@ export function WorkForm({
 
       {/* --- 実制作時間 ------------------------------------------------------ */}
       <div className="space-y-3">
-        <Label hint="自己申告です。公開したあとは変更できません（D25）">実制作時間</Label>
+        <Label hint="自己申告です。公開したあとは変更できません">実制作時間</Label>
         <select name="actualTimeSeconds" defaultValue="" className={field}>
           {ACTUAL_TIME_CHOICES.map((c) => (
             <option key={c.label} value={c.value}>
