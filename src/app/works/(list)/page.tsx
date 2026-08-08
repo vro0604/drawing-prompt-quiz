@@ -10,6 +10,7 @@ import {
   divisionLabel,
   type PublicWorkListItem,
 } from "@/features/work/types";
+import { surface } from "@/app/_surface";
 
 /**
  * /works ／ 公開作品の一覧。
@@ -42,9 +43,6 @@ export const metadata = {
   title: "作品一覧",
 };
 
-const card =
-  "rounded-2xl border border-black/10 bg-white/60 p-6 dark:border-white/15 dark:bg-white/5";
-
 /** 選ばれたタブを決める。知らない値なら通常フィードに落とす */
 function resolveTab(raw: string | undefined) {
   return FEED_TABS.find((t) => t.key === raw) ?? FEED_TABS[0];
@@ -75,9 +73,9 @@ function WorkCard({ work }: { work: PublicWorkListItem }) {
     <li>
       <Link
         href={`/works/${work.id}`}
-        className="group block space-y-3 rounded-2xl border border-black/10 p-3 transition hover:border-black/30 dark:border-white/15 dark:hover:border-white/40"
+        className="group block space-y-3 rounded-2xl border border-line p-3 transition hover:border-line-hover"
       >
-        <div className="overflow-hidden rounded-xl bg-black/[0.03] dark:bg-white/5">
+        <div className="overflow-hidden rounded-xl bg-sunken">
           <Image
             src={workImageUrl(work.image_path)}
             alt={work.title}
@@ -90,7 +88,7 @@ function WorkCard({ work }: { work: PublicWorkListItem }) {
 
         <div className="space-y-1 px-1 pb-1">
           <p className="truncate text-sm font-bold">{work.title}</p>
-          <p className="truncate text-xs text-black/50 dark:text-white/50">
+          <p className="truncate text-xs text-ink/50">
             {work.author_display_name}
             {work.author_handle ? `（@${work.author_handle}）` : ""}
           </p>
@@ -103,7 +101,7 @@ function WorkCard({ work }: { work: PublicWorkListItem }) {
             回答数もいいね数も消えたわけではなく、作品ページで取りに行けば見える。
             **隠すのではなく、取りに行かせる。**
           */}
-          <p className="text-xs text-black/40 dark:text-white/40">
+          <p className="text-xs text-ink/40">
             {divisionLabel(work.division)}・{completenessLabel(work.completeness)}
           </p>
         </div>
@@ -164,13 +162,13 @@ export default async function WorksPage({
             ランキングを見る
           </Link>
         </div>
-        <p className="text-sm text-black/55 dark:text-white/55">
+        <p className="text-sm text-ink/55">
           絵だけを見て、描き手が引いたお題を当ててみてください。回答はゲストのままでもできます。
         </p>
       </header>
 
       {notice ? (
-        <p className="rounded-xl bg-emerald-500/10 px-4 py-3 text-sm whitespace-pre-wrap text-emerald-700 dark:text-emerald-300">
+        <p className="rounded-xl bg-success-tint/10 px-4 py-3 text-sm whitespace-pre-wrap text-success">
           {notice}
         </p>
       ) : null}
@@ -183,8 +181,8 @@ export default async function WorksPage({
             href={hrefWith(current, { tab: t.key, page: 1 })}
             className={
               t.key === tab.key
-                ? "rounded-full bg-black px-4 py-2 text-xs font-bold text-white dark:bg-white dark:text-black"
-                : "rounded-full border border-black/15 px-4 py-2 text-xs font-bold hover:bg-black/[0.04] dark:border-white/20 dark:hover:bg-white/10"
+                ? "rounded-full bg-accent px-4 py-2 text-xs font-bold text-on-accent"
+                : "rounded-full border border-line-mid px-4 py-2 text-xs font-bold hover:bg-hover"
             }
           >
             {t.label}
@@ -194,7 +192,7 @@ export default async function WorksPage({
 
       {/* --- 並び順 ----------------------------------------------------------- */}
       <div className="flex flex-wrap items-center gap-x-4 gap-y-2 text-xs">
-        <span className="text-black/45 dark:text-white/45">並び</span>
+        <span className="text-ink/45">並び</span>
         {FEED_SORTS.map((s) => (
           <Link
             key={s.value}
@@ -202,7 +200,7 @@ export default async function WorksPage({
             className={
               s.value === sort.value
                 ? "font-bold underline"
-                : "text-black/50 underline hover:text-black/80 dark:text-white/50 dark:hover:text-white/80"
+                : "text-ink/50 underline hover:text-ink/80"
             }
           >
             {s.label}
@@ -216,7 +214,7 @@ export default async function WorksPage({
         落書きにも居場所を作るための軸なので、既定で全部見える形にする（D135）。
       */}
       <div className="flex flex-wrap items-center gap-x-4 gap-y-2 text-xs">
-        <span className="text-black/45 dark:text-white/45">完成度</span>
+        <span className="text-ink/45">完成度</span>
         {COMPLETENESS_FILTERS.map((f) => {
           const value = f.value ?? "";
           return (
@@ -226,7 +224,7 @@ export default async function WorksPage({
               className={
                 value === done
                   ? "font-bold underline"
-                  : "text-black/50 underline hover:text-black/80 dark:text-white/50 dark:hover:text-white/80"
+                  : "text-ink/50 underline hover:text-ink/80"
               }
             >
               {f.label}
@@ -236,14 +234,14 @@ export default async function WorksPage({
       </div>
 
       {tab.key === "ai" ? (
-        <p className="rounded-xl bg-black/[0.03] px-4 py-3 text-xs text-black/55 dark:bg-white/5 dark:text-white/55">
+        <p className="rounded-xl bg-sunken px-4 py-3 text-xs text-ink/55">
           AI生成の作品です。通常の一覧には出ません（spec 7-3）。
         </p>
       ) : null}
 
       {/* --- 一覧 ------------------------------------------------------------- */}
       {works.length === 0 ? (
-        <div className={card}>
+        <div className={surface}>
           <p className="text-sm">
             {page > 1
               ? "このページには作品がありません。"
@@ -265,7 +263,7 @@ export default async function WorksPage({
 
       {/* --- ページ送り ------------------------------------------------------- */}
       {page > 1 || hasNext ? (
-        <div className="flex items-center justify-between border-t border-black/10 pt-6 text-sm dark:border-white/10">
+        <div className="flex items-center justify-between border-t border-ink/10 pt-6 text-sm">
           {page > 1 ? (
             <Link href={hrefWith(current, { page: page - 1 })} className="underline">
               ← 前のページ
@@ -273,7 +271,7 @@ export default async function WorksPage({
           ) : (
             <span />
           )}
-          <span className="text-xs text-black/40 dark:text-white/40">{page} ページ目</span>
+          <span className="text-xs text-ink/40">{page} ページ目</span>
           {hasNext ? (
             <Link href={hrefWith(current, { page: page + 1 })} className="underline">
               次のページ →
@@ -284,7 +282,7 @@ export default async function WorksPage({
         </div>
       ) : null}
 
-      <footer className="border-t border-black/10 pt-6 text-sm dark:border-white/10">
+      <footer className="border-t border-ink/10 pt-6 text-sm">
         <Link href="/play" className="underline">
           お題を引く画面へ
         </Link>

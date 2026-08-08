@@ -2,6 +2,7 @@ import Link from "next/link";
 import { fetchAccountState } from "@/features/account/rpc";
 import { deleteAccountAction } from "./actions";
 import { SubmitButton } from "@/app/_pending";
+import { surface } from "@/app/_surface";
 
 /**
  * /account/delete ／ 退会の確認画面。
@@ -24,15 +25,12 @@ export const metadata = {
   title: "退会する",
 };
 
-const box =
-  "rounded-2xl border border-black/10 bg-white/60 p-6 dark:border-white/15 dark:bg-white/5";
-
 function Shell({ children }: { children: React.ReactNode }) {
   return (
     <main className="mx-auto w-full max-w-2xl space-y-8 p-6 sm:p-10">
       <header className="space-y-2">
         <h1 className="text-2xl font-bold">退会する</h1>
-        <p className="text-sm text-black/55 dark:text-white/55">
+        <p className="text-sm text-ink/55">
           アカウントと、あなたが投稿した作品を削除します。
         </p>
       </header>
@@ -52,7 +50,7 @@ export default async function DeleteAccountPage({
   if (!state) {
     return (
       <Shell>
-        <div className={box}>
+        <div className={surface}>
           <p className="text-sm">サインインしてから開いてください。</p>
           <p className="pt-3 text-sm">
             <Link href="/account" className="underline">
@@ -67,7 +65,7 @@ export default async function DeleteAccountPage({
   if (state.is_anonymous) {
     return (
       <Shell>
-        <div className={`${box} space-y-3`}>
+        <div className={`${surface} space-y-3`}>
           <h2 className="text-sm font-bold">ゲストには退会の手続きがありません</h2>
           <p className="text-sm">
             ゲストはメールアドレスを持たないため、消すべき個人情報がありません。
@@ -86,7 +84,7 @@ export default async function DeleteAccountPage({
   if (state.account_status !== "active") {
     return (
       <Shell>
-        <div className={`${box} space-y-3`}>
+        <div className={`${surface} space-y-3`}>
           <h2 className="text-sm font-bold">すでに退会の処理に入っています</h2>
           <p className="text-sm">
             このアカウントからは、もう投稿も編集もできません。
@@ -100,22 +98,22 @@ export default async function DeleteAccountPage({
   return (
     <Shell>
       {error ? (
-        <p className="rounded-xl bg-rose-500/10 px-4 py-3 text-sm whitespace-pre-wrap text-rose-700 dark:text-rose-300">
+        <p className="rounded-xl bg-danger-tint/10 px-4 py-3 text-sm whitespace-pre-wrap text-danger">
           {error}
         </p>
       ) : null}
 
-      <div className="rounded-2xl border-2 border-rose-500/50 bg-rose-500/[0.06] p-6">
-        <p className="text-sm font-bold text-rose-700 dark:text-rose-300">
+      <div className="rounded-2xl border-2 border-danger-tint/50 bg-danger-tint/[0.06] p-6">
+        <p className="text-sm font-bold text-danger">
           退会は取り消せません。
         </p>
-        <p className="pt-2 text-sm text-rose-700/80 dark:text-rose-300/80">
+        <p className="pt-2 text-sm text-danger/80">
           元に戻す手段はありません。同じメールアドレスで登録し直しても、
           消えた作品と記録は戻りません。
         </p>
       </div>
 
-      <section className={`${box} space-y-4`}>
+      <section className={`${surface} space-y-4`}>
         <h2 className="text-sm font-bold">消えるもの</h2>
         <ul className="space-y-1.5 text-sm">
           <li>・メールアドレスとパスワード（ログインできなくなります）</li>
@@ -133,34 +131,34 @@ export default async function DeleteAccountPage({
         <ul className="space-y-1.5 text-sm">
           <li>
             ・作品の記録そのもの。
-            <span className="text-black/55 dark:text-white/55">
+            <span className="text-ink/55">
               消すと、その作品に答えた他の方の記録と正答率まで壊れてしまうためです。
               作者が誰だったかは分からなくなります
             </span>
           </li>
           <li>
             ・あなたが他の方の作品に答えた記録。
-            <span className="text-black/55 dark:text-white/55">
+            <span className="text-ink/55">
               作者にとっては「何人に伝わったか」という自分の記録だからです。
               誰の回答かは分からなくなります
             </span>
           </li>
           <li>
             ・通報の記録。
-            <span className="text-black/55 dark:text-white/55">
+            <span className="text-ink/55">
               運営が対応するために残します。誰が通報したかは消えます
             </span>
           </li>
           <li>
             ・規約に同意した記録。
-            <span className="text-black/55 dark:text-white/55">
+            <span className="text-ink/55">
               5年で自動的に消えます。あなたとの結び付きは退会時に外れます
             </span>
           </li>
         </ul>
 
         <h2 className="pt-2 text-sm font-bold">そのほか知っておいていただきたいこと</h2>
-        <ul className="space-y-1.5 text-sm text-black/55 dark:text-white/55">
+        <ul className="space-y-1.5 text-sm text-ink/55">
           <li>
             ・使っていた ID は、しばらく他の方が取得できません。
             保存するのは ID そのものではなく、読み取れない形に変換した値です
@@ -173,10 +171,10 @@ export default async function DeleteAccountPage({
         </ul>
       </section>
 
-      <form action={deleteAccountAction} className={`${box} space-y-4`}>
+      <form action={deleteAccountAction} className={`${surface} space-y-4`}>
         <label className="block space-y-2">
           <span className="block text-sm font-bold">
-            確認のため <code className="rounded bg-black/10 px-1.5 py-0.5">{state.confirm_word}</code>{" "}
+            確認のため <code className="rounded bg-ink/10 px-1.5 py-0.5">{state.confirm_word}</code>{" "}
             と入力してください
           </span>
           <input
@@ -185,20 +183,20 @@ export default async function DeleteAccountPage({
             required
             autoComplete="off"
             placeholder={state.confirm_word}
-            className="w-full rounded-xl border border-black/15 bg-transparent px-4 py-3 text-sm dark:border-white/20"
+            className="w-full rounded-xl border border-line-mid bg-transparent px-4 py-3 text-sm"
           />
         </label>
 
         <div className="flex flex-wrap gap-3">
           <SubmitButton
             pendingLabel="退会の手続き中…"
-            className="rounded-xl bg-rose-600 px-6 py-3 text-sm font-bold text-white hover:opacity-85"
+            className="rounded-xl bg-danger-solid px-6 py-3 text-sm font-bold text-on-danger hover:opacity-85"
           >
             退会する（取り消せません）
           </SubmitButton>
           <Link
             href="/account"
-            className="rounded-xl border border-black/20 px-6 py-3 text-sm font-bold hover:bg-black/[0.04] dark:border-white/25 dark:hover:bg-white/10"
+            className="rounded-xl border border-line-firm px-6 py-3 text-sm font-bold hover:bg-hover"
           >
             やめる
           </Link>

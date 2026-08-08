@@ -2,6 +2,7 @@ import Link from "next/link";
 import { SavedList } from "@/app/_saved-list";
 import { getCurrentUser, getMyProfile } from "@/features/auth/session";
 import { fetchSavedWorks } from "@/features/profile/rpc";
+import { surface } from "@/app/_surface";
 
 /**
  * /saves ／ 自分のお気に入り一覧。
@@ -25,9 +26,6 @@ export const metadata = {
   title: "お気に入り",
 };
 
-const box =
-  "rounded-2xl border border-black/10 bg-white/60 p-6 dark:border-white/15 dark:bg-white/5";
-
 export default async function SavesPage() {
   const user = await getCurrentUser();
   const isRegistered = user !== null && !user.is_anonymous;
@@ -36,7 +34,7 @@ export default async function SavesPage() {
     return (
       <main className="mx-auto w-full max-w-3xl space-y-8 p-6 sm:p-10">
         <h1 className="text-2xl font-bold">お気に入り</h1>
-        <div className={box}>
+        <div className={surface}>
           <p className="text-sm">
             お気に入りの保存にはアカウント登録が必要です。
             {user === null
@@ -62,7 +60,7 @@ export default async function SavesPage() {
     <main className="mx-auto w-full max-w-3xl space-y-8 p-6 sm:p-10">
       <header className="space-y-2">
         <h1 className="text-2xl font-bold">お気に入り</h1>
-        <p className="text-sm text-black/55 dark:text-white/55">
+        <p className="text-sm text-ink/55">
           あとで見返すために保存した作品です。
           {profile?.show_saved_works
             ? "いまは他の人にも公開しています。"
@@ -86,7 +84,7 @@ export default async function SavesPage() {
           </Link>
         </p>
       ) : (
-        <p className="text-sm text-black/55 dark:text-white/55">
+        <p className="text-sm text-ink/55">
           公開プロフィールを持つには ID の設定が必要です。
           <Link href="/account" className="ml-1 underline">
             ID を決める
@@ -94,7 +92,7 @@ export default async function SavesPage() {
         </p>
       )}
 
-      <footer className="flex flex-wrap gap-4 border-t border-black/10 pt-6 text-sm dark:border-white/10">
+      <footer className="flex flex-wrap gap-4 border-t border-ink/10 pt-6 text-sm">
         <Link href="/works" className="underline">
           作品一覧へ
         </Link>

@@ -18,7 +18,7 @@ export function Layout({
     <main className="mx-auto max-w-2xl space-y-6 p-8 font-mono text-sm">
       <h1 className="text-xl font-bold">{title}</h1>
       {children}
-      <p className="pt-4 text-xs text-black/40 dark:text-white/40">{note}</p>
+      <p className="pt-4 text-xs text-ink/40">{note}</p>
     </main>
   );
 }
@@ -27,10 +27,10 @@ export function Layout({
 export function Status({ ok, title }: { ok: boolean | null; title: string }) {
   const tone =
     ok === null
-      ? "bg-black/5 text-black/60 dark:bg-white/10 dark:text-white/60"
+      ? "bg-hover text-ink/60"
       : ok
-        ? "bg-emerald-500/15 text-emerald-700 dark:text-emerald-300"
-        : "bg-rose-500/15 text-rose-700 dark:text-rose-300";
+        ? "bg-success-tint/15 text-success"
+        : "bg-danger-tint/15 text-danger";
 
   const label = ok === null ? "待機" : ok ? "OK" : "NG";
 
@@ -48,7 +48,7 @@ export function ActionButton({
   const tone =
     variant === "primary"
       ? "bg-foreground text-background hover:opacity-80"
-      : "border border-black/20 hover:bg-black/5 dark:border-white/20 dark:hover:bg-white/10";
+      : "border border-ink/20 hover:bg-hover";
 
   return (
     <button type="submit" className={`rounded-md px-4 py-2 text-sm font-bold transition ${tone}`}>
@@ -60,7 +60,7 @@ export function ActionButton({
 export function Section({ label, children }: { label: string; children: React.ReactNode }) {
   return (
     <section className="space-y-1">
-      <h2 className="text-xs uppercase tracking-wider text-black/40 dark:text-white/40">
+      <h2 className="text-xs uppercase tracking-wider text-ink/40">
         {label}
       </h2>
       <div className="leading-relaxed">{children}</div>
@@ -72,7 +72,7 @@ export function Section({ label, children }: { label: string; children: React.Re
 export function Field({ label, children }: { label: string; children: React.ReactNode }) {
   return (
     <div>
-      <dt className="inline text-black/50 dark:text-white/50">{label}: </dt>
+      <dt className="inline text-ink/50">{label}: </dt>
       <dd className="inline break-all">{children}</dd>
     </div>
   );

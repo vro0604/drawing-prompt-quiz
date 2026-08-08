@@ -77,7 +77,7 @@ export function LegalBody({
 
   return (
     <article className="space-y-4">
-      <p className="text-xs text-black/45 dark:text-white/45">
+      <p className="text-xs text-ink/45">
         版 {version}（{new Date(publishedAt).toLocaleDateString("ja-JP")}）
       </p>
 
@@ -116,7 +116,7 @@ export function LegalBody({
             <div key={i} className="overflow-x-auto">
               <table className="w-full text-left text-sm">
                 <thead>
-                  <tr className="border-b border-black/15 dark:border-white/20">
+                  <tr className="border-b border-line-mid">
                     {head.map((c, j) => (
                       <th key={j} className="py-2 pr-4 font-bold">
                         {c}
@@ -126,7 +126,7 @@ export function LegalBody({
                 </thead>
                 <tbody>
                   {rest.map((row, ri) => (
-                    <tr key={ri} className="border-b border-black/5 dark:border-white/10">
+                    <tr key={ri} className="border-b border-line-faint">
                       {row.map((c, ci) => (
                         <td key={ci} className="py-2 pr-4 align-top">
                           {withBold(c, `t${i}-${ri}-${ci}`)}

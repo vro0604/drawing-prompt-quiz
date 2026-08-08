@@ -13,6 +13,7 @@ import {
   revealCardAction,
   startDraftAction,
 } from "./actions";
+import { surface } from "@/app/_surface";
 
 /**
  * /play の見た目の部品。
@@ -22,12 +23,9 @@ import {
  * JavaScript が無効でも動く（表示・操作の両方がサーバー側で完結する）。
  */
 
-const card =
-  "rounded-2xl border border-black/10 bg-white/60 p-6 dark:border-white/15 dark:bg-white/5";
-
 export function ErrorBox({ message }: { message: string }) {
   return (
-    <p className="rounded-xl bg-rose-500/10 px-4 py-3 text-sm whitespace-pre-wrap text-rose-700 dark:text-rose-300">
+    <p className="rounded-xl bg-danger-tint/10 px-4 py-3 text-sm whitespace-pre-wrap text-danger">
       {message}
     </p>
   );
@@ -37,7 +35,7 @@ export function ErrorBox({ message }: { message: string }) {
 export function StartForm({ modes }: { modes: DraftMode[] }) {
   if (modes.length === 0) {
     return (
-      <div className={card}>
+      <div className={surface}>
         <p className="text-sm">
           使えるモードがありません。マスタデータが入っているか確認してください。
         </p>
@@ -46,14 +44,14 @@ export function StartForm({ modes }: { modes: DraftMode[] }) {
   }
 
   return (
-    <form action={startDraftAction} className={`${card} space-y-6`}>
+    <form action={startDraftAction} className={`${surface} space-y-6`}>
       <div className="space-y-3">
         <h2 className="text-sm font-bold">モード</h2>
         <div className="grid gap-3 sm:grid-cols-2">
           {modes.map((mode, i) => (
             <label
               key={mode.mode_key}
-              className="flex cursor-pointer items-start gap-3 rounded-xl border border-black/10 p-4 hover:bg-black/[0.03] has-checked:border-black/40 dark:border-white/15 dark:hover:bg-white/5 dark:has-checked:border-white/50"
+              className="flex cursor-pointer items-start gap-3 rounded-xl border border-line p-4 hover:bg-sunken has-checked:border-line-active"
             >
               <input
                 type="radio"
@@ -64,7 +62,7 @@ export function StartForm({ modes }: { modes: DraftMode[] }) {
               />
               <span className="space-y-1">
                 <span className="block text-base font-bold">{mode.label}</span>
-                <span className="block text-xs text-black/55 dark:text-white/55">
+                <span className="block text-xs text-ink/55">
                   {/* 「3項目 × 候補3枚」のように、枠数と1枠あたりの枚数を分けて示す（D16） */}
                   候補 {mode.candidate_count} 枚／枠・引き直し {mode.max_rerolls} 回・
                   クイズ {mode.quiz_question_count} 問
@@ -80,7 +78,7 @@ export function StartForm({ modes }: { modes: DraftMode[] }) {
         <select
           name="timeLimitSeconds"
           defaultValue="3600"
-          className="w-full rounded-xl border border-black/15 bg-transparent px-4 py-3 text-sm dark:border-white/20"
+          className="w-full rounded-xl border border-line-mid bg-transparent px-4 py-3 text-sm"
         >
           {TIME_LIMIT_CHOICES.map((c) => (
             <option key={c.label} value={c.value}>
@@ -88,14 +86,14 @@ export function StartForm({ modes }: { modes: DraftMode[] }) {
             </option>
           ))}
         </select>
-        <p className="text-xs text-black/50 dark:text-white/50">
+        <p className="text-xs text-ink/50">
           時間は運任せにせず自分で決める（D5）。あとから変更はできない。
         </p>
       </div>
 
       <SubmitButton
         pendingLabel="始めています…"
-        className="w-full rounded-xl bg-black px-5 py-3 text-sm font-bold text-white hover:opacity-85 dark:bg-white dark:text-black"
+        className="w-full rounded-xl bg-accent px-5 py-3 text-sm font-bold text-on-accent hover:opacity-85"
       >
         ドラフトを始める
       </SubmitButton>
@@ -127,7 +125,7 @@ function CandidateButton({
   if (isChosen) {
     return (
       <div
-        className={`${base} border-emerald-500/50 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300`}
+        className={`${base} border-success-tint/50 bg-success-tint/10 text-success`}
       >
         {label}
       </div>
@@ -136,7 +134,7 @@ function CandidateButton({
 
   if (revealed) {
     return (
-      <div className={`${base} border-black/10 bg-black/[0.03] text-black/45 dark:border-white/10 dark:bg-white/5 dark:text-white/45`}>
+      <div className={`${base} border-ink/10 bg-sunken text-ink/45`}>
         {label}
       </div>
     );
@@ -144,7 +142,7 @@ function CandidateButton({
 
   if (!selectable) {
     return (
-      <div className={`${base} border-dashed border-black/15 text-black/25 dark:border-white/15 dark:text-white/25`}>
+      <div className={`${base} border-dashed border-ink/15 text-ink/25`}>
         ?
       </div>
     );
@@ -161,7 +159,7 @@ function CandidateButton({
         pendingLabel="…"
         title="このカードをめくる"
         data={{ "data-card": "hidden" }}
-        className={`${base} cursor-pointer border-black/25 hover:border-black/60 hover:bg-black/[0.04] dark:border-white/25 dark:hover:border-white/60 dark:hover:bg-white/10`}
+        className={`${base} cursor-pointer border-line-firm hover:border-ink/60 hover:bg-hover`}
       >
         ?
       </SubmitButton>
@@ -180,11 +178,11 @@ function SlotRow({ state, slot }: { state: DraftState; slot: DraftSlot }) {
           {slot.slot_order}. {slot.card_slot_label}
         </h3>
         {decided ? (
-          <span className="text-xs text-emerald-600 dark:text-emerald-400">決定</span>
+          <span className="text-xs text-success">決定</span>
         ) : slot.is_current ? (
           <span className="text-xs font-bold">← いまここ。1枚めくると確定します</span>
         ) : (
-          <span className="text-xs text-black/35 dark:text-white/35">順番待ち</span>
+          <span className="text-xs text-ink/35">順番待ち</span>
         )}
       </div>
 
@@ -219,21 +217,21 @@ export function DraftBoard({ state }: { state: DraftState }) {
         data-board=""
         data-chosen={state.chosen_count}
         data-slots={state.slot_count}
-        className={`${card} space-y-2`}
+        className={`${surface} space-y-2`}
       >
         <div className="flex flex-wrap items-baseline gap-x-4 gap-y-1">
           <span className="text-base font-bold">{state.mode_label}</span>
-          <span className="text-xs text-black/55 dark:text-white/55">
+          <span className="text-xs text-ink/55">
             制作時間 {formatDuration(state.time_limit_seconds)}
           </span>
-          <span className="text-xs text-black/55 dark:text-white/55">
+          <span className="text-xs text-ink/55">
             {state.chosen_count} / {state.slot_count} 枠 決定
           </span>
-          <span className="text-xs text-black/55 dark:text-white/55">
+          <span className="text-xs text-ink/55">
             引き直し 残り {state.rerolls_left} 回
           </span>
         </div>
-        <p className="text-xs text-black/45 dark:text-white/45">
+        <p className="text-xs text-ink/45">
           めくったカードがそのまま答えになります。順番に1枚ずつ選んでください。
         </p>
       </div>
@@ -250,7 +248,7 @@ export function DraftBoard({ state }: { state: DraftState }) {
             <input type="hidden" name="sessionId" value={state.session_id} />
             <SubmitButton
               pendingLabel="確定しています…"
-              className="rounded-xl bg-black px-6 py-3 text-sm font-bold text-white hover:opacity-85 dark:bg-white dark:text-black"
+              className="rounded-xl bg-accent px-6 py-3 text-sm font-bold text-on-accent hover:opacity-85"
             >
               このお題で確定する
             </SubmitButton>
@@ -262,7 +260,7 @@ export function DraftBoard({ state }: { state: DraftState }) {
             <input type="hidden" name="sessionId" value={state.session_id} />
             <SubmitButton
               pendingLabel="引き直しています…"
-              className="rounded-xl border border-black/20 px-6 py-3 text-sm font-bold hover:bg-black/[0.04] dark:border-white/25 dark:hover:bg-white/10"
+              className="rounded-xl border border-line-firm px-6 py-3 text-sm font-bold hover:bg-hover"
             >
               全部引き直す（残り {state.rerolls_left} 回）
             </SubmitButton>
@@ -273,14 +271,14 @@ export function DraftBoard({ state }: { state: DraftState }) {
           <input type="hidden" name="sessionId" value={state.session_id} />
           <SubmitButton
             pendingLabel="捨てています…"
-            className="rounded-xl px-6 py-3 text-sm text-black/45 hover:text-black/70 dark:text-white/45 dark:hover:text-white/70"
+            className="rounded-xl px-6 py-3 text-sm text-ink/45 hover:text-ink/70"
           >
             このドラフトを捨てる
           </SubmitButton>
         </form>
       </div>
 
-      <p className="text-xs text-black/40 dark:text-white/40">
+      <p className="text-xs text-ink/40">
         引き直すと選んだカードは白紙に戻り、1番目の枠からやり直しになります。
       </p>
     </div>

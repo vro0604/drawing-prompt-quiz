@@ -11,6 +11,7 @@ import {
   type Division,
 } from "@/features/work/types";
 import { createWorkAction } from "./actions";
+import { surface } from "@/app/_surface";
 
 /**
  * 投稿フォーム。
@@ -34,18 +35,15 @@ import { createWorkAction } from "./actions";
  *   POST は誰でも作れるので、本当の検査は create_work（D27 の6検査）が持つ。
  */
 
-const box =
-  "rounded-2xl border border-black/10 bg-white/60 p-6 dark:border-white/15 dark:bg-white/5";
-
 const input =
-  "w-full rounded-xl border border-black/15 bg-transparent px-4 py-3 text-sm dark:border-white/20";
+  "w-full rounded-xl border border-line-mid bg-transparent px-4 py-3 text-sm";
 
 function Label({ children, hint }: { children: React.ReactNode; hint?: string }) {
   return (
     <span className="block space-y-1">
       <span className="block text-sm font-bold">{children}</span>
       {hint ? (
-        <span className="block text-xs text-black/50 dark:text-white/50">{hint}</span>
+        <span className="block text-xs text-ink/50">{hint}</span>
       ) : null}
     </span>
   );
@@ -85,7 +83,7 @@ export function WorkForm({
   }
 
   return (
-    <form action={createWorkAction} className={`${box} space-y-8`}>
+    <form action={createWorkAction} className={`${surface} space-y-8`}>
       <input type="hidden" name="promptId" value={promptId} />
 
       {/* --- 画像 ------------------------------------------------------------ */}
@@ -97,11 +95,11 @@ export function WorkForm({
           accept="image/jpeg,image/png,image/webp"
           required
           onChange={onPickFile}
-          className="w-full text-sm file:mr-4 file:cursor-pointer file:rounded-lg file:border-0 file:bg-black file:px-4 file:py-2 file:text-sm file:font-bold file:text-white dark:file:bg-white dark:file:text-black"
+          className="w-full text-sm file:mr-4 file:cursor-pointer file:rounded-lg file:border-0 file:bg-accent file:px-4 file:py-2 file:text-sm file:font-bold file:text-on-accent"
         />
 
         {sizeError ? (
-          <p className="text-xs text-rose-700 dark:text-rose-300">{sizeError}</p>
+          <p className="text-xs text-danger">{sizeError}</p>
         ) : null}
 
         {previewUrl ? (
@@ -112,9 +110,9 @@ export function WorkForm({
             <img
               src={previewUrl}
               alt="選んだ画像のプレビュー"
-              className="max-h-72 w-auto rounded-xl border border-black/10 dark:border-white/15"
+              className="max-h-72 w-auto rounded-xl border border-line"
             />
-            <p className="text-xs text-black/45 dark:text-white/45">{fileName}</p>
+            <p className="text-xs text-ink/45">{fileName}</p>
           </div>
         ) : null}
       </div>
@@ -132,7 +130,7 @@ export function WorkForm({
           {DIVISIONS.map((d) => (
             <label
               key={d.value}
-              className="flex cursor-pointer items-start gap-3 rounded-xl border border-black/10 p-4 hover:bg-black/[0.03] has-checked:border-black/40 dark:border-white/15 dark:hover:bg-white/5 dark:has-checked:border-white/50"
+              className="flex cursor-pointer items-start gap-3 rounded-xl border border-line p-4 hover:bg-sunken has-checked:border-line-active"
             >
               <input
                 type="radio"
@@ -144,7 +142,7 @@ export function WorkForm({
               />
               <span className="space-y-1">
                 <span className="block text-sm font-bold">{d.label}</span>
-                <span className="block text-xs text-black/55 dark:text-white/55">{d.note}</span>
+                <span className="block text-xs text-ink/55">{d.note}</span>
               </span>
             </label>
           ))}
@@ -163,7 +161,7 @@ export function WorkForm({
       */}
       <div className="space-y-3">
         <Label hint="どこまで描いたか。あとから変更できます">完成度</Label>
-        <p className="text-xs text-black/55 dark:text-white/55">
+        <p className="text-xs text-ink/55">
           落書きのまま出して構いません。ここは上手さを測る欄ではなく、
           <strong>見る人が同じ土俵で見るための欄</strong>です。
         </p>
@@ -171,7 +169,7 @@ export function WorkForm({
           {COMPLETENESS_CHOICES.map((c) => (
             <label
               key={c.value}
-              className="flex cursor-pointer items-start gap-3 rounded-xl border border-black/10 p-4 hover:bg-black/[0.03] has-checked:border-black/40 dark:border-white/15 dark:hover:bg-white/5 dark:has-checked:border-white/50"
+              className="flex cursor-pointer items-start gap-3 rounded-xl border border-line p-4 hover:bg-sunken has-checked:border-line-active"
             >
               <input
                 type="radio"
@@ -182,7 +180,7 @@ export function WorkForm({
               />
               <span className="space-y-1">
                 <span className="block text-sm font-bold">{c.label}</span>
-                <span className="block text-xs text-black/55 dark:text-white/55">{c.note}</span>
+                <span className="block text-xs text-ink/55">{c.note}</span>
               </span>
             </label>
           ))}
@@ -191,8 +189,8 @@ export function WorkForm({
 
       {/* --- ファンアートのときだけ ------------------------------------------ */}
       {division === "fanart" ? (
-        <div className="space-y-5 rounded-xl bg-black/[0.03] p-5 dark:bg-white/5">
-          <p className="text-xs text-black/60 dark:text-white/60">
+        <div className="space-y-5 rounded-xl bg-sunken p-5">
+          <p className="text-xs text-ink/60">
             権利者の許諾範囲を守って投稿してください。二次創作を禁止している作品や、
             公式が個別に定めたガイドラインがある場合はそれに従ってください（R12）。
           </p>
@@ -232,7 +230,7 @@ export function WorkForm({
             </option>
           ))}
         </select>
-        <p className="text-xs text-black/45 dark:text-white/45">
+        <p className="text-xs text-ink/45">
           時間別ランキングの分類にはお題を引いたときの制限時間を使うため、
           ここでの申告は分類に影響しません。
         </p>
@@ -245,7 +243,7 @@ export function WorkForm({
         表示中に改定されたら、DB 側が VERSION_MISMATCH で断る。
       */}
       {agreement ? (
-        <div className={`${box} space-y-3 border-amber-500/40`}>
+        <div className={`${surface} space-y-3 border-notice-tint/40`}>
           <h2 className="text-sm font-bold">投稿の前に同意が必要です</h2>
           <input type="hidden" name="termsVersion" value={agreement.termsVersion} />
           <input type="hidden" name="privacyVersion" value={agreement.privacyVersion} />
@@ -268,7 +266,7 @@ export function WorkForm({
               に同意します。
             </span>
           </label>
-          <p className="text-xs text-black/45 dark:text-white/45">
+          <p className="text-xs text-ink/45">
             同意した記録として、どの版にいつ同意したかを5年間だけ保存します。
             退会するとこの記録からあなたとの結び付きが外れます。
           </p>
@@ -276,11 +274,11 @@ export function WorkForm({
       ) : null}
 
       {/* --- 送信 ------------------------------------------------------------ */}
-      <div className="space-y-3 border-t border-black/10 pt-6 dark:border-white/10">
+      <div className="space-y-3 border-t border-ink/10 pt-6">
         <div className="flex flex-wrap gap-3">
           <SubmitButton
             pendingLabel="投稿しています…"
-            className="rounded-xl bg-black px-6 py-3 text-sm font-bold text-white hover:opacity-85 dark:bg-white dark:text-black"
+            className="rounded-xl bg-accent px-6 py-3 text-sm font-bold text-on-accent hover:opacity-85"
           >
             公開して投稿する
           </SubmitButton>
@@ -288,12 +286,12 @@ export function WorkForm({
             pendingLabel="保存しています…"
             name="saveAs"
             value="draft"
-            className="rounded-xl border border-black/20 px-6 py-3 text-sm font-bold hover:bg-black/[0.04] dark:border-white/25 dark:hover:bg-white/10"
+            className="rounded-xl border border-line-firm px-6 py-3 text-sm font-bold hover:bg-hover"
           >
             下書きとして保存する
           </SubmitButton>
         </div>
-        <p className="text-xs text-black/45 dark:text-white/45">
+        <p className="text-xs text-ink/45">
           下書きは自分だけが見られます。他の人からは、そのURLを開いても存在しないのと
           同じ扱いになります。あとから作品ページで公開できます。
         </p>

@@ -30,7 +30,7 @@ export default function Loading() {
       <p
         role="status"
         aria-live="polite"
-        className="flex items-center gap-3 text-sm text-black/55 dark:text-white/55"
+        className="flex items-center gap-3 text-sm text-ink/55"
       >
         <span
           aria-hidden

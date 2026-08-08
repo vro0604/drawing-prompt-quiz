@@ -50,7 +50,7 @@ export default async function PlayPage({
     <main className="mx-auto w-full max-w-3xl space-y-8 p-6 sm:p-10">
       <header className="space-y-2">
         <h1 className="text-2xl font-bold">お題を引く</h1>
-        <p className="text-sm text-black/55 dark:text-white/55">
+        <p className="text-sm text-ink/55">
           伏せられたカードを1枠につき1枚めくると、その内容がお題になります。
           描き終えたら作品を投稿し、見た人がお題を当てます。
         </p>
@@ -61,7 +61,7 @@ export default async function PlayPage({
 
       {draft ? <DraftBoard state={draft} /> : <StartForm modes={modes} />}
 
-      <footer className="border-t border-black/10 pt-6 text-xs text-black/40 dark:border-white/10 dark:text-white/40">
+      <footer className="border-t border-ink/10 pt-6 text-xs text-ink/40">
         {user ? (
           <p>
             サインイン済み（
@@ -78,12 +78,12 @@ export default async function PlayPage({
           <Link href="/works" className="underline">
             作品一覧
           </Link>
-          <span className="px-2 text-black/20 dark:text-white/20">/</span>
+          <span className="px-2 text-ink/20">/</span>
           {/* 作品の投稿にはアカウントが要る（spec C3）。導線をここに置く。 */}
           <Link href="/account" className="underline">
             アカウント
           </Link>
-          <span className="px-2 text-black/20 dark:text-white/20">/</span>
+          <span className="px-2 text-ink/20">/</span>
           <Link href="/health/auth" className="underline">
             サインイン状態を確認する
           </Link>

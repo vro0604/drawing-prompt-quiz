@@ -1,4 +1,5 @@
 import Link from "next/link";
+import { surface } from "@/app/_surface";
 
 /**
  * /account/deleted ／ 退会したあとの画面。
@@ -14,9 +15,6 @@ import Link from "next/link";
 export const metadata = {
   title: "退会しました",
 };
-
-const box =
-  "rounded-2xl border border-black/10 bg-white/60 p-6 dark:border-white/15 dark:bg-white/5";
 
 export default async function DeletedPage({
   searchParams,
@@ -37,12 +35,12 @@ export default async function DeletedPage({
     <main className="mx-auto w-full max-w-2xl space-y-8 p-6 sm:p-10">
       <header className="space-y-2">
         <h1 className="text-2xl font-bold">退会しました</h1>
-        <p className="text-sm text-black/55 dark:text-white/55">
+        <p className="text-sm text-ink/55">
           ご利用ありがとうございました。
         </p>
       </header>
 
-      <section className={`${box} space-y-3`}>
+      <section className={`${surface} space-y-3`}>
         <h2 className="text-sm font-bold">終わっていること</h2>
         <ul className="space-y-1.5 text-sm">
           <li>・投稿した作品はすべて非公開になり、削除済みになりました</li>
@@ -53,7 +51,7 @@ export default async function DeletedPage({
       </section>
 
       {leftover ? (
-        <section className={`${box} space-y-3 border-amber-500/40`}>
+        <section className={`${surface} space-y-3 border-notice-tint/40`}>
           <h2 className="text-sm font-bold">自動で片づく残り</h2>
           <ul className="space-y-1.5 text-sm">
             {storageFailed > 0 ? (
@@ -66,21 +64,21 @@ export default async function DeletedPage({
               </li>
             ) : null}
           </ul>
-          <p className="text-xs text-black/45 dark:text-white/45">
+          <p className="text-xs text-ink/45">
             この画面を閉じて構いません。残りの処理に、あなたの操作は要りません。
           </p>
         </section>
       ) : null}
 
-      <section className={`${box} space-y-2`}>
+      <section className={`${surface} space-y-2`}>
         <h2 className="text-sm font-bold">画像がまだ見えることがあります</h2>
-        <p className="text-sm text-black/60 dark:text-white/60">
+        <p className="text-sm text-ink/60">
           配信の仕組みの都合で、消したあとも最大1時間ほど同じURLから
           画像が見えることがあります。時間が経てば消えます。
         </p>
       </section>
 
-      <footer className="border-t border-black/10 pt-6 text-sm dark:border-white/10">
+      <footer className="border-t border-ink/10 pt-6 text-sm">
         <Link href="/" className="underline">
           トップへ
         </Link>

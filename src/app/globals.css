@@ -1,22 +1,149 @@
 @import "tailwindcss";
 
+/*
+ * 色の置き場所。**画面の色はここにしか書かない。**
+ *
+ * 【なぜ集めたか】
+ *   もとは `border-black/10 dark:border-white/15` のような書き方が
+ *   画面側に散っていた。dark: の手書きが 365 箇所、カードの面の定義が
+ *   15 ファイルに同じ文字列でコピーされていた。
+ *
+ *   **色を1つ変える作業が 380 箇所の検索置換になっていた。**
+ *   工数の話ではない。**試して、違ったら戻す**ができないので、
+ *   一度置いた色がそのまま確定してしまう。
+ *   デザインの自由は、やり直しの安さと同じもの。
+ *
+ * 【明るいときと暗いとき】
+ *   下の :root に明るいときの値を書き、@media で暗いときだけ差し替える。
+ *   画面側は `border-line` と書くだけで、両方に追従する。
+ *   **画面側に dark: を書かない**のがこの作りの要点。
+ *
+ * 【ink だけ別扱い】
+ *   文字の濃さは 20% から 80% まで 11 段あった。段ごとに名前を作ると
+ *   増えるだけなので、素の色を1つ（ink）置いて `text-ink/55` のように
+ *   濃さで指定する。明るいときは黒、暗いときは白になる。
+ *
+ * 【まだ決めていないこと】
+ *   ・日本語の書体（いまは OS まかせ。body の Arial に日本語の字が無い）
+ *   ・薄い文字の下限（`text-ink/40` は白地で約 2.8:1 で、本文としては薄い）
+ *   どちらもここを1行直せば全画面に効くので、**決めるのは後でよくなった。**
+ */
+
 :root {
   --background: #ffffff;
   --foreground: #171717;
-}
 
-@theme inline {
-  --color-background: var(--background);
-  --color-foreground: var(--foreground);
-  --font-sans: var(--font-geist-sans);
-  --font-mono: var(--font-geist-mono);
+  /* 文字と線の素。濃さは使う側で指定する（text-ink/55 など） */
+  --ink: #000000;
+
+  /* 面 */
+  --surface: rgb(255 255 255 / 0.6); /* カードの地 */
+  --sunken: rgb(0 0 0 / 0.03); /* 注記・引っ込んだ地 */
+  --sunken-strong: rgb(0 0 0 / 0.06); /* 番号の丸・棒グラフの溝 */
+  --hover: rgb(0 0 0 / 0.04); /* 触れたとき */
+
+  /* 反転（主ボタン） */
+  --accent: #000000;
+  --on-accent: #ffffff;
+
+  /* 線。役目ごとに濃さが違う */
+  --line-faint: rgb(0 0 0 / 0.05); /* 表の行の区切り */
+  --line: rgb(0 0 0 / 0.1); /* カードの縁・区切り */
+  --line-mid: rgb(0 0 0 / 0.15); /* 入力欄 */
+  --line-firm: rgb(0 0 0 / 0.2); /* 副ボタン */
+  --line-hover: rgb(0 0 0 / 0.3); /* 触れたときの縁 */
+  --line-active: rgb(0 0 0 / 0.4); /* 選んであるもの */
+
+  /*
+   * 状態の色。値は Tailwind の rose / emerald / amber をそのまま持ってきた。
+   *
+   * **ここは見直す予定がある。** いま success を緑・danger を赤にしているが、
+   * 回答の正誤にこの2色を使うのは2つの理由で弱い。
+   *   ・赤と緑は色覚特性でいちばん見分けにくい組み合わせで、
+   *     このサービスの利用者は**色を扱う人（絵を描く人）**である
+   *   ・描き手に見せる面では、伝達率は良し悪しではなく計測（D105）。
+   *     ○×採点の色を当てると、文言で「上手さとは別の軸です」と
+   *     書いているのに色が「これは間違いだ」と言うことになる
+   *
+   * ただし**回答者が自分の答え合わせを見る面は別**で、あれは絵の評価ではなく
+   * 回答者自身のゲーム結果（D142）。そこは赤緑でも筋が通る。
+   * どこをどう変えるかは、この行を書き換えるだけで済むようになった。
+   */
+  --danger: #be123c; /* rose-700。エラー・削除 */
+  --danger-tint: #f43f5e; /* rose-500。地と縁の素（薄く敷いて使う） */
+  --danger-solid: #e11d48; /* rose-600。取り消せない操作のボタン */
+  --on-danger: #ffffff; /* その上の文字 */
+  --success: #047857; /* emerald-700。正解・完了 */
+  --success-tint: #10b981; /* emerald-500 */
+  --notice: #b45309; /* amber-700。注意 */
+  --notice-tint: #f59e0b; /* amber-500 */
 }
 
 @media (prefers-color-scheme: dark) {
   :root {
     --background: #0a0a0a;
     --foreground: #ededed;
+
+    --ink: #ffffff;
+
+    --surface: rgb(255 255 255 / 0.05);
+    --sunken: rgb(255 255 255 / 0.05);
+    --sunken-strong: rgb(255 255 255 / 0.1);
+    --hover: rgb(255 255 255 / 0.1);
+
+    --accent: #ffffff;
+    --on-accent: #000000;
+
+    --line-faint: rgb(255 255 255 / 0.1);
+    --line: rgb(255 255 255 / 0.15);
+    --line-mid: rgb(255 255 255 / 0.2);
+    --line-firm: rgb(255 255 255 / 0.25);
+    --line-hover: rgb(255 255 255 / 0.4);
+    --line-active: rgb(255 255 255 / 0.5);
+
+    /* 暗い地では文字色を明るいほうへ。tint は地に薄く敷くだけなので変えない */
+    --danger: #fda4af; /* rose-300 */
+    --success: #6ee7b7; /* emerald-300 */
+    --notice: #fcd34d; /* amber-300 */
   }
+}
+
+/*
+ * inline を付けるのは、上の var() をそのまま使わせるため。
+ * 付けないと Tailwind が値を取り込んでしまい、@media での差し替えが効かない。
+ */
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+
+  --color-ink: var(--ink);
+
+  --color-surface: var(--surface);
+  --color-sunken: var(--sunken);
+  --color-sunken-strong: var(--sunken-strong);
+  --color-hover: var(--hover);
+
+  --color-accent: var(--accent);
+  --color-on-accent: var(--on-accent);
+
+  --color-line-faint: var(--line-faint);
+  --color-line: var(--line);
+  --color-line-mid: var(--line-mid);
+  --color-line-firm: var(--line-firm);
+  --color-line-hover: var(--line-hover);
+  --color-line-active: var(--line-active);
+
+  --color-danger: var(--danger);
+  --color-danger-tint: var(--danger-tint);
+  --color-danger-solid: var(--danger-solid);
+  --color-on-danger: var(--on-danger);
+  --color-success: var(--success);
+  --color-success-tint: var(--success-tint);
+  --color-notice: var(--notice);
+  --color-notice-tint: var(--notice-tint);
+
+  --font-sans: var(--font-geist-sans);
+  --font-mono: var(--font-geist-mono);
 }
 
 body {

@@ -11,6 +11,7 @@ import {
 } from "@/features/work/types";
 import { submitAnswerAction } from "./actions";
 import { SubmitButton } from "@/app/_pending";
+import { surface } from "@/app/_surface";
 
 /**
  * 作品ページのクイズ部分。
@@ -28,9 +29,6 @@ import { SubmitButton } from "@/app/_pending";
  * すべて Server Component。ボタンは form の送信で、
  * JavaScript が無効でも動く。
  */
-
-const box =
-  "rounded-2xl border border-black/10 bg-white/60 p-6 dark:border-white/15 dark:bg-white/5";
 
 /** 出題。1問につきラジオボタン4つ */
 function QuestionBlock({ question }: { question: QuizQuestion }) {
@@ -55,7 +53,7 @@ function QuestionBlock({ question }: { question: QuizQuestion }) {
         {question.choices.map((c) => (
           <label
             key={c.tag_id}
-            className="flex cursor-pointer items-center gap-3 rounded-xl border border-black/10 px-4 py-3 text-sm hover:bg-black/[0.03] has-checked:border-black/40 dark:border-white/15 dark:hover:bg-white/5 dark:has-checked:border-white/50"
+            className="flex cursor-pointer items-center gap-3 rounded-xl border border-line px-4 py-3 text-sm hover:bg-sunken has-checked:border-line-active"
           >
             {/* name に問のIDを埋め込む。送信側はこの接頭辞で選択を拾う。
                 value は tag_id で、正解かどうかの情報は含まれない。
@@ -83,19 +81,19 @@ function QuestionBlock({ question }: { question: QuizQuestion }) {
 export function QuizForm({ quiz }: { quiz: WorkQuiz }) {
   if (quiz.questions.length === 0) {
     return (
-      <div className={box}>
+      <div className={surface}>
         <p className="text-sm">この作品にはまだ問題が用意されていません。</p>
       </div>
     );
   }
 
   return (
-    <form action={submitAnswerAction} className={`${box} space-y-6`}>
+    <form action={submitAnswerAction} className={`${surface} space-y-6`}>
       <input type="hidden" name="workId" value={quiz.work_id} />
 
       <div className="space-y-1">
         <h2 className="text-sm font-bold">この絵のお題を当てる</h2>
-        <p className="text-xs text-black/55 dark:text-white/55">
+        <p className="text-xs text-ink/55">
           全{quiz.questions.length}問。<strong>答えられるのは1回だけ</strong>
           で、やり直しはできません。送信すると正解が表示されます。
         </p>
@@ -110,11 +108,11 @@ export function QuizForm({ quiz }: { quiz: WorkQuiz }) {
       <div className="space-y-2">
         <SubmitButton
           pendingLabel="採点しています…"
-          className="w-full rounded-xl bg-black px-6 py-3 text-sm font-bold text-white hover:opacity-85 dark:bg-white dark:text-black"
+          className="w-full rounded-xl bg-accent px-6 py-3 text-sm font-bold text-on-accent hover:opacity-85"
         >
           回答する
         </SubmitButton>
-        <p className="text-xs text-black/45 dark:text-white/45">
+        <p className="text-xs text-ink/45">
           サインインしていない場合、送信した時点でゲストとして記録されます。
           アカウント登録は不要です。
         </p>
@@ -128,7 +126,7 @@ export function AnswerResult({ answer }: { answer: MyAnswer }) {
   const allCorrect = answer.correct_count === answer.items.length;
 
   return (
-    <section className={`${box} space-y-5`}>
+    <section className={`${surface} space-y-5`}>
       <div className="space-y-1">
         <h2 className="text-sm font-bold">あなたの回答</h2>
         <p className="text-lg font-bold">
@@ -143,19 +141,19 @@ export function AnswerResult({ answer }: { answer: MyAnswer }) {
             key={item.question_id}
             className={
               item.is_correct
-                ? "rounded-xl border border-emerald-500/40 bg-emerald-500/5 px-4 py-3"
-                : "rounded-xl border border-rose-500/40 bg-rose-500/5 px-4 py-3"
+                ? "rounded-xl border border-success-tint/40 bg-success-tint/5 px-4 py-3"
+                : "rounded-xl border border-danger-tint/40 bg-danger-tint/5 px-4 py-3"
             }
           >
             <div className="flex items-baseline gap-3">
-              <span className="text-xs text-black/50 dark:text-white/50">
+              <span className="text-xs text-ink/50">
                 {item.card_slot_label}
               </span>
               <span
                 className={
                   item.is_correct
-                    ? "text-xs font-bold text-emerald-700 dark:text-emerald-300"
-                    : "text-xs font-bold text-rose-700 dark:text-rose-300"
+                    ? "text-xs font-bold text-success"
+                    : "text-xs font-bold text-danger"
                 }
               >
                 {item.is_correct ? "正解" : "不正解"}
@@ -163,12 +161,12 @@ export function AnswerResult({ answer }: { answer: MyAnswer }) {
             </div>
 
             <div className="pt-1 text-sm">
-              <span className="text-black/50 dark:text-white/50">あなたの答え：</span>
+              <span className="text-ink/50">あなたの答え：</span>
               <span className="font-bold">{item.selected_label}</span>
               {item.is_correct ? null : (
                 <>
-                  <span className="px-2 text-black/25 dark:text-white/25">/</span>
-                  <span className="text-black/50 dark:text-white/50">正解：</span>
+                  <span className="px-2 text-ink/25">/</span>
+                  <span className="text-ink/50">正解：</span>
                   <span className="font-bold">{item.correct_label}</span>
                 </>
               )}
@@ -177,7 +175,7 @@ export function AnswerResult({ answer }: { answer: MyAnswer }) {
         ))}
       </ol>
 
-      <p className="text-xs text-black/45 dark:text-white/45">
+      <p className="text-xs text-ink/45">
         回答は1作品につき1回だけです。もう一度答えることはできません。
       </p>
     </section>
@@ -187,9 +185,9 @@ export function AnswerResult({ answer }: { answer: MyAnswer }) {
 /** 作者本人に出す案内。自作には回答できない（D28） */
 export function AuthorNotice() {
   return (
-    <div className={`${box} space-y-2`}>
+    <div className={`${surface} space-y-2`}>
       <h2 className="text-sm font-bold">この作品のクイズ</h2>
-      <p className="text-sm text-black/60 dark:text-white/60">
+      <p className="text-sm text-ink/60">
         自分の作品には回答できません。答えを知っているため、
         回答すると伝達率が実際より高く出てしまいます。
       </p>
@@ -209,9 +207,9 @@ export function AuthorNotice() {
 export function SlotStats({ stats }: { stats: SlotStat[] }) {
   if (stats.length === 0) {
     return (
-      <div className={`${box} space-y-2`}>
+      <div className={`${surface} space-y-2`}>
         <h2 className="text-sm font-bold">項目別の伝達率</h2>
-        <p className="text-sm text-black/55 dark:text-white/55">
+        <p className="text-sm text-ink/55">
           まだ回答がありません。誰かが答えると、項目ごとに何％の人が当てられたかが出ます。
         </p>
       </div>
@@ -219,10 +217,10 @@ export function SlotStats({ stats }: { stats: SlotStat[] }) {
   }
 
   return (
-    <section className={`${box} space-y-4`}>
+    <section className={`${surface} space-y-4`}>
       <div className="space-y-1">
         <h2 className="text-sm font-bold">項目別の伝達率</h2>
-        <p className="text-xs text-black/50 dark:text-white/50">
+        <p className="text-xs text-ink/50">
           その項目を当てられた人の割合です。低い項目ほど、絵から読み取りにくかったことになります。
         </p>
       </div>
@@ -245,14 +243,14 @@ export function SlotStats({ stats }: { stats: SlotStat[] }) {
                 <span>{s.card_slot_label}</span>
                 <span className="font-bold">
                   {percent === null ? "—" : `${percent}%`}
-                  <span className="pl-2 text-xs font-normal text-black/40 dark:text-white/40">
+                  <span className="pl-2 text-xs font-normal text-ink/40">
                     {s.corrects} / {s.attempts}
                   </span>
                 </span>
               </div>
-              <div className="h-1.5 w-full overflow-hidden rounded-full bg-black/[0.07] dark:bg-white/10">
+              <div className="h-1.5 w-full overflow-hidden rounded-full bg-sunken-strong">
                 <div
-                  className="h-full rounded-full bg-black/60 dark:bg-white/60"
+                  className="h-full rounded-full bg-ink/60"
                   style={{ width: `${percent ?? 0}%` }}
                 />
               </div>
@@ -302,9 +300,9 @@ export function MyResult({
   // 「誰にも伝わらなかった」と「まだ誰も見ていない」は別のこと
   if (result.answers_count === 0) {
     return (
-      <section className={`${box} space-y-2`}>
+      <section className={`${surface} space-y-2`}>
         <h2 className="text-sm font-bold">まだ誰も答えていません</h2>
-        <p className="text-sm text-black/55 dark:text-white/55">
+        <p className="text-sm text-ink/55">
           誰かが答えると、ここで結果を見られるようになります。
         </p>
       </section>
@@ -313,13 +311,13 @@ export function MyResult({
 
   if (!open) {
     return (
-      <section className={`${box} space-y-4 text-center`}>
+      <section className={`${surface} space-y-4 text-center`}>
         <div className="space-y-2">
           <p className="text-base font-bold">
             {result.answers_count}人が、あなたの絵を読み解きました
           </p>
           {result.blind_count > 0 ? (
-            <p className="text-sm text-black/60 dark:text-white/60">
+            <p className="text-sm text-ink/60">
               うち{result.blind_count}人は、まったく違うものを見ていました
             </p>
           ) : null}
@@ -328,7 +326,7 @@ export function MyResult({
         <p>
           <a
             href={`/works/${workId}?result=open`}
-            className="inline-block rounded-xl bg-black px-8 py-3 text-sm font-bold text-white dark:bg-white dark:text-black"
+            className="inline-block rounded-xl bg-accent px-8 py-3 text-sm font-bold text-on-accent"
           >
             開く
           </a>
@@ -343,12 +341,12 @@ export function MyResult({
       : Math.round((result.correct_items / result.total_items) * 100);
 
   return (
-    <section className={`${box} space-y-5`}>
+    <section className={`${surface} space-y-5`}>
       <div className="flex flex-wrap items-baseline justify-between gap-2">
         <h2 className="text-sm font-bold">結果</h2>
         <a
           href={`/works/${workId}`}
-          className="text-xs text-black/45 underline dark:text-white/45"
+          className="text-xs text-ink/45 underline"
         >
           閉じる
         </a>
@@ -358,7 +356,7 @@ export function MyResult({
         <span className="text-3xl font-bold tabular-nums">
           {percent === null ? "—" : `${percent}%`}
         </span>
-        <span className="text-xs text-black/45 dark:text-white/45">
+        <span className="text-xs text-ink/45">
           {result.correct_items} / {result.total_items} の項目が伝わりました
         </span>
       </div>
@@ -368,14 +366,14 @@ export function MyResult({
         **絵の巧拙とは独立した軸**なので、そう書いておく。
         「上手くなくていい」は、慰めではなく、この数字が示す事実。
       */}
-      <p className="rounded-xl bg-black/[0.03] px-4 py-3 text-xs text-black/55 dark:bg-white/5 dark:text-white/55">
+      <p className="rounded-xl bg-sunken px-4 py-3 text-xs text-ink/55">
         伝わりやすさは、絵の上手さとは別の軸です。
         線が荒くても伝わることも、丁寧に描いても伝わらないこともあります。
       </p>
 
       {result.misreads.length > 0 ? (
-        <div className="space-y-2 border-t border-black/10 pt-4 dark:border-white/10">
-          <h3 className="text-xs text-black/45 dark:text-white/45">
+        <div className="space-y-2 border-t border-ink/10 pt-4">
+          <h3 className="text-xs text-ink/45">
             代わりに選ばれたもの
           </h3>
           <ul className="space-y-1 text-sm">
@@ -385,16 +383,16 @@ export function MyResult({
                 className="flex items-baseline justify-between gap-4"
               >
                 <span>
-                  <span className="text-black/45 dark:text-white/45">{m.slot_label}</span>
+                  <span className="text-ink/45">{m.slot_label}</span>
                   <span className="pl-2">{m.tag_label}</span>
                 </span>
-                <span className="shrink-0 text-xs text-black/45 tabular-nums dark:text-white/45">
+                <span className="shrink-0 text-xs text-ink/45 tabular-nums">
                   {m.count}人
                 </span>
               </li>
             ))}
           </ul>
-          <p className="text-xs text-black/40 dark:text-white/40">
+          <p className="text-xs text-ink/40">
             誰が選んだかは記録していません。
           </p>
         </div>

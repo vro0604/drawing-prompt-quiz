@@ -34,12 +34,12 @@ export default function GlobalError({
     <main className="mx-auto flex w-full max-w-lg flex-1 flex-col justify-center gap-6 p-6 sm:p-10">
       <div className="space-y-3">
         <h1 className="text-2xl font-bold">うまく表示できませんでした</h1>
-        <p className="text-sm leading-7 text-black/60 dark:text-white/60">
+        <p className="text-sm leading-7 text-ink/60">
           一時的な不具合の可能性があります。
           もう一度お試しいただくか、しばらく待ってからお越しください。
         </p>
         {error.digest ? (
-          <p className="text-xs text-black/35 dark:text-white/35">
+          <p className="text-xs text-ink/35">
             参照番号: {error.digest}
           </p>
         ) : null}
@@ -49,7 +49,7 @@ export default function GlobalError({
         <button
           type="button"
           onClick={reset}
-          className="rounded-xl bg-black px-5 py-3 text-sm font-bold text-white hover:opacity-85 dark:bg-white dark:text-black"
+          className="rounded-xl bg-accent px-5 py-3 text-sm font-bold text-on-accent hover:opacity-85"
         >
           もう一度読み込む
         </button>

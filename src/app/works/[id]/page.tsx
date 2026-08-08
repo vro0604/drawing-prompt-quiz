@@ -26,6 +26,7 @@ import {
   toggleSaveAction,
   unpublishWorkAction,
 } from "./actions";
+import { surface } from "@/app/_surface";
 
 /**
  * /works/[id] ／ 作品1件。
@@ -91,9 +92,6 @@ export async function generateMetadata({
   };
 }
 
-const box =
-  "rounded-2xl border border-black/10 bg-white/60 p-6 dark:border-white/15 dark:bg-white/5";
-
 /** 作品画像。幅と高さは投稿時に実物から数えた値（features/work/image.ts） */
 function WorkImage({
   imagePath,
@@ -113,7 +111,7 @@ function WorkImage({
       width={width}
       height={height}
       // 実寸ではなく画面幅に合わせて縮める。縦横比は width / height から保たれる。
-      className="h-auto w-full rounded-2xl border border-black/10 dark:border-white/15"
+      className="h-auto w-full rounded-2xl border border-line"
       // 詳細ページの主役なので後回しにしない
       priority
       sizes="(max-width: 768px) 100vw, 768px"
@@ -150,19 +148,19 @@ function MetaList({
   if (sourceCharacter) rows.splice(2, 0, { label: "キャラクター", value: sourceCharacter });
 
   return (
-    <div className={`${box} space-y-4`}>
+    <div className={`${surface} space-y-4`}>
       <dl className="space-y-2">
         {rows.map((r) => (
           <div key={r.label} className="flex gap-4 text-sm">
-            <dt className="w-40 shrink-0 text-black/50 dark:text-white/50">{r.label}</dt>
+            <dt className="w-40 shrink-0 text-ink/50">{r.label}</dt>
             <dd className="font-bold">{r.value}</dd>
           </div>
         ))}
       </dl>
 
       {fanartNote ? (
-        <div className="space-y-1 border-t border-black/10 pt-4 dark:border-white/10">
-          <p className="text-xs text-black/50 dark:text-white/50">補足</p>
+        <div className="space-y-1 border-t border-ink/10 pt-4">
+          <p className="text-xs text-ink/50">補足</p>
           <p className="text-sm whitespace-pre-wrap">{fanartNote}</p>
         </div>
       ) : null}
@@ -187,17 +185,17 @@ function MetaList({
  */
 function Reactions({ work, canReact }: { work: WorkDetail; canReact: boolean }) {
   const base =
-    "rounded-xl border px-5 py-3 text-sm font-bold transition hover:bg-black/[0.04] dark:hover:bg-white/10";
-  const on = "border-black/40 bg-black/[0.04] dark:border-white/50 dark:bg-white/10";
-  const off = "border-black/15 dark:border-white/20";
+    "rounded-xl border px-5 py-3 text-sm font-bold transition hover:bg-hover";
+  const on = "border-line-active bg-hover";
+  const off = "border-line-mid";
 
   if (!canReact) {
     return (
-      <div className={`${box} space-y-2`}>
+      <div className={`${surface} space-y-2`}>
         <p className="text-sm">
           いいね {work.likes_count}・保存 {work.saves_count}
         </p>
-        <p className="text-xs text-black/55 dark:text-white/55">
+        <p className="text-xs text-ink/55">
           いいねと保存にはアカウント登録が必要です。クイズの回答はゲストのままできます。
           <Link href="/account" className="pl-2 underline">
             アカウントの画面へ
@@ -252,7 +250,7 @@ function PublicView({
     <>
       <header className="space-y-2">
         <h1 className="text-2xl font-bold break-words">{work.title}</h1>
-        <p className="text-sm text-black/55 dark:text-white/55">
+        <p className="text-sm text-ink/55">
           {/* handle がある人だけ公開プロフィールを持つ（001 の SELECT ポリシー） */}
           {/* 1つの式にまとめているのは、隣り合う値の境目に React が
               <!-- --> を挟み、「@handle」が繋がった文字列でなくなるため */}
@@ -314,34 +312,34 @@ function PublicView({
       ) : null}
 
       {work.is_author ? (
-        <div className="space-y-3 border-t border-black/10 pt-6 dark:border-white/10">
+        <div className="space-y-3 border-t border-ink/10 pt-6">
           <form action={unpublishWorkAction}>
             <input type="hidden" name="workId" value={work.id} />
             <SubmitButton
               pendingLabel="切り替えています…"
-              className="rounded-xl border border-black/20 px-6 py-3 text-sm font-bold hover:bg-black/[0.04] dark:border-white/25 dark:hover:bg-white/10"
+              className="rounded-xl border border-line-firm px-6 py-3 text-sm font-bold hover:bg-hover"
             >
               下書きに戻す（他の人から見えなくする）
             </SubmitButton>
           </form>
-          <p className="text-xs text-black/45 dark:text-white/45">
+          <p className="text-xs text-ink/45">
             下書きに戻しても画像は残ります。いつでも公開に戻せます。
           </p>
           <p className="text-sm">
             {/* 削除は確認画面を挟む。ここから直接は消さない */}
             <Link
               href={`/works/${work.id}/delete`}
-              className="text-rose-700 underline dark:text-rose-300"
+              className="text-danger underline"
             >
               この作品を削除する
             </Link>
           </p>
         </div>
       ) : (
-        <p className="border-t border-black/10 pt-6 text-xs dark:border-white/10">
+        <p className="border-t border-ink/10 pt-6 text-xs">
           <Link
             href={`/works/${work.id}/report`}
-            className="text-black/45 underline dark:text-white/45"
+            className="text-ink/45 underline"
           >
             この作品を報告する
           </Link>
@@ -362,11 +360,11 @@ function OwnerOnlyView({ work }: { work: MyWork }) {
   return (
     <>
       <header className="space-y-2">
-        <p className="text-xs font-bold tracking-wider text-amber-600 dark:text-amber-400">
+        <p className="text-xs font-bold tracking-wider text-notice">
           {work.is_published ? "本人にのみ表示" : "下書き"}
         </p>
         <h1 className="text-2xl font-bold break-words">{work.title}</h1>
-        <p className="text-sm text-black/55 dark:text-white/55">{reason}</p>
+        <p className="text-sm text-ink/55">{reason}</p>
       </header>
 
       <WorkImage
@@ -394,11 +392,11 @@ function OwnerOnlyView({ work }: { work: MyWork }) {
           <input type="hidden" name="workId" value={work.id} />
           <SubmitButton
             pendingLabel="公開しています…"
-            className="rounded-xl bg-black px-6 py-3 text-sm font-bold text-white hover:opacity-85 dark:bg-white dark:text-black"
+            className="rounded-xl bg-accent px-6 py-3 text-sm font-bold text-on-accent hover:opacity-85"
           >
             公開する
           </SubmitButton>
-          <p className="text-xs text-black/45 dark:text-white/45">
+          <p className="text-xs text-ink/45">
             公開すると実制作時間は変更できなくなります（D25）。
           </p>
         </form>
@@ -406,10 +404,10 @@ function OwnerOnlyView({ work }: { work: MyWork }) {
 
       {/* 削除済みの作品には出さない（もう消せるものが無い） */}
       {!work.deleted_at ? (
-        <p className="border-t border-black/10 pt-6 text-sm dark:border-white/10">
+        <p className="border-t border-ink/10 pt-6 text-sm">
           <Link
             href={`/works/${work.id}/delete`}
-            className="text-rose-700 underline dark:text-rose-300"
+            className="text-danger underline"
           >
             この作品を削除する
           </Link>
@@ -472,13 +470,13 @@ export default async function WorkPage({
   return (
     <main className="mx-auto w-full max-w-3xl space-y-8 p-6 sm:p-10">
       {error ? (
-        <p className="rounded-xl bg-rose-500/10 px-4 py-3 text-sm whitespace-pre-wrap text-rose-700 dark:text-rose-300">
+        <p className="rounded-xl bg-danger-tint/10 px-4 py-3 text-sm whitespace-pre-wrap text-danger">
           {error}
         </p>
       ) : null}
 
       {notice ? (
-        <p className="rounded-xl bg-emerald-500/10 px-4 py-3 text-sm whitespace-pre-wrap text-emerald-700 dark:text-emerald-300">
+        <p className="rounded-xl bg-success-tint/10 px-4 py-3 text-sm whitespace-pre-wrap text-success">
           {notice}
         </p>
       ) : null}
@@ -496,7 +494,7 @@ export default async function WorkPage({
         <OwnerOnlyView work={myWork} />
       ) : null}
 
-      <footer className="flex flex-wrap gap-x-4 gap-y-2 border-t border-black/10 pt-6 text-sm dark:border-white/10">
+      <footer className="flex flex-wrap gap-x-4 gap-y-2 border-t border-ink/10 pt-6 text-sm">
         <Link href="/works" className="underline">
           作品一覧へ
         </Link>

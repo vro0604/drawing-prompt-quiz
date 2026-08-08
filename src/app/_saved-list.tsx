@@ -27,10 +27,10 @@ import {
  */
 
 const statusTone: Record<string, string> = {
-  public: "text-black/40 dark:text-white/40",
-  private: "text-amber-700 dark:text-amber-300",
-  review: "text-amber-700 dark:text-amber-300",
-  deleted: "text-rose-700 dark:text-rose-300",
+  public: "text-ink/40",
+  private: "text-notice",
+  review: "text-notice",
+  deleted: "text-danger",
 };
 
 function SavedCard({ item, showStatus }: { item: SavedWork; showStatus: boolean }) {
@@ -39,7 +39,7 @@ function SavedCard({ item, showStatus }: { item: SavedWork; showStatus: boolean 
 
   const body = (
     <>
-      <div className="h-20 w-20 shrink-0 overflow-hidden rounded-xl bg-black/[0.03] dark:bg-white/5">
+      <div className="h-20 w-20 shrink-0 overflow-hidden rounded-xl bg-sunken">
         <Image
           src={workImageUrl(item.image_path)}
           alt={item.title}
@@ -52,11 +52,11 @@ function SavedCard({ item, showStatus }: { item: SavedWork; showStatus: boolean 
 
       <div className="min-w-0 flex-1 space-y-1">
         <p className="truncate text-sm font-bold">{item.title}</p>
-        <p className="truncate text-xs text-black/50 dark:text-white/50">
+        <p className="truncate text-xs text-ink/50">
           {item.author_display_name}
           {item.author_handle ? `（@${item.author_handle}）` : ""}
         </p>
-        <p className="text-xs text-black/40 dark:text-white/40">
+        <p className="text-xs text-ink/40">
           {divisionLabel(item.division)}・保存 {savedAt}
           {showStatus ? (
             <span className={statusTone[item.work_status] ?? statusTone.public}>
@@ -69,7 +69,7 @@ function SavedCard({ item, showStatus }: { item: SavedWork; showStatus: boolean 
   );
 
   return (
-    <li className="space-y-2 border-b border-black/10 py-4 last:border-b-0 dark:border-white/10">
+    <li className="space-y-2 border-b border-ink/10 py-4 last:border-b-0">
       {gone ? (
         <div className="flex items-start gap-4 opacity-60">{body}</div>
       ) : (
@@ -83,8 +83,8 @@ function SavedCard({ item, showStatus }: { item: SavedWork; showStatus: boolean 
 
       {/* 回答済みの人にだけ、DB がお題の答えを入れてくる */}
       {item.prompt_answer ? (
-        <div className="ml-24 flex flex-wrap gap-x-4 gap-y-1 text-xs text-black/50 dark:text-white/50">
-          <span className="text-black/35 dark:text-white/35">お題</span>
+        <div className="ml-24 flex flex-wrap gap-x-4 gap-y-1 text-xs text-ink/50">
+          <span className="text-ink/35">お題</span>
           {item.prompt_answer.map((card) => (
             <span key={card.card_slot_key}>
               {card.slot_label}: <strong className="font-bold">{card.tag_label}</strong>
@@ -106,7 +106,7 @@ export function SavedList({
   emptyMessage: string;
 }) {
   if (items.length === 0) {
-    return <p className="text-sm text-black/55 dark:text-white/55">{emptyMessage}</p>;
+    return <p className="text-sm text-ink/55">{emptyMessage}</p>;
   }
 
   return (

@@ -27,9 +27,9 @@ export default function NotFound() {
   return (
     <main className="mx-auto flex w-full max-w-lg flex-1 flex-col justify-center gap-6 p-6 sm:p-10">
       <div className="space-y-3">
-        <p className="text-sm font-bold text-black/40 dark:text-white/40">404</p>
+        <p className="text-sm font-bold text-ink/40">404</p>
         <h1 className="text-2xl font-bold">ページが見つかりません</h1>
-        <p className="text-sm leading-7 text-black/60 dark:text-white/60">
+        <p className="text-sm leading-7 text-ink/60">
           URL が違っているかもしれません。
           作品の場合は、作者が非公開に戻したか、削除した可能性もあります。
         </p>

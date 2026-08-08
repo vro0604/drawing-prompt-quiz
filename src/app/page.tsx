@@ -1,5 +1,6 @@
 import Link from "next/link";
 import { NavButton } from "@/app/_pending";
+import { surface } from "@/app/_surface";
 
 /**
  * / ／ トップページ。
@@ -35,9 +36,6 @@ export const metadata = {
   title: { absolute: "つたわるかな" },
 };
 
-const card =
-  "rounded-2xl border border-black/10 bg-white/60 p-6 dark:border-white/15 dark:bg-white/5";
-
 const STEPS = [
   {
     n: "1",
@@ -61,7 +59,7 @@ export default function Home() {
     <main className="mx-auto w-full max-w-3xl space-y-10 p-6 sm:p-10">
       <header className="space-y-3">
         <h1 className="text-3xl font-bold sm:text-4xl">つたわるかな</h1>
-        <p className="text-base leading-7 text-black/65 dark:text-white/65">
+        <p className="text-base leading-7 text-ink/65">
           ランダムに引いたお題で絵を描き、見た人が
           <strong>絵だけを手がかりに</strong>そのお題を当てるサービスです。
           お題を引くのも、クイズに答えるのも、
@@ -77,14 +75,14 @@ export default function Home() {
         <NavButton
           href="/play"
           pendingLabel="読み込み中…"
-          className="flex-1 rounded-xl bg-black px-6 py-4 text-center text-sm font-bold text-white hover:opacity-85 dark:bg-white dark:text-black"
+          className="flex-1 rounded-xl bg-accent px-6 py-4 text-center text-sm font-bold text-on-accent hover:opacity-85"
         >
           お題を引く
         </NavButton>
         <NavButton
           href="/works"
           pendingLabel="読み込み中…"
-          className="flex-1 rounded-xl border border-black/15 px-6 py-4 text-center text-sm font-bold hover:bg-black/[0.04] dark:border-white/20 dark:hover:bg-white/10"
+          className="flex-1 rounded-xl border border-line-mid px-6 py-4 text-center text-sm font-bold hover:bg-hover"
         >
           みんなの作品を見る
         </NavButton>
@@ -95,26 +93,26 @@ export default function Home() {
         <h2 className="text-sm font-bold">遊びかた</h2>
         <ol className="grid gap-4 sm:grid-cols-3">
           {STEPS.map((s) => (
-            <li key={s.n} className={`${card} space-y-2`}>
-              <span className="inline-flex size-7 items-center justify-center rounded-full bg-black/[0.06] text-xs font-bold dark:bg-white/10">
+            <li key={s.n} className={`${surface} space-y-2`}>
+              <span className="inline-flex size-7 items-center justify-center rounded-full bg-sunken-strong text-xs font-bold">
                 {s.n}
               </span>
               <h3 className="text-sm font-bold">{s.title}</h3>
-              <p className="text-xs leading-6 text-black/55 dark:text-white/55">{s.body}</p>
+              <p className="text-xs leading-6 text-ink/55">{s.body}</p>
             </li>
           ))}
         </ol>
       </section>
 
       {/* --- 登録すると何ができるか ------------------------------------------- */}
-      <section className={`${card} space-y-3`}>
+      <section className={`${surface} space-y-3`}>
         <h2 className="text-sm font-bold">アカウント登録でできること</h2>
-        <ul className="space-y-2 text-sm text-black/65 dark:text-white/65">
+        <ul className="space-y-2 text-sm text-ink/65">
           <li>・描いた作品を投稿する</li>
           <li>・いいね と お気に入り を付ける</li>
           <li>・自分のページ（公開プロフィール）を持つ</li>
         </ul>
-        <p className="text-xs text-black/45 dark:text-white/45">
+        <p className="text-xs text-ink/45">
           ゲストのまま遊んでいる途中で登録しても、引いたお題はそのまま引き継がれます。
         </p>
         <p className="pt-1 text-sm">

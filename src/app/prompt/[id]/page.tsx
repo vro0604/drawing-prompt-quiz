@@ -34,11 +34,11 @@ export default async function PromptPage({
   return (
     <main className="mx-auto w-full max-w-3xl space-y-8 p-6 sm:p-10">
       <header className="space-y-2">
-        <p className="text-xs font-bold tracking-wider text-emerald-600 dark:text-emerald-400">
+        <p className="text-xs font-bold tracking-wider text-success">
           お題が確定しました
         </p>
         <h1 className="text-2xl font-bold">{prompt.mode_label}のお題</h1>
-        <p className="text-sm text-black/55 dark:text-white/55">
+        <p className="text-sm text-ink/55">
           制作時間 {formatDuration(prompt.time_limit_seconds)}
           {prompt.was_rerolled ? `・引き直し ${prompt.reroll_count} 回` : ""}
         </p>
@@ -62,9 +62,9 @@ export default async function PromptPage({
             data-prompt-card={c.card_slot_key}
             data-slot-label={c.card_slot_label}
             data-tag-label={c.tag_label}
-            className="flex items-baseline gap-4 rounded-2xl border border-black/10 bg-white/60 px-6 py-5 dark:border-white/15 dark:bg-white/5"
+            className="flex items-baseline gap-4 rounded-2xl border border-line bg-surface px-6 py-5"
           >
-            <span className="w-28 shrink-0 text-xs text-black/50 dark:text-white/50">
+            <span className="w-28 shrink-0 text-xs text-ink/50">
               {c.card_slot_label}
             </span>
             <span className="text-lg font-bold">{c.tag_label}</span>
@@ -72,9 +72,9 @@ export default async function PromptPage({
         ))}
       </ol>
 
-      <div className="space-y-4 rounded-2xl bg-black/[0.03] p-6 text-sm dark:bg-white/5">
+      <div className="space-y-4 rounded-2xl bg-sunken p-6 text-sm">
         <p className="font-bold">この内容で描いてください。</p>
-        <p className="text-black/60 dark:text-white/60">
+        <p className="text-ink/60">
           描き終えたら作品を投稿します。見た人はこのお題を4択で当てることになります。
           出題されるのは {prompt.cards.length} 枠のうち一部です。
         </p>
@@ -84,14 +84,14 @@ export default async function PromptPage({
         {prompt.work_id ? (
           <Link
             href={`/works/${prompt.work_id}`}
-            className="inline-block rounded-xl border border-black/20 px-6 py-3 text-sm font-bold hover:bg-black/[0.04] dark:border-white/25 dark:hover:bg-white/10"
+            className="inline-block rounded-xl border border-line-firm px-6 py-3 text-sm font-bold hover:bg-hover"
           >
             投稿した作品を見る
           </Link>
         ) : prompt.status === "active" ? (
           <Link
             href={`/works/new?promptId=${prompt.id}`}
-            className="inline-block rounded-xl bg-black px-6 py-3 text-sm font-bold text-white hover:opacity-85 dark:bg-white dark:text-black"
+            className="inline-block rounded-xl bg-accent px-6 py-3 text-sm font-bold text-on-accent hover:opacity-85"
           >
             このお題で描いた作品を投稿する
           </Link>
@@ -105,7 +105,7 @@ export default async function PromptPage({
             {prompt.unchosen.map((u) => (
               <li
                 key={`${u.card_slot_key}-${u.candidate_index}`}
-                className="rounded-lg bg-black/[0.04] px-3 py-1.5 text-xs dark:bg-white/10"
+                className="rounded-lg bg-hover px-3 py-1.5 text-xs"
               >
                 {u.card_slot_label}: {u.tag_label}
               </li>
@@ -113,12 +113,12 @@ export default async function PromptPage({
           </ul>
         </section>
       ) : (
-        <p className="text-xs text-black/40 dark:text-white/40">
+        <p className="text-xs text-ink/40">
           引かなかったカードは、作品を投稿したあと、または挑戦をやめたあとに見られます（D8）。
         </p>
       )}
 
-      <footer className="border-t border-black/10 pt-6 text-sm dark:border-white/10">
+      <footer className="border-t border-ink/10 pt-6 text-sm">
         <Link href="/play" className="underline">
           お題を引く画面へ戻る
         </Link>

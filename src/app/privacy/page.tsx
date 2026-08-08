@@ -26,12 +26,12 @@ export default async function PrivacyPage() {
           publishedAt={privacy.published_at}
         />
       ) : (
-        <p className="text-sm text-black/55 dark:text-white/55">
+        <p className="text-sm text-ink/55">
           いま有効なプライバシーポリシーが登録されていません。
         </p>
       )}
 
-      <footer className="border-t border-black/10 pt-6 text-xs dark:border-white/10">
+      <footer className="border-t border-ink/10 pt-6 text-xs">
         <Link href="/terms" className="underline">
           利用規約
         </Link>

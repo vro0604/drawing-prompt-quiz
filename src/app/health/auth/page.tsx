@@ -78,7 +78,7 @@ export default async function AuthHealthPage({
 
       <Section label="profiles の行">
         {!user ? (
-          <p className="text-black/50 dark:text-white/50">
+          <p className="text-ink/50">
             ユーザーが発行されると、ここに自動で作られた行が表示されます。
           </p>
         ) : profileError ? (
@@ -111,7 +111,7 @@ export default async function AuthHealthPage({
             </form>
           )}
         </div>
-        <p className="pt-3 text-xs text-black/50 dark:text-white/50">
+        <p className="pt-3 text-xs text-ink/50">
           発行済みの状態でもう一度押しても、新しいユーザーは増えません。
           既にサインインしていれば、そのIDをそのまま返すためです。
         </p>

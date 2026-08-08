@@ -10,6 +10,7 @@ import {
   TURNSTILE_SITE_KEY,
   captchaEnabled,
 } from "@/features/report/captcha";
+import { surface } from "@/app/_surface";
 
 /**
  * /works/[id]/report ／ 通報フォーム。
@@ -31,11 +32,8 @@ export const metadata = {
   title: "作品を報告する",
 };
 
-const box =
-  "rounded-2xl border border-black/10 bg-white/60 p-6 dark:border-white/15 dark:bg-white/5";
-
 const input =
-  "w-full rounded-xl border border-black/15 bg-transparent px-4 py-3 text-sm dark:border-white/20";
+  "w-full rounded-xl border border-line-mid bg-transparent px-4 py-3 text-sm";
 
 export default async function ReportWorkPage({
   params,
@@ -54,18 +52,18 @@ export default async function ReportWorkPage({
     <main className="mx-auto w-full max-w-lg space-y-6 p-6 sm:p-10">
       <header className="space-y-2">
         <h1 className="text-2xl font-bold">この作品を報告する</h1>
-        <p className="text-sm text-black/55 dark:text-white/55">
+        <p className="text-sm text-ink/55">
           「{work.title}」（{work.author.display_name} さん）について報告します。
         </p>
       </header>
 
       {error ? (
-        <p className="rounded-xl bg-rose-500/10 px-4 py-3 text-sm whitespace-pre-wrap text-rose-700 dark:text-rose-300">
+        <p className="rounded-xl bg-danger-tint/10 px-4 py-3 text-sm whitespace-pre-wrap text-danger">
           {error}
         </p>
       ) : null}
 
-      <form action={createReportAction} className={`${box} space-y-5`}>
+      <form action={createReportAction} className={`${surface} space-y-5`}>
         <input type="hidden" name="workId" value={work.id} />
 
         <fieldset className="space-y-3">
@@ -82,7 +80,7 @@ export default async function ReportWorkPage({
               />
               <span className="space-y-1">
                 <span className="block text-sm">{r.label}</span>
-                <span className="block text-xs text-black/45 dark:text-white/45">
+                <span className="block text-xs text-ink/45">
                   {r.note}
                 </span>
               </span>
@@ -97,7 +95,7 @@ export default async function ReportWorkPage({
           <textarea name="detail" maxLength={1000} rows={4} className={input} />
         </label>
 
-        <p className="text-xs text-black/45 dark:text-white/45">
+        <p className="text-xs text-ink/45">
           同じ作品を何度も報告することはできません。
           報告した内容は運営だけが見ます。作者には通知されません。
         </p>
@@ -115,7 +113,7 @@ export default async function ReportWorkPage({
               data-action={CAPTCHA_ACTION}
             />
             <script src={TURNSTILE_SCRIPT} async defer />
-            <p className="text-xs text-black/45 dark:text-white/45">
+            <p className="text-xs text-ink/45">
               自動での大量送信を防ぐための確認です。
             </p>
           </div>
@@ -123,7 +121,7 @@ export default async function ReportWorkPage({
 
         <SubmitButton
           pendingLabel="送信しています…"
-          className="w-full rounded-xl bg-black px-5 py-3 text-sm font-bold text-white hover:opacity-85 dark:bg-white dark:text-black"
+          className="w-full rounded-xl bg-accent px-5 py-3 text-sm font-bold text-on-accent hover:opacity-85"
         >
           報告する
         </SubmitButton>

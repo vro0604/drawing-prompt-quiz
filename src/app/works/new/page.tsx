@@ -4,6 +4,7 @@ import { fetchMyPrompt } from "@/features/draft/rpc";
 import { fetchAccountState, fetchCurrentDocuments } from "@/features/account/rpc";
 import { formatDuration } from "@/features/draft/types";
 import { WorkForm } from "./_form";
+import { surface } from "@/app/_surface";
 
 /**
  * /works/new ／ 作品を投稿する画面。
@@ -29,15 +30,12 @@ export const metadata = {
   title: "作品を投稿する",
 };
 
-const box =
-  "rounded-2xl border border-black/10 bg-white/60 p-6 dark:border-white/15 dark:bg-white/5";
-
 function Shell({ children }: { children: React.ReactNode }) {
   return (
     <main className="mx-auto w-full max-w-3xl space-y-8 p-6 sm:p-10">
       <header className="space-y-2">
         <h1 className="text-2xl font-bold">作品を投稿する</h1>
-        <p className="text-sm text-black/55 dark:text-white/55">
+        <p className="text-sm text-ink/55">
           描いた絵と、引いたお題を結びつけます。見た人は絵だけを見てお題を当てます。
         </p>
       </header>
@@ -48,9 +46,9 @@ function Shell({ children }: { children: React.ReactNode }) {
 
 function Notice({ title, children }: { title: string; children: React.ReactNode }) {
   return (
-    <div className={`${box} space-y-3`}>
+    <div className={`${surface} space-y-3`}>
       <h2 className="text-sm font-bold">{title}</h2>
-      <div className="space-y-2 text-sm text-black/60 dark:text-white/60">{children}</div>
+      <div className="space-y-2 text-sm text-ink/60">{children}</div>
     </div>
   );
 }
@@ -63,7 +61,7 @@ export default async function NewWorkPage({
   const { promptId, error } = await searchParams;
 
   const errorBox = error ? (
-    <p className="rounded-xl bg-rose-500/10 px-4 py-3 text-sm whitespace-pre-wrap text-rose-700 dark:text-rose-300">
+    <p className="rounded-xl bg-danger-tint/10 px-4 py-3 text-sm whitespace-pre-wrap text-danger">
       {error}
     </p>
   ) : null;
@@ -195,10 +193,10 @@ export default async function NewWorkPage({
 
       {/* 何を描いたはずかを手元で確認できるように、答えを並べておく。
           この情報が外へ出ないのは get_my_prompt が本人にしか返さないから。 */}
-      <section className={`${box} space-y-4`}>
+      <section className={`${surface} space-y-4`}>
         <div className="flex flex-wrap items-baseline gap-x-4 gap-y-1">
           <h2 className="text-sm font-bold">{prompt.mode_label}のお題</h2>
-          <span className="text-xs text-black/55 dark:text-white/55">
+          <span className="text-xs text-ink/55">
             制作時間 {formatDuration(prompt.time_limit_seconds)}
           </span>
         </div>
@@ -206,14 +204,14 @@ export default async function NewWorkPage({
           {prompt.cards.map((c) => (
             <li
               key={c.card_slot_key}
-              className="rounded-lg bg-black/[0.04] px-3 py-1.5 text-xs dark:bg-white/10"
+              className="rounded-lg bg-hover px-3 py-1.5 text-xs"
             >
-              <span className="text-black/45 dark:text-white/45">{c.card_slot_label}</span>{" "}
+              <span className="text-ink/45">{c.card_slot_label}</span>{" "}
               <span className="font-bold">{c.tag_label}</span>
             </li>
           ))}
         </ul>
-        <p className="text-xs text-black/40 dark:text-white/40">
+        <p className="text-xs text-ink/40">
           この一覧は自分にしか見えません。投稿した作品のページには出ません。
         </p>
       </section>
@@ -230,7 +228,7 @@ export default async function NewWorkPage({
         }
       />
 
-      <footer className="border-t border-black/10 pt-6 text-xs text-black/40 dark:border-white/10 dark:text-white/40">
+      <footer className="border-t border-ink/10 pt-6 text-xs text-ink/40">
         <Link href={`/prompt/${promptId}`} className="underline">
           お題の画面へ戻る
         </Link>

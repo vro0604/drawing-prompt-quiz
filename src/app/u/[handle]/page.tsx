@@ -20,6 +20,7 @@ import {
 } from "@/features/profile/types";
 import { workImageUrl } from "@/features/work/rpc";
 import { divisionLabel, type PublicWorkListItem } from "@/features/work/types";
+import { surface } from "@/app/_surface";
 
 /**
  * /u/[handle] ／ 公開プロフィール（ポートフォリオ）。
@@ -46,9 +47,6 @@ import { divisionLabel, type PublicWorkListItem } from "@/features/work/types";
  */
 
 const PAGE_SIZE = 24;
-
-const box =
-  "rounded-2xl border border-black/10 bg-white/60 p-6 dark:border-white/15 dark:bg-white/5";
 
 export async function generateMetadata({
   params,
@@ -79,7 +77,7 @@ export async function generateMetadata({
 function SlotStatList({ stats }: { stats: SlotStatSummary[] }) {
   if (stats.length === 0) {
     return (
-      <p className="text-xs text-black/40 dark:text-white/40">
+      <p className="text-xs text-ink/40">
         まだ枠ごとの記録がありません。
       </p>
     );
@@ -91,11 +89,11 @@ function SlotStatList({ stats }: { stats: SlotStatSummary[] }) {
         const percent = percentOf(s.corrects, s.attempts);
         return (
           <li key={s.card_slot_key} className="flex items-center gap-3">
-            <span className="w-24 shrink-0 text-black/45 dark:text-white/45">{s.label}</span>
+            <span className="w-24 shrink-0 text-ink/45">{s.label}</span>
             <span className="font-bold tabular-nums">
               {percent === null ? "—" : `${percent}%`}
             </span>
-            <span className="text-black/35 dark:text-white/35">
+            <span className="text-ink/35">
               {s.corrects} / {s.attempts}
             </span>
           </li>
@@ -116,10 +114,10 @@ function CreatorStats({ profile }: { profile: PublicProfile }) {
   const accuracy = ratioPercent(creator.accuracy);
 
   return (
-    <section className={`${box} space-y-4`}>
+    <section className={`${surface} space-y-4`}>
       <div className="space-y-1">
         <h2 className="text-sm font-bold">描き手としての記録</h2>
-        <p className="text-xs text-black/45 dark:text-white/45">
+        <p className="text-xs text-ink/45">
           {profile.is_self && !profile.show_creator_stats
             ? "公開設定が切れているので、他の人には出ていません。"
             : "公開した作品の集計です。"}
@@ -134,19 +132,19 @@ function CreatorStats({ profile }: { profile: PublicProfile }) {
           { label: "総制作時間", value: formatTotalTime(creator.total_actual_seconds) },
         ].map((item) => (
           <div key={item.label}>
-            <dt className="text-xs text-black/45 dark:text-white/45">{item.label}</dt>
+            <dt className="text-xs text-ink/45">{item.label}</dt>
             <dd className="text-lg font-bold tabular-nums">{item.value}</dd>
           </div>
         ))}
       </dl>
 
-      <div className="space-y-2 border-t border-black/10 pt-4 dark:border-white/10">
+      <div className="space-y-2 border-t border-ink/10 pt-4">
         <div className="flex items-baseline gap-3">
-          <h3 className="text-xs text-black/45 dark:text-white/45">伝わりやすさ</h3>
+          <h3 className="text-xs text-ink/45">伝わりやすさ</h3>
           <span className="text-lg font-bold tabular-nums">
             {accuracy === null ? "—" : `${accuracy}%`}
           </span>
-          <span className="text-xs text-black/35 dark:text-white/35">
+          <span className="text-xs text-ink/35">
             回答が5人以上集まった作品だけで平均しています
           </span>
         </div>
@@ -163,17 +161,17 @@ function AnswerStats({ profile }: { profile: PublicProfile }) {
   const overall = percentOf(stats.total_correct_items, stats.total_items);
 
   return (
-    <section className={`${box} space-y-4`}>
+    <section className={`${surface} space-y-4`}>
       <div className="space-y-1">
         <h2 className="text-sm font-bold">
           回答者としての記録
           {profile.is_self && !profile.show_answer_stats ? (
-            <span className="ml-2 text-xs font-normal text-amber-700 dark:text-amber-300">
+            <span className="ml-2 text-xs font-normal text-notice">
               （非公開。あなたにだけ見えています）
             </span>
           ) : null}
         </h2>
-        <p className="text-xs text-black/45 dark:text-white/45">
+        <p className="text-xs text-ink/45">
           クイズにどれだけ当てられたかです。
         </p>
       </div>
@@ -185,13 +183,13 @@ function AnswerStats({ profile }: { profile: PublicProfile }) {
           { label: "答えた設問", value: `${stats.total_items}` },
         ].map((item) => (
           <div key={item.label}>
-            <dt className="text-xs text-black/45 dark:text-white/45">{item.label}</dt>
+            <dt className="text-xs text-ink/45">{item.label}</dt>
             <dd className="text-lg font-bold tabular-nums">{item.value}</dd>
           </div>
         ))}
       </dl>
 
-      <div className="border-t border-black/10 pt-4 dark:border-white/10">
+      <div className="border-t border-ink/10 pt-4">
         <SlotStatList stats={stats.slot_stats} />
       </div>
     </section>
@@ -201,7 +199,7 @@ function AnswerStats({ profile }: { profile: PublicProfile }) {
 function WorkGrid({ works }: { works: PublicWorkListItem[] }) {
   if (works.length === 0) {
     return (
-      <p className="text-sm text-black/55 dark:text-white/55">
+      <p className="text-sm text-ink/55">
         この部門の作品はまだありません。
       </p>
     );
@@ -213,9 +211,9 @@ function WorkGrid({ works }: { works: PublicWorkListItem[] }) {
         <li key={w.id}>
           <Link
             href={`/works/${w.id}`}
-            className="group block space-y-3 rounded-2xl border border-black/10 p-3 transition hover:border-black/30 dark:border-white/15 dark:hover:border-white/40"
+            className="group block space-y-3 rounded-2xl border border-line p-3 transition hover:border-line-hover"
           >
-            <div className="overflow-hidden rounded-xl bg-black/[0.03] dark:bg-white/5">
+            <div className="overflow-hidden rounded-xl bg-sunken">
               <Image
                 src={workImageUrl(w.image_path)}
                 alt={w.title}
@@ -228,11 +226,11 @@ function WorkGrid({ works }: { works: PublicWorkListItem[] }) {
             <div className="space-y-1 px-1 pb-1">
               <p className="truncate text-sm font-bold">{w.title}</p>
               {w.source_title ? (
-                <p className="truncate text-xs text-black/45 dark:text-white/45">
+                <p className="truncate text-xs text-ink/45">
                   {w.source_title}
                 </p>
               ) : null}
-              <p className="text-xs text-black/40 dark:text-white/40">
+              <p className="text-xs text-ink/40">
                 {divisionLabel(w.division)}・回答 {w.answers_count}・いいね {w.likes_count}
               </p>
             </div>
@@ -310,11 +308,11 @@ export default async function ProfilePage({
       <header className="space-y-3">
         <div className="space-y-1">
           <h1 className="text-2xl font-bold break-words">{profile.display_name}</h1>
-          <p className="text-sm text-black/45 dark:text-white/45">@{profile.handle}</p>
+          <p className="text-sm text-ink/45">@{profile.handle}</p>
         </div>
 
         {profile.bio ? (
-          <p className="text-sm whitespace-pre-wrap break-words text-black/70 dark:text-white/70">
+          <p className="text-sm whitespace-pre-wrap break-words text-ink/70">
             {profile.bio}
           </p>
         ) : null}
@@ -349,15 +347,15 @@ export default async function ProfilePage({
       <AnswerStats profile={profile} />
 
       {/* --- タブ -------------------------------------------------------------- */}
-      <nav className="flex flex-wrap gap-2 border-t border-black/10 pt-6 dark:border-white/10">
+      <nav className="flex flex-wrap gap-2 border-t border-ink/10 pt-6">
         {tabs.map((t) => (
           <Link
             key={t.key}
             href={t.key === tabs[0].key ? `/u/${profile.handle}` : `/u/${profile.handle}?tab=${t.key}`}
             className={
               t.key === tab.key
-                ? "rounded-full bg-black px-4 py-2 text-xs font-bold text-white dark:bg-white dark:text-black"
-                : "rounded-full border border-black/15 px-4 py-2 text-xs font-bold hover:bg-black/[0.04] dark:border-white/20 dark:hover:bg-white/10"
+                ? "rounded-full bg-accent px-4 py-2 text-xs font-bold text-on-accent"
+                : "rounded-full border border-line-mid px-4 py-2 text-xs font-bold hover:bg-hover"
             }
           >
             {t.label}
@@ -379,7 +377,7 @@ export default async function ProfilePage({
 
       {tab.key === "answers" ? (
         answers.length === 0 ? (
-          <p className="text-sm text-black/55 dark:text-white/55">
+          <p className="text-sm text-ink/55">
             回答した作品はまだありません。
           </p>
         ) : (
@@ -387,10 +385,10 @@ export default async function ProfilePage({
             {answers.map((a) => (
               <li
                 key={a.work_id}
-                className="border-b border-black/10 py-4 last:border-b-0 dark:border-white/10"
+                className="border-b border-ink/10 py-4 last:border-b-0"
               >
                 <Link href={`/works/${a.work_id}`} className="flex items-start gap-4 hover:opacity-80">
-                  <div className="h-16 w-16 shrink-0 overflow-hidden rounded-xl bg-black/[0.03] dark:bg-white/5">
+                  <div className="h-16 w-16 shrink-0 overflow-hidden rounded-xl bg-sunken">
                     <Image
                       src={workImageUrl(a.image_path)}
                       alt={a.title}
@@ -402,10 +400,10 @@ export default async function ProfilePage({
                   </div>
                   <div className="min-w-0 flex-1 space-y-1">
                     <p className="truncate text-sm font-bold">{a.title}</p>
-                    <p className="truncate text-xs text-black/50 dark:text-white/50">
+                    <p className="truncate text-xs text-ink/50">
                       {a.author_display_name}
                     </p>
-                    <p className="text-xs text-black/40 dark:text-white/40">
+                    <p className="text-xs text-ink/40">
                       {new Date(a.answered_at).toLocaleDateString("ja-JP")}・
                       {a.item_count}問中 {a.correct_count}問 正解
                     </p>
@@ -417,7 +415,7 @@ export default async function ProfilePage({
         )
       ) : null}
 
-      <footer className="flex flex-wrap gap-4 border-t border-black/10 pt-6 text-sm dark:border-white/10">
+      <footer className="flex flex-wrap gap-4 border-t border-ink/10 pt-6 text-sm">
         <Link href="/works" className="underline">
           作品一覧へ
         </Link>

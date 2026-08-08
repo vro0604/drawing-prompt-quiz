@@ -6,6 +6,7 @@ import type { MyWork } from "@/features/work/types";
 import { deleteWorkAction } from "../actions";
 import { SubmitButton } from "@/app/_pending";
 import Image from "next/image";
+import { surface } from "@/app/_surface";
 
 /**
  * /works/[id]/delete ／ 削除の確認画面。
@@ -29,11 +30,8 @@ export const metadata = {
   title: "作品を削除する",
 };
 
-const box =
-  "rounded-2xl border border-black/10 bg-white/60 p-6 dark:border-white/15 dark:bg-white/5";
-
 const input =
-  "w-full rounded-xl border border-black/15 bg-transparent px-4 py-3 text-sm dark:border-white/20";
+  "w-full rounded-xl border border-line-mid bg-transparent px-4 py-3 text-sm";
 
 export default async function DeleteWorkPage({
   params,
@@ -55,7 +53,7 @@ export default async function DeleteWorkPage({
     return (
       <main className="mx-auto w-full max-w-lg space-y-6 p-6 sm:p-10">
         <h1 className="text-2xl font-bold">この作品は削除済みです</h1>
-        <div className={box}>
+        <div className={surface}>
           <p className="text-sm">
             「{work.title}」はすでに削除されています。ほかの人からは見えません。
           </p>
@@ -74,21 +72,21 @@ export default async function DeleteWorkPage({
     <main className="mx-auto w-full max-w-lg space-y-6 p-6 sm:p-10">
       <header className="space-y-2">
         <h1 className="text-2xl font-bold">作品を削除する</h1>
-        <p className="text-sm text-black/55 dark:text-white/55">
+        <p className="text-sm text-ink/55">
           この操作は元に戻せません。
         </p>
       </header>
 
       {error ? (
-        <p className="rounded-xl bg-rose-500/10 px-4 py-3 text-sm whitespace-pre-wrap text-rose-700 dark:text-rose-300">
+        <p className="rounded-xl bg-danger-tint/10 px-4 py-3 text-sm whitespace-pre-wrap text-danger">
           {error}
         </p>
       ) : null}
 
       {/* --- 何を消そうとしているか ------------------------------------------- */}
-      <section className={`${box} space-y-4`}>
+      <section className={`${surface} space-y-4`}>
         <div className="flex items-start gap-4">
-          <div className="h-20 w-20 shrink-0 overflow-hidden rounded-xl bg-black/[0.03] dark:bg-white/5">
+          <div className="h-20 w-20 shrink-0 overflow-hidden rounded-xl bg-sunken">
             <Image
               src={workImageUrl(work.image_path)}
               alt={work.title}
@@ -100,7 +98,7 @@ export default async function DeleteWorkPage({
           </div>
           <div className="min-w-0 flex-1 space-y-1">
             <p className="text-sm font-bold">{work.title}</p>
-            <p className="text-xs text-black/45 dark:text-white/45">
+            <p className="text-xs text-ink/45">
               {isPublic ? "公開中" : "下書き"}・回答 {work.answers_count}・いいね{" "}
               {work.likes_count}
             </p>
@@ -109,10 +107,10 @@ export default async function DeleteWorkPage({
       </section>
 
       {/* --- 何が起きるか ----------------------------------------------------- */}
-      <section className={`${box} space-y-3 text-sm`}>
+      <section className={`${surface} space-y-3 text-sm`}>
         <div className="space-y-1">
           <p className="font-bold">削除するとどうなるか</p>
-          <ul className="list-disc space-y-1 pl-5 text-black/70 dark:text-white/70">
+          <ul className="list-disc space-y-1 pl-5 text-ink/70">
             <li>作品一覧・ランキング・他の人のお気に入りから消えます</li>
             <li>この作品のページは、ほかの人には「見つかりません」になります</li>
             <li>
@@ -129,15 +127,15 @@ export default async function DeleteWorkPage({
           </ul>
         </div>
 
-        <div className="space-y-1 border-t border-black/10 pt-3 dark:border-white/10">
+        <div className="space-y-1 border-t border-ink/10 pt-3">
           <p className="font-bold">消えないもの</p>
-          <ul className="list-disc space-y-1 pl-5 text-black/70 dark:text-white/70">
+          <ul className="list-disc space-y-1 pl-5 text-ink/70">
             <li>これまでにこの作品へ寄せられた回答の記録（集計に残ります）</li>
             <li>あなたの成績や、ほかの作品</li>
           </ul>
         </div>
 
-        <p className="text-xs text-black/45 dark:text-white/45">
+        <p className="text-xs text-ink/45">
           しばらく見せたくないだけなら、削除ではなく
           <Link href={`/works/${work.id}`} className="mx-1 underline">
             下書きに戻す
@@ -147,7 +145,7 @@ export default async function DeleteWorkPage({
       </section>
 
       {/* --- 確認して削除 ----------------------------------------------------- */}
-      <form action={deleteWorkAction} className={`${box} space-y-4`}>
+      <form action={deleteWorkAction} className={`${surface} space-y-4`}>
         <input type="hidden" name="workId" value={work.id} />
         <input type="hidden" name="expectedTitle" value={work.title} />
 
@@ -166,7 +164,7 @@ export default async function DeleteWorkPage({
 
         <SubmitButton
           pendingLabel="削除しています…"
-          className="w-full rounded-xl bg-rose-600 px-5 py-3 text-sm font-bold text-white hover:opacity-85"
+          className="w-full rounded-xl bg-danger-solid px-5 py-3 text-sm font-bold text-on-danger hover:opacity-85"
         >
           この作品を削除する
         </SubmitButton>
