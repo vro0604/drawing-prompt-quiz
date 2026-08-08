@@ -88,9 +88,17 @@ function WorkCard({ work }: { work: PublicWorkListItem }) {
             {work.author_display_name}
             {work.author_handle ? `（@${work.author_handle}）` : ""}
           </p>
+          {/*
+            カードに数字を載せない（D112）。
+
+            一覧は目に入る回数が最も多く、横並びなので**比較が自動的に起きる**。
+            数字を置くと、見るたびに順位づけが立ち上がる。
+
+            回答数もいいね数も消えたわけではなく、作品ページで取りに行けば見える。
+            **隠すのではなく、取りに行かせる。**
+          */}
           <p className="text-xs text-black/40 dark:text-white/40">
-            {divisionLabel(work.division)}・回答 {work.answers_count}・いいね{" "}
-            {work.likes_count}
+            {divisionLabel(work.division)}
           </p>
         </div>
       </Link>

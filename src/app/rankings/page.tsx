@@ -6,7 +6,6 @@ import {
   RANKING_PAGE_SIZE,
   RANKING_TYPES,
   TIME_BUCKETS,
-  accuracyPercent,
   resolveRankingFeed,
   resolveRankingType,
   resolveTimeBucket,
@@ -17,7 +16,12 @@ import { divisionLabel } from "@/features/work/types";
 import { workImageUrl } from "@/features/work/rpc";
 
 /**
- * /rankings ／ ランキング（3種 × 2系統）。
+ * /rankings ／ ランキング（2種 × 2系統）。
+ *
+ * 【伝達率ランキングは外した（D112）】
+ *   種類は「人気」と「時間別」の2つ。どちらもいいねの多い順で、
+ *   **上手さの序列ではない。**伝達率を順位にすると、
+ *   D105 の「下手なままでいい」という証明が上手さの物差しに変わる。
  *
  * 【並べ替えを画面でやらない】
  *   上位20件を取ってから並べ替えても「全体の上位」にはならない。
@@ -75,9 +79,15 @@ function LikeCounts({ item }: { item: RankingItem }) {
   );
 }
 
-function RankingRow({ item, type }: { item: RankingItem; type: string }) {
-  const percent = accuracyPercent(item.accuracy);
-
+/**
+ * 伝達率は、ここには出さない（D112）。
+ *
+ * 順位の隣に % を置くと、それが上手さの物差しとして読まれる。
+ * 伝達率は D105 の「下手なままでいい」を支える数字なので、
+ * **順位づけの材料にすると意味が反転する。**
+ * 自分の作品の結果画面で、取りに行けば見える。
+ */
+function RankingRow({ item }: { item: RankingItem }) {
   return (
     <li className="flex items-start gap-4 border-b border-black/10 py-4 last:border-b-0 dark:border-white/10">
       <div className="w-10 shrink-0 pt-1 text-center">
@@ -111,13 +121,6 @@ function RankingRow({ item, type }: { item: RankingItem; type: string }) {
           </p>
         </div>
       </Link>
-
-      {type === "accuracy" && percent !== null ? (
-        <div className="w-20 shrink-0 pt-1 text-right">
-          <span className="text-lg font-bold tabular-nums">{percent}%</span>
-          <span className="block text-[11px] text-black/40 dark:text-white/40">伝達率</span>
-        </div>
-      ) : null}
     </li>
   );
 }
@@ -164,7 +167,7 @@ export default async function RankingsPage({
       <header className="space-y-2">
         <h1 className="text-2xl font-bold">ランキング</h1>
         <p className="text-sm text-black/55 dark:text-white/55">
-          反応を集めた作品と、お題がよく伝わった作品です。
+          反応を集めた作品です。
         </p>
       </header>
 
@@ -231,11 +234,7 @@ export default async function RankingsPage({
       {items.length === 0 ? (
         <div className={card}>
           <p className="text-sm">
-            {type.value === "accuracy"
-              ? "まだ順位を出せる作品がありません。伝達率は、回答が5人以上集まった作品から並びます。"
-              : page > 1
-                ? "このページには作品がありません。"
-                : "まだ作品がありません。"}
+            {page > 1 ? "このページには作品がありません。" : "まだ作品がありません。"}
           </p>
           <p className="pt-3 text-sm">
             <Link href="/works" className="underline">
@@ -246,7 +245,7 @@ export default async function RankingsPage({
       ) : (
         <ul>
           {items.map((item) => (
-            <RankingRow key={item.id} item={item} type={type.value} />
+            <RankingRow key={item.id} item={item} />
           ))}
         </ul>
       )}
