@@ -51,13 +51,23 @@ import {
 const stamp = `${process.pid}${Math.floor(Math.random() * 1000)}`.slice(-8);
 const RANKING_PAGE_SIZE = 20;
 
-/** ランキングの1行を読み解く。順位・作品ID・行の文字を返す */
+/**
+ * ランキングの1行を読み解く。順位・作品ID・行の文字を返す。
+ *
+ * 【クラス名を手がかりにしない】
+ *   以前は `<li class="flex items-start` で行を探し、順位を
+ *   `tabular-nums">(\d+)<` で読んでいた。**どちらも見た目の指定**なので、
+ *   並びを変えるだけでこの検査が落ちた（落ちるだけでなく、
+ *   1行も拾えず「0件」になって別の理由で落ちる）。
+ *
+ *   手がかりを data-* に移した。以後、行の見た目をどう変えても通る。
+ */
 function parseRanking(html) {
   const out = [];
-  for (const m of clean(html).matchAll(/<li class="flex items-start[\s\S]*?<\/li>/g)) {
+  for (const m of clean(html).matchAll(/<li[^>]*data-ranking-row[\s\S]*?<\/li>/g)) {
     const frag = m[0];
     const id = /\/works\/([0-9a-f-]{36})/.exec(frag)?.[1];
-    const rank = Number.parseInt(/tabular-nums">(\d+)</.exec(frag)?.[1] ?? "0", 10);
+    const rank = Number.parseInt(/data-rank="(\d+)"/.exec(frag)?.[1] ?? "0", 10);
     const text = frag.replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim();
     if (id) out.push({ id, rank, text });
   }

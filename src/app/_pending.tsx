@@ -55,6 +55,7 @@ export function SubmitButton({
   name,
   value,
   title,
+  data,
 }: {
   children: React.ReactNode;
   pendingLabel: string;
@@ -62,6 +63,18 @@ export function SubmitButton({
   name?: string;
   value?: string;
   title?: string;
+  /**
+   * 検査の手がかり。`{ "data-card": "hidden" }` のように渡す。
+   *
+   * 【なぜ要るか】
+   *   検査がボタンの**見た目**を手がかりにしていた。伏せカードの枚数を
+   *   `>?</button>` の個数で数えていたので、「?」を絵柄に変えると
+   *   検査が落ちる。**見た目を変えると検査が落ちる状態では、
+   *   見た目を試せない。**
+   *
+   *   手がかりを属性に移すと、中身も見た目も自由に変えられる。
+   */
+  data?: Record<`data-${string}`, string>;
 }) {
   const { pending } = useFormStatus();
 
@@ -71,6 +84,7 @@ export function SubmitButton({
       name={name}
       value={value}
       title={title}
+      {...data}
       // 送信中は押せない。失敗して画面が戻れば、部品が作り直されるので
       // pending は false に戻り、もう一度押せるようになる。
       disabled={pending}

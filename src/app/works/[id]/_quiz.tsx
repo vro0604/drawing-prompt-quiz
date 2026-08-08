@@ -35,7 +35,18 @@ const box =
 /** 出題。1問につきラジオボタン4つ */
 function QuestionBlock({ question }: { question: QuizQuestion }) {
   return (
-    <fieldset className="space-y-3">
+    // fieldset と legend は**意味づけ**であって見た目ではない。
+    // ラジオの集まりに名前を付ける正しい要素なので、検査が
+    // このまとまりを手がかりにするのは構わない（枠線は消せる・並べ方も自由）。
+    //
+    // 一方 data-slot-label を足したのは、以前の検査が legend の
+    // 「◯◯ はどれ？」という**文言**からラベルを削り出していたため。
+    // 問いかけの言い回しを変えると検査が落ちる状態だった。
+    <fieldset
+      data-question=""
+      data-slot-label={question.card_slot_label}
+      className="space-y-3"
+    >
       <legend className="text-sm font-bold">
         {question.position + 1}. {question.card_slot_label} はどれ？
       </legend>
@@ -47,8 +58,19 @@ function QuestionBlock({ question }: { question: QuizQuestion }) {
             className="flex cursor-pointer items-center gap-3 rounded-xl border border-black/10 px-4 py-3 text-sm hover:bg-black/[0.03] has-checked:border-black/40 dark:border-white/15 dark:hover:bg-white/5 dark:has-checked:border-white/50"
           >
             {/* name に問のIDを埋め込む。送信側はこの接頭辞で選択を拾う。
-                value は tag_id で、正解かどうかの情報は含まれない。 */}
-            <input type="radio" name={`q_${question.question_id}`} value={c.tag_id} required />
+                value は tag_id で、正解かどうかの情報は含まれない。
+
+                data-choice-label は検査用。以前は「input の**次の** span」を
+                選択肢の文字として読んでいたので、札のような見た目に変えると
+                検査が落ちた。**4択の文字は元から全部 HTML に出ている**ので
+                （どれが正解かは分からないまま）、ここに写しても漏れは増えない。 */}
+            <input
+              type="radio"
+              name={`q_${question.question_id}`}
+              value={c.tag_id}
+              data-choice-label={c.label}
+              required
+            />
             <span>{c.label}</span>
           </label>
         ))}
@@ -209,7 +231,16 @@ export function SlotStats({ stats }: { stats: SlotStat[] }) {
         {stats.map((s) => {
           const percent = slotAccuracy(s);
           return (
-            <li key={s.card_slot_key} className="space-y-1">
+            // 内訳は data-* にも出す。以前の検査は「1 / 2」という
+            // **文字の並びと span の位置**から読んでいたので、
+            // 数字の見せ方を変えると落ちた。
+            <li
+              key={s.card_slot_key}
+              data-slot-stat={s.card_slot_key}
+              data-corrects={s.corrects}
+              data-attempts={s.attempts}
+              className="space-y-1"
+            >
               <div className="flex items-baseline justify-between text-sm">
                 <span>{s.card_slot_label}</span>
                 <span className="font-bold">

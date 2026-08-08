@@ -504,12 +504,27 @@ export async function drawPrompt(s, modeKey, timeLimitSeconds = "3600") {
 
   // 答え。枠のラベル → タグのラベル。
   // 作品ページに出ていないことの確認と、クイズに正解するために使う。
+  //
+  // 【1件も読めなかったら、そこで止める】
+  //   以前はカードの `class="w-28"` を手がかりにしていた。見た目を変えると
+  //   答えが1件も読めなくなるが、**呼び出し側は「漏れていた答え」を
+  //   空のリストから探すので、全部合格になる。**
+  //   落ちずに黙って通る形だったので、手がかりを data-* に移したうえで、
+  //   0件のときは例外にする。**検査が仕事をしていない状態を、合格にしない。**
   const answers = new Map();
   const html = clean(page.html);
-  for (const m of html.matchAll(
-    /<span class="w-28[^"]*">([^<]+)<\/span>\s*<span class="text-lg font-bold">([^<]+)<\/span>/g,
-  )) {
-    answers.set(m[1].trim(), m[2].trim());
+  for (const m of html.matchAll(/<li[^>]*\sdata-prompt-card[^>]*>/g)) {
+    const slot = /data-slot-label="([^"]*)"/.exec(m[0])?.[1];
+    const tag = /data-tag-label="([^"]*)"/.exec(m[0])?.[1];
+    if (slot && tag) answers.set(slot.trim(), tag.trim());
+  }
+
+  if (answers.size === 0) {
+    throw new Error(
+      "確定お題ページから答えを1件も読めませんでした。" +
+        "data-prompt-card / data-slot-label / data-tag-label が出ているか確認してください " +
+        `(/prompt/${promptId})`,
+    );
   }
 
   return { promptId, answers, answerLabels: [...answers.values()] };
@@ -737,32 +752,47 @@ export async function answerWork(s, workId, answers, { correct = true } = {}) {
 /**
  * 出題フォームを読み解く。
  *
- * 1問 = 1つの fieldset。legend が「1. モチーフA はどれ？」の形で、
- * 中のラジオが name="q_{問のID}" value="{タグのID}"、
- * その直後の span が選択肢の文字。
+ * 1問 = 1つの `<fieldset data-question data-slot-label="モチーフA">`。
+ * 中のラジオが name="q_{問のID}" value="{タグのID}" data-choice-label="{選択肢の文字}"。
+ *
+ * 【見た目に依らないようにした】
+ *   以前は3つの見た目を手がかりにしていて、**どれを変えても検査が落ちた。**
+ *
+ *     legend の「◯◯ はどれ？」を文字列加工してラベルを取り出していた
+ *       → 問いかけの言い回しを変えられない
+ *     「input の**次の** span」を選択肢の文字として読んでいた
+ *       → 選択肢を札のような見た目にできない
+ *     input タグの中の属性の**並び順**に依存していた
+ *       → 属性を1つ足すと落ちる
+ *
+ *   ラベルは data-* から読み、input は1タグずつ属性を拾う形にした。
+ *
+ * 【fieldset は残す】
+ *   これは見た目ではなく**意味づけ**。ラジオの集まりに名前を付ける正しい要素で、
+ *   読み上げソフトのためにも必要。枠線を消すのも並べ方を変えるのも自由なので、
+ *   ここを手がかりにしても見た目は縛られない。
  */
 export function parseQuiz(html) {
   const source = clean(html);
   const questions = [];
 
-  for (const fs of source.matchAll(/<fieldset[\s\S]*?<\/fieldset>/g)) {
+  for (const fs of source.matchAll(/<fieldset[^>]*\sdata-question[\s\S]*?<\/fieldset>/g)) {
     const frag = fs[0];
 
-    const legend = /<legend[^>]*>([\s\S]*?)<\/legend>/.exec(frag)?.[1] ?? "";
-    // 「1. モチーフA はどれ？」から枠のラベルだけを取り出す
-    const slotLabel = legend
-      .replace(/<[^>]+>/g, "")
-      .replace(/^\s*\d+\.\s*/, "")
-      .replace(/\s*はどれ？\s*$/, "")
-      .trim();
+    const slotLabel = /data-slot-label="([^"]*)"/.exec(frag)?.[1]?.trim() ?? "";
 
     const choices = [];
     let name = null;
-    for (const c of frag.matchAll(
-      /name="(q_\d+)"[^>]*value="(\d+)"[^>]*>\s*<span>([^<]*)<\/span>/g,
-    )) {
-      name = c[1];
-      choices.push({ tagId: c[2], label: c[3].trim() });
+    // input を1タグずつ見る。属性の並び順に依存しない。
+    for (const tag of frag.matchAll(/<input[^>]*>/g)) {
+      const t = tag[0];
+      const inputName = /name="(q_\d+)"/.exec(t)?.[1];
+      if (!inputName) continue;
+      const tagId = /value="(\d+)"/.exec(t)?.[1];
+      const label = /data-choice-label="([^"]*)"/.exec(t)?.[1];
+      if (!tagId || label === undefined) continue;
+      name = inputName;
+      choices.push({ tagId, label: label.trim() });
     }
 
     if (name) questions.push({ name, slotLabel, choices });
@@ -792,7 +822,7 @@ export function hasQuizForm(html) {
  *   選択肢の外に答えが出ていないかを見る。
  */
 export function textOutsideQuiz(html) {
-  return textOf(clean(html).replace(/<fieldset[\s\S]*?<\/fieldset>/g, ""));
+  return textOf(clean(html).replace(/<fieldset[^>]*\sdata-question[\s\S]*?<\/fieldset>/g, ""));
 }
 
 /** /account に出ている「ID: ...」を取り出す。昇格で変わらないことの確認に使う */

@@ -112,6 +112,32 @@ function textOf(html) {
     .trim();
 }
 
+/**
+ * 盤面の進み具合を「決まった枠 / 全部の枠」で返す。
+ *
+ * 【文言から読まない】
+ *   以前は「0 / 5 枠 決定」という**画面の文字**で確かめていた。
+ *   言い回しを変えるだけでこの検査が落ちるので、手がかりを data-* に移した。
+ *   進み具合の見せ方（棒・点・文章）は自由に変えられる。
+ */
+function progress(html) {
+  const tag = /<[a-z]+[^>]*\sdata-board[^>]*>/.exec(html)?.[0] ?? "";
+  const chosen = /data-chosen="(\d+)"/.exec(tag)?.[1];
+  const slots = /data-slots="(\d+)"/.exec(tag)?.[1];
+  return chosen === undefined || slots === undefined ? null : `${chosen}/${slots}`;
+}
+
+/**
+ * まだめくっていないカードの枚数。
+ *
+ * 【「?」を数えない】
+ *   以前は `>?</button>` の個数で数えていた。**伏せカードの見た目を
+ *   変えると落ちる**ので、めくりの演出に手を入れられなかった。
+ */
+function hiddenCards(html) {
+  return (html.match(/data-card="hidden"/g) ?? []).length;
+}
+
 const log = (ok, label, extra = "") =>
   console.log(`  ${ok ? "✓" : "✗"} ${label}${extra ? "  " + extra : ""}`);
 
@@ -140,10 +166,10 @@ page = await post("/play", {
   modeKey: "standard",
   timeLimitSeconds: "3600",
 });
-must(/標準/.test(textOf(page.html)) && /0 \/ 5 枠 決定/.test(textOf(page.html)), "盤面が出た（0/5 枠）");
+must(/標準/.test(textOf(page.html)) && progress(page.html) === "0/5", "盤面が出た（0/5 枠）");
 must(/ゲスト/.test(page.html), "ゲストとして発行された");
 
-const hiddenCount = (page.html.match(/>\?<\/button>/g) ?? []).length;
+const hiddenCount = hiddenCards(page.html);
 must(hiddenCount === 5, "いまめくれるのは1枠ぶんの5枚だけ", `実際 ${hiddenCount}`);
 must(!/万年筆|折り鶴|妖精/.test(textOf(page.html)), "伏せカードの中身が HTML に出ていない");
 
@@ -155,7 +181,7 @@ for (let i = 1; i <= 5; i += 1) {
     break;
   }
   page = await post("/play", { [f.actionId]: "", ...f.fields });
-  must(new RegExp(`${i} / 5 枠 決定`).test(textOf(page.html)), `${i}枠目を決定`);
+  must(progress(page.html) === `${i}/5`, `${i}枠目を決定`, progress(page.html) ?? "-");
 }
 must(/このお題で確定する/.test(page.html), "確定ボタンが出た");
 
@@ -163,7 +189,7 @@ must(/このお題で確定する/.test(page.html), "確定ボタンが出た");
 const rerollForm = forms(page.html).find((f) => /全部引き直す/.test(f.text));
 must(!!rerollForm, "引き直しボタンがある");
 page = await post("/play", { [rerollForm.actionId]: "", ...rerollForm.fields });
-must(/0 \/ 5 枠 決定/.test(textOf(page.html)), "引き直して白紙に戻った");
+must(progress(page.html) === "0/5", "引き直して白紙に戻った", progress(page.html) ?? "-");
 must(/引き直し 残り 0 回/.test(textOf(page.html)), "残り回数が0になった");
 must(!/全部引き直す/.test(page.html), "引き直しボタンが消えた");
 
@@ -172,7 +198,7 @@ for (let i = 1; i <= 5; i += 1) {
   const f = forms(page.html).find((x) => x.fields.candidateIndex !== undefined);
   page = await post("/play", { [f.actionId]: "", ...f.fields });
 }
-must(/5 \/ 5 枠 決定/.test(textOf(page.html)), "5枠すべて決定");
+must(progress(page.html) === "5/5", "5枠すべて決定", progress(page.html) ?? "-");
 
 // ── 6. complete_draft → 確定お題ページ ─────────────
 const completeForm = forms(page.html).find((f) => /このお題で確定する/.test(f.text));

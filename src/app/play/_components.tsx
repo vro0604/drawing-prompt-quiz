@@ -155,9 +155,12 @@ function CandidateButton({
       <input type="hidden" name="sessionId" value={sessionId} />
       <input type="hidden" name="cardSlotKey" value={slot.card_slot_key} />
       <input type="hidden" name="candidateIndex" value={candidateIndex} />
+      {/* data-card が検査の手がかり。「?」という**文字**を数えさせない。
+          めくる前のカードをどんな見た目にしても、枚数の検査は通る。 */}
       <SubmitButton
         pendingLabel="…"
         title="このカードをめくる"
+        data={{ "data-card": "hidden" }}
         className={`${base} cursor-pointer border-black/25 hover:border-black/60 hover:bg-black/[0.04] dark:border-white/25 dark:hover:border-white/60 dark:hover:bg-white/10`}
       >
         ?
@@ -210,7 +213,14 @@ function SlotRow({ state, slot }: { state: DraftState; slot: DraftSlot }) {
 export function DraftBoard({ state }: { state: DraftState }) {
   return (
     <div className="space-y-8">
-      <div className={`${card} space-y-2`}>
+      {/* 進み具合は data-* にも出す。以前の検査は「0 / 5 枠 決定」という
+          **文言**で盤面が出たことを確かめていたので、言い回しを変えると落ちた。 */}
+      <div
+        data-board=""
+        data-chosen={state.chosen_count}
+        data-slots={state.slot_count}
+        className={`${card} space-y-2`}
+      >
         <div className="flex flex-wrap items-baseline gap-x-4 gap-y-1">
           <span className="text-base font-bold">{state.mode_label}</span>
           <span className="text-xs text-black/55 dark:text-white/55">

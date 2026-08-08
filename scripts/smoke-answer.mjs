@@ -303,9 +303,14 @@ section("8. 結果は、取りに行った人にだけ出る（D112 / D134）");
 
   // 2人が答え、片方が全問正解・片方が全問不正解なので、
   // どの枠も「2回中1回」＝50%になる。
-  const ratios = [...clean(opened.html).matchAll(/(\d+) \/ (\d+)\s*<\/span>/g)].map(
-    (m) => `${m[1]}/${m[2]}`,
-  );
+  // 内訳は data-* から読む。以前は「1 / 2」という**文字の並びと
+  // span の位置**を手がかりにしていたので、数字の見せ方を
+  // 変えるだけでこの検査が落ちた。
+  const ratios = [...clean(opened.html).matchAll(/<li[^>]*\sdata-slot-stat[^>]*>/g)].map((m) => {
+    const corrects = /data-corrects="(\d+)"/.exec(m[0])?.[1] ?? "?";
+    const attempts = /data-attempts="(\d+)"/.exec(m[0])?.[1] ?? "?";
+    return `${corrects}/${attempts}`;
+  });
   must(ratios.length > 0, "枠ごとの内訳が出ている", ratios.join(" "));
   must(
     ratios.every((r) => r === "1/2"),

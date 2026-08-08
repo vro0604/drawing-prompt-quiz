@@ -89,7 +89,14 @@ function LikeCounts({ item }: { item: RankingItem }) {
  */
 function RankingRow({ item }: { item: RankingItem }) {
   return (
-    <li className="flex items-start gap-4 border-b border-black/10 py-4 last:border-b-0 dark:border-white/10">
+    // data-* は検査の手がかり。**クラス名を手がかりにさせない。**
+    // 以前は `<li class="flex items-start` で1行を探していたので、
+    // 並びを変えるだけで検査が落ちた。
+    <li
+      data-ranking-row=""
+      data-rank={item.rank}
+      className="flex items-start gap-4 border-b border-black/10 py-4 last:border-b-0 dark:border-white/10"
+    >
       <div className="w-10 shrink-0 pt-1 text-center">
         <span className="text-xl font-bold tabular-nums">{item.rank}</span>
       </div>

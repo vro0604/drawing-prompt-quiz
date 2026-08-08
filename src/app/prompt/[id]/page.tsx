@@ -46,8 +46,22 @@ export default async function PromptPage({
 
       <ol className="space-y-3">
         {prompt.cards.map((c) => (
+          // data-* は検査の手がかり。
+          //
+          // **ここは特に外してはいけない。**確定したお題（＝クイズの答え）を
+          // 検査が読む唯一の場所で、読めた答えを使って
+          // 「作品ページに漏れていないか」「一覧に漏れていないか」を
+          // 全部のスモークが確かめている。
+          //
+          // 以前はこのカードの `class="w-28"` と `class="text-lg font-bold"` を
+          // 手がかりにしていた。見た目を変えると答えが1件も読めなくなり、
+          // **漏洩の検査が「空のリストを調べて合格」になる。**
+          // 落ちるのではなく黙って通るので、いちばん危ない形だった。
           <li
             key={c.card_slot_key}
+            data-prompt-card={c.card_slot_key}
+            data-slot-label={c.card_slot_label}
+            data-tag-label={c.tag_label}
             className="flex items-baseline gap-4 rounded-2xl border border-black/10 bg-white/60 px-6 py-5 dark:border-white/15 dark:bg-white/5"
           >
             <span className="w-28 shrink-0 text-xs text-black/50 dark:text-white/50">
