@@ -353,23 +353,6 @@ export default async function AccountPage({
           </p>
         </section>
       ) : null}
-
-      <footer className="space-y-2 border-t border-ink/10 pt-6 text-sm">
-        <p>
-          <Link href="/play" className="underline">
-            お題を引く画面へ
-          </Link>
-        </p>
-        <p className="text-xs text-faint">
-          <Link href="/terms" className="underline">
-            利用規約
-          </Link>
-          {" ・ "}
-          <Link href="/privacy" className="underline">
-            プライバシーポリシー
-          </Link>
-        </p>
-      </footer>
     </main>
   );
 }

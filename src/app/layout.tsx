@@ -1,5 +1,6 @@
 import type { Metadata } from "next";
 import { Geist } from "next/font/google";
+import { SiteFooter, SiteHeader } from "./_shell";
 import "./globals.css";
 
 /**
@@ -118,7 +119,14 @@ export default function RootLayout({
     <html lang="ja" className={`${geistSans.variable} h-full antialiased`}>
       {/* font-sans は globals.css の @theme で --font-geist-sans に繋いである。
           ここで当てないと、書体を読み込んでいても本文に効かない（もとの状態）。 */}
-      <body className="min-h-full flex flex-col font-sans">{children}</body>
+      <body className="min-h-full flex flex-col font-sans">
+        {/* 上下の枠。中身は _shell.tsx が持つので、ここは置く場所だけ。
+            枠をやめるならこの2行を消す。 */}
+        <SiteHeader />
+        {/* flex-1 が無いと、本文が短いページでフッターが真ん中に浮く */}
+        <div className="flex-1">{children}</div>
+        <SiteFooter />
+      </body>
     </html>
   );
 }

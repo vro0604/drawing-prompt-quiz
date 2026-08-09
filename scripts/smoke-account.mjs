@@ -102,8 +102,16 @@ section("1. 規約に同意しないと投稿できない（P3）");
 
   const privacy = await leaver.get("/privacy");
   must(privacy.status === 200, "プライバシーポリシーが開ける", `実際 ${privacy.status}`);
+
+  // 【一字一句では見ない】
+  //   もとは「保存の期間は同意した日から5年」という**雛形の文をそのまま**
+  //   持っていた。本物の本文へ差し替えたら（8838a2b）読点1つで落ちた。
+  //
+  //   確かめたいのは文言ではなく **同意の記録を何年持つかが書いてあること。**
+  //   語の並びや句読点を変えても通るように、要素で見る。
+  const privacyText = textOf(privacy.html);
   must(
-    /保存の期間は同意した日から5年/.test(textOf(privacy.html)),
+    /保存の期間/.test(privacyText) && /5年/.test(privacyText),
     "保存の目的と期間が書かれている",
   );
 }

@@ -91,15 +91,6 @@ export default async function SavesPage() {
           </Link>
         </p>
       )}
-
-      <footer className="flex flex-wrap gap-4 border-t border-ink/10 pt-6 text-sm">
-        <Link href="/works" className="underline">
-          作品一覧へ
-        </Link>
-        <Link href="/rankings" className="underline">
-          ランキングへ
-        </Link>
-      </footer>
     </main>
   );
 }

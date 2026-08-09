@@ -275,15 +275,6 @@ export default async function RankingsPage({
           )}
         </div>
       ) : null}
-
-      <footer className="flex flex-wrap gap-4 border-t border-ink/10 pt-6 text-sm">
-        <Link href="/works" className="underline">
-          作品一覧へ
-        </Link>
-        <Link href="/play" className="underline">
-          お題を引く画面へ
-        </Link>
-      </footer>
     </main>
   );
 }

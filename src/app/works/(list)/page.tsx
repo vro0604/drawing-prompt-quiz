@@ -281,12 +281,6 @@ export default async function WorksPage({
           )}
         </div>
       ) : null}
-
-      <footer className="border-t border-ink/10 pt-6 text-sm">
-        <Link href="/play" className="underline">
-          お題を引く画面へ
-        </Link>
-      </footer>
     </main>
   );
 }

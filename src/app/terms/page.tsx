@@ -1,4 +1,3 @@
-import Link from "next/link";
 import { fetchCurrentDocuments } from "@/features/account/rpc";
 import { LegalBody } from "@/app/_legal-body";
 
@@ -33,12 +32,6 @@ export default async function TermsPage() {
           いま有効な利用規約が登録されていません。
         </p>
       )}
-
-      <footer className="border-t border-ink/10 pt-6 text-xs">
-        <Link href="/privacy" className="underline">
-          プライバシーポリシー
-        </Link>
-      </footer>
     </main>
   );
 }

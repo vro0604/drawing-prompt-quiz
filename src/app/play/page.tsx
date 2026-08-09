@@ -74,16 +74,9 @@ export default async function PlayPage({
             ゲストとして発行されます。
           </p>
         )}
+        {/* 「作品一覧」「アカウント」はヘッダーにあるので、ここには置かない。
+            残すのはヘッダーに無いものだけ。 */}
         <p className="pt-2">
-          <Link href="/works" className="underline">
-            作品一覧
-          </Link>
-          <span className="px-2 text-decor">/</span>
-          {/* 作品の投稿にはアカウントが要る（spec C3）。導線をここに置く。 */}
-          <Link href="/account" className="underline">
-            アカウント
-          </Link>
-          <span className="px-2 text-decor">/</span>
           <Link href="/health/auth" className="underline">
             サインイン状態を確認する
           </Link>

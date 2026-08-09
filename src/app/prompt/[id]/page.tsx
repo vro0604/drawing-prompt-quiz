@@ -117,12 +117,6 @@ export default async function PromptPage({
           引かなかったカードは、作品を投稿したあと、または挑戦をやめたあとに見られます。
         </p>
       )}
-
-      <footer className="border-t border-ink/10 pt-6 text-sm">
-        <Link href="/play" className="underline">
-          お題を引く画面へ戻る
-        </Link>
-      </footer>
     </main>
   );
 }

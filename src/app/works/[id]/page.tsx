@@ -493,15 +493,6 @@ export default async function WorkPage({
       ) : myWork ? (
         <OwnerOnlyView work={myWork} />
       ) : null}
-
-      <footer className="flex flex-wrap gap-x-4 gap-y-2 border-t border-ink/10 pt-6 text-sm">
-        <Link href="/works" className="underline">
-          作品一覧へ
-        </Link>
-        <Link href="/play" className="underline">
-          お題を引く画面へ
-        </Link>
-      </footer>
     </main>
   );
 }
