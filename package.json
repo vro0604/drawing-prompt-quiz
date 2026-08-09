@@ -11,6 +11,7 @@
     "verify:launch": "node scripts/verify-launch.mjs",
     "setup:domain": "node scripts/setup-domain.mjs",
     "setup:auth": "node scripts/setup-auth.mjs",
+    "setup:protection": "node scripts/setup-protection.mjs",
     "cleanup:testdata": "node scripts/cleanup-testdata.mjs",
     "start": "next start",
     "lint": "eslint",

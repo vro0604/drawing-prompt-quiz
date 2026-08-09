@@ -393,8 +393,53 @@ select count(*) from works
 - [ ] 最後に動いた時刻（Last Run）が昨日以降か
 - [ ] Production のデプロイに `vercel.json` が入っているか
       （Cron は Production でしか動かない。Preview では動かない）
+- [ ] **呼び先のホストが認証で守られていないか**（→ 次の節。**これが原因だった**）
 - [ ] Logs にその時刻の実行が出ているか
-      （**3xx を返すと記録に出ない。**この経路は 401 か 200 なので該当しない）
+
+#### 呼び先は本番ドメインではない（D155）
+
+**2026-08-09 の原因はここだった。**登録もコードも正しかった。
+
+Cron は本番ドメインを叩かない。**デプロイ1件ごとに付く長いURL**を叩く。
+
+```
+本番ドメイン   drawing-prompt-quiz.vercel.app          ← ここは叩かれない
+呼び先         drawing-prompt-quiz-<hash>-<team>.vercel.app
+```
+
+**Deployment Protection（Vercel Authentication）は、この長いURLだけを守る。**
+守られていると **302 でログイン画面へ飛び、掃除の処理まで届かない。**
+
+**そして 302 はエラーではない。**「実行した」と記録されうるので、
+**上の「手動実行を押して成功が記録される」だけでは、この状態を見抜けない。**
+
+**確かめかた。呼び先のホストを直接叩く**（鍵は要らない。**401 が出れば届いている**）。
+
+```bash
+# ホスト名は Vercel の API から取れる（VERCEL_TOKEN が要る）
+npm run setup:protection          # 下見。呼び先のホストと保護の範囲を表示する
+
+# そのホストを叩く。302 なら守られている。401 なら届いている
+curl -o /dev/null -w "%{http_code}\n" https://<呼び先のホスト>/api/cron/cleanup
+```
+
+- [ ] 呼び先のホストの `/api/cron/cleanup` が **302 ではなく 401**
+
+302 だったら、保護をプレビューだけに狭める。
+
+```bash
+npm run setup:protection -- --apply
+```
+
+**公開範囲は増えない。**本番ドメインはすでに誰でも開けるし、
+その先は `CRON_SECRET` が守り、`noindex` は全応答に付く。
+**プレビューの保護は残る。**
+
+戻すときは控えを指定する（`--apply` を付けるまで送らない）。
+
+```bash
+npm run setup:protection -- --restore backup/vercel-protection-<日時>.json --apply
+```
 
 **掃除が止まると、ポリシーに書いたことが動かない。**
 ゲストの30日削除・同意記録の5年削除・画像の実体消去は、
