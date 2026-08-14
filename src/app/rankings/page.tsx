@@ -14,7 +14,7 @@ import {
 } from "@/features/ranking/types";
 import { divisionLabel } from "@/features/work/types";
 import { workImageUrl } from "@/features/work/rpc";
-import { surface } from "@/app/_surface";
+import { noticeMuted, surface, tabOff, tabOn } from "@/app/_surface";
 
 /**
  * /rankings ／ ランキング（2種 × 2系統）。
@@ -184,8 +184,8 @@ export default async function RankingsPage({
             href={hrefWith(current, { type: t.value, page: 1 })}
             className={
               t.value === type.value
-                ? "rounded-full bg-accent px-4 py-2 text-xs font-bold text-on-accent"
-                : "rounded-full border border-line-mid px-4 py-2 text-xs font-bold hover:bg-hover"
+                ? tabOn
+                : tabOff
             }
           >
             {t.label}
@@ -231,7 +231,7 @@ export default async function RankingsPage({
         </div>
       ) : null}
 
-      <p className="rounded-xl bg-sunken px-4 py-3 text-xs text-faint">
+      <p className={noticeMuted}>
         {type.note}
       </p>
 

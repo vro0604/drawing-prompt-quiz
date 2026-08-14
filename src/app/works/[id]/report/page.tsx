@@ -10,7 +10,7 @@ import {
   TURNSTILE_SITE_KEY,
   captchaEnabled,
 } from "@/features/report/captcha";
-import { field, surface } from "@/app/_surface";
+import { btnPrimary, field, noticeError, surface } from "@/app/_surface";
 
 /**
  * /works/[id]/report ／ 通報フォーム。
@@ -55,7 +55,7 @@ export default async function ReportWorkPage({
       </header>
 
       {error ? (
-        <p className="rounded-xl bg-danger-tint/10 px-4 py-3 text-sm whitespace-pre-wrap text-danger">
+        <p className={noticeError}>
           {error}
         </p>
       ) : null}
@@ -118,7 +118,7 @@ export default async function ReportWorkPage({
 
         <SubmitButton
           pendingLabel="送信しています…"
-          className="w-full rounded-xl bg-accent px-5 py-3 text-sm font-bold text-on-accent hover:opacity-85"
+          className={`${btnPrimary} w-full`}
         >
           報告する
         </SubmitButton>

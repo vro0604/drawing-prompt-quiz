@@ -11,7 +11,7 @@ import {
   type Division,
 } from "@/features/work/types";
 import { createWorkAction } from "./actions";
-import { field, surface } from "@/app/_surface";
+import { btnPrimary, btnSecondary, field, surface } from "@/app/_surface";
 
 /**
  * 投稿フォーム。
@@ -275,7 +275,7 @@ export function WorkForm({
         <div className="flex flex-wrap gap-3">
           <SubmitButton
             pendingLabel="投稿しています…"
-            className="rounded-xl bg-accent px-6 py-3 text-sm font-bold text-on-accent hover:opacity-85"
+            className={btnPrimary}
           >
             公開して投稿する
           </SubmitButton>
@@ -283,7 +283,7 @@ export function WorkForm({
             pendingLabel="保存しています…"
             name="saveAs"
             value="draft"
-            className="rounded-xl border border-line-firm px-6 py-3 text-sm font-bold hover:bg-hover"
+            className={btnSecondary}
           >
             下書きとして保存する
           </SubmitButton>

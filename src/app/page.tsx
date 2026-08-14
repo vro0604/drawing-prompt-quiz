@@ -1,6 +1,6 @@
 import Link from "next/link";
 import { NavButton } from "@/app/_pending";
-import { surface } from "@/app/_surface";
+import { btnPrimary, btnSecondary, surface } from "@/app/_surface";
 
 /**
  * / ／ トップページ。
@@ -75,14 +75,14 @@ export default function Home() {
         <NavButton
           href="/play"
           pendingLabel="読み込み中…"
-          className="flex-1 rounded-xl bg-accent px-6 py-4 text-center text-sm font-bold text-on-accent hover:opacity-85"
+          className={`${btnPrimary} flex-1`}
         >
           お題を引く
         </NavButton>
         <NavButton
           href="/works"
           pendingLabel="読み込み中…"
-          className="flex-1 rounded-xl border border-line-mid px-6 py-4 text-center text-sm font-bold hover:bg-hover"
+          className={`${btnSecondary} flex-1`}
         >
           みんなの作品を見る
         </NavButton>

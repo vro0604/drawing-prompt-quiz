@@ -2,6 +2,7 @@ import Link from "next/link";
 import { notFound } from "next/navigation";
 import { fetchMyPrompt } from "@/features/draft/rpc";
 import { formatDuration } from "@/features/draft/types";
+import { btnPrimary, btnSecondary } from "@/app/_surface";
 
 /**
  * /prompt/[id] ／ 確定したお題を表示する。
@@ -84,14 +85,14 @@ export default async function PromptPage({
         {prompt.work_id ? (
           <Link
             href={`/works/${prompt.work_id}`}
-            className="inline-block rounded-xl border border-line-firm px-6 py-3 text-sm font-bold hover:bg-hover"
+            className={`${btnSecondary} inline-block`}
           >
             投稿した作品を見る
           </Link>
         ) : prompt.status === "active" ? (
           <Link
             href={`/works/new?promptId=${prompt.id}`}
-            className="inline-block rounded-xl bg-accent px-6 py-3 text-sm font-bold text-on-accent hover:opacity-85"
+            className={`${btnPrimary} inline-block`}
           >
             このお題で描いた作品を投稿する
           </Link>

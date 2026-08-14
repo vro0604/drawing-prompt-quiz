@@ -1,6 +1,7 @@
 "use client";
 
 import Link from "next/link";
+import { btnPrimary } from "@/app/_surface";
 
 /**
  * 予期しない失敗のときの画面。
@@ -49,7 +50,7 @@ export default function GlobalError({
         <button
           type="button"
           onClick={reset}
-          className="rounded-xl bg-accent px-5 py-3 text-sm font-bold text-on-accent hover:opacity-85"
+          className={btnPrimary}
         >
           もう一度読み込む
         </button>

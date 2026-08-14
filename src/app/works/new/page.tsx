@@ -4,7 +4,7 @@ import { fetchMyPrompt } from "@/features/draft/rpc";
 import { fetchAccountState, fetchCurrentDocuments } from "@/features/account/rpc";
 import { formatDuration } from "@/features/draft/types";
 import { WorkForm } from "./_form";
-import { surface } from "@/app/_surface";
+import { noticeError, surface } from "@/app/_surface";
 
 /**
  * /works/new ／ 作品を投稿する画面。
@@ -61,7 +61,7 @@ export default async function NewWorkPage({
   const { promptId, error } = await searchParams;
 
   const errorBox = error ? (
-    <p className="rounded-xl bg-danger-tint/10 px-4 py-3 text-sm whitespace-pre-wrap text-danger">
+    <p className={noticeError}>
       {error}
     </p>
   ) : null;

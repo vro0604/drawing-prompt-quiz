@@ -26,7 +26,16 @@ import {
   toggleSaveAction,
   unpublishWorkAction,
 } from "./actions";
-import { surface } from "@/app/_surface";
+import {
+  btnPrimary,
+  btnSecondary,
+  btnToggle,
+  btnToggleOff,
+  btnToggleOn,
+  noticeError,
+  noticeSuccess,
+  surface,
+} from "@/app/_surface";
 
 /**
  * /works/[id] ／ 作品1件。
@@ -184,10 +193,9 @@ function MetaList({
  *   get_my_reaction を別に呼ぶ必要はない。
  */
 function Reactions({ work, canReact }: { work: WorkDetail; canReact: boolean }) {
-  const base =
-    "rounded-xl border px-5 py-3 text-sm font-bold transition hover:bg-hover";
-  const on = "border-line-active bg-hover";
-  const off = "border-line-mid";
+  const base = btnToggle;
+  const on = btnToggleOn;
+  const off = btnToggleOff;
 
   if (!canReact) {
     return (
@@ -317,7 +325,7 @@ function PublicView({
             <input type="hidden" name="workId" value={work.id} />
             <SubmitButton
               pendingLabel="切り替えています…"
-              className="rounded-xl border border-line-firm px-6 py-3 text-sm font-bold hover:bg-hover"
+              className={btnSecondary}
             >
               下書きに戻す（他の人から見えなくする）
             </SubmitButton>
@@ -392,7 +400,7 @@ function OwnerOnlyView({ work }: { work: MyWork }) {
           <input type="hidden" name="workId" value={work.id} />
           <SubmitButton
             pendingLabel="公開しています…"
-            className="rounded-xl bg-accent px-6 py-3 text-sm font-bold text-on-accent hover:opacity-85"
+            className={btnPrimary}
           >
             公開する
           </SubmitButton>
@@ -470,13 +478,13 @@ export default async function WorkPage({
   return (
     <main className="mx-auto w-full max-w-3xl space-y-8 p-6 sm:p-10">
       {error ? (
-        <p className="rounded-xl bg-danger-tint/10 px-4 py-3 text-sm whitespace-pre-wrap text-danger">
+        <p className={noticeError}>
           {error}
         </p>
       ) : null}
 
       {notice ? (
-        <p className="rounded-xl bg-success-tint/10 px-4 py-3 text-sm whitespace-pre-wrap text-success">
+        <p className={noticeSuccess}>
           {notice}
         </p>
       ) : null}

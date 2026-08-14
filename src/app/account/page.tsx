@@ -11,7 +11,14 @@ import {
   updateProfileAction,
   updateVisibilityAction,
 } from "./actions";
-import { field, surface } from "@/app/_surface";
+import {
+  btnPrimary,
+  btnSecondary,
+  field,
+  noticeError,
+  noticeSuccess,
+  surface,
+} from "@/app/_surface";
 
 /**
  * /account ／ アカウントの最小画面。
@@ -33,11 +40,12 @@ export const metadata = {
   title: "アカウント",
 };
 
-const primary =
-  "w-full rounded-xl bg-accent px-5 py-3 text-sm font-bold text-on-accent hover:opacity-85";
-
-const secondary =
-  "w-full rounded-xl border border-line-firm px-5 py-3 text-sm font-bold hover:bg-hover";
+/*
+ * この画面のボタンは全部が横いっぱいに伸びる（フォームが縦に並ぶため）。
+ * 形そのものは共通の定数が持ち、ここでは幅だけを足す。
+ */
+const primary = `${btnPrimary} w-full`;
+const secondary = `${btnSecondary} w-full`;
 
 /** メールとパスワードの2欄。サインインにも登録にも同じ形を使う */
 function Credentials({ idPrefix }: { idPrefix: string }) {
@@ -98,13 +106,13 @@ export default async function AccountPage({
       </header>
 
       {error ? (
-        <p className="rounded-xl bg-danger-tint/10 px-4 py-3 text-sm whitespace-pre-wrap text-danger">
+        <p className={noticeError}>
           {error}
         </p>
       ) : null}
 
       {notice ? (
-        <p className="rounded-xl bg-success-tint/10 px-4 py-3 text-sm whitespace-pre-wrap text-success">
+        <p className={noticeSuccess}>
           {notice}
         </p>
       ) : null}

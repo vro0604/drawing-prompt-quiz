@@ -11,7 +11,7 @@ import {
 } from "@/features/work/types";
 import { submitAnswerAction } from "./actions";
 import { SubmitButton } from "@/app/_pending";
-import { surface } from "@/app/_surface";
+import { btnPrimary, noticeMuted, surface } from "@/app/_surface";
 
 /**
  * 作品ページのクイズ部分。
@@ -108,7 +108,7 @@ export function QuizForm({ quiz }: { quiz: WorkQuiz }) {
       <div className="space-y-2">
         <SubmitButton
           pendingLabel="採点しています…"
-          className="w-full rounded-xl bg-accent px-6 py-3 text-sm font-bold text-on-accent hover:opacity-85"
+          className={`${btnPrimary} w-full`}
         >
           回答する
         </SubmitButton>
@@ -326,7 +326,7 @@ export function MyResult({
         <p>
           <a
             href={`/works/${workId}?result=open`}
-            className="inline-block rounded-xl bg-accent px-8 py-3 text-sm font-bold text-on-accent"
+            className={`${btnPrimary} inline-block`}
           >
             開く
           </a>
@@ -366,7 +366,7 @@ export function MyResult({
         **絵の巧拙とは独立した軸**なので、そう書いておく。
         「上手くなくていい」は、慰めではなく、この数字が示す事実。
       */}
-      <p className="rounded-xl bg-sunken px-4 py-3 text-xs text-faint">
+      <p className={noticeMuted}>
         伝わりやすさは、絵の上手さとは別の軸です。
         線が荒くても伝わることも、丁寧に描いても伝わらないこともあります。
       </p>

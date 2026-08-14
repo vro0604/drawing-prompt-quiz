@@ -13,7 +13,7 @@ import {
   revealCardAction,
   startDraftAction,
 } from "./actions";
-import { field, surface } from "@/app/_surface";
+import { btnPrimary, btnQuiet, btnSecondary, field, noticeError, surface } from "@/app/_surface";
 
 /**
  * /play の見た目の部品。
@@ -25,7 +25,7 @@ import { field, surface } from "@/app/_surface";
 
 export function ErrorBox({ message }: { message: string }) {
   return (
-    <p className="rounded-xl bg-danger-tint/10 px-4 py-3 text-sm whitespace-pre-wrap text-danger">
+    <p className={noticeError}>
       {message}
     </p>
   );
@@ -98,7 +98,7 @@ export function StartForm({ modes }: { modes: DraftMode[] }) {
 
       <SubmitButton
         pendingLabel="始めています…"
-        className="w-full rounded-xl bg-accent px-5 py-3 text-sm font-bold text-on-accent hover:opacity-85"
+        className={`${btnPrimary} w-full`}
       >
         ドラフトを始める
       </SubmitButton>
@@ -253,7 +253,7 @@ export function DraftBoard({ state }: { state: DraftState }) {
             <input type="hidden" name="sessionId" value={state.session_id} />
             <SubmitButton
               pendingLabel="確定しています…"
-              className="rounded-xl bg-accent px-6 py-3 text-sm font-bold text-on-accent hover:opacity-85"
+              className={btnPrimary}
             >
               このお題で確定する
             </SubmitButton>
@@ -265,7 +265,7 @@ export function DraftBoard({ state }: { state: DraftState }) {
             <input type="hidden" name="sessionId" value={state.session_id} />
             <SubmitButton
               pendingLabel="引き直しています…"
-              className="rounded-xl border border-line-firm px-6 py-3 text-sm font-bold hover:bg-hover"
+              className={btnSecondary}
             >
               全部引き直す（残り {state.rerolls_left} 回）
             </SubmitButton>
@@ -276,7 +276,7 @@ export function DraftBoard({ state }: { state: DraftState }) {
           <input type="hidden" name="sessionId" value={state.session_id} />
           <SubmitButton
             pendingLabel="捨てています…"
-            className="rounded-xl px-6 py-3 text-sm text-faint hover:text-muted"
+            className={btnQuiet}
           >
             このドラフトを捨てる
           </SubmitButton>

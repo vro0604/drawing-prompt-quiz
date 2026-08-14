@@ -20,7 +20,7 @@ import {
 } from "@/features/profile/types";
 import { workImageUrl } from "@/features/work/rpc";
 import { divisionLabel, type PublicWorkListItem } from "@/features/work/types";
-import { surface } from "@/app/_surface";
+import { surface, tabOff, tabOn } from "@/app/_surface";
 
 /**
  * /u/[handle] ／ 公開プロフィール（ポートフォリオ）。
@@ -354,8 +354,8 @@ export default async function ProfilePage({
             href={t.key === tabs[0].key ? `/u/${profile.handle}` : `/u/${profile.handle}?tab=${t.key}`}
             className={
               t.key === tab.key
-                ? "rounded-full bg-accent px-4 py-2 text-xs font-bold text-on-accent"
-                : "rounded-full border border-line-mid px-4 py-2 text-xs font-bold hover:bg-hover"
+                ? tabOn
+                : tabOff
             }
           >
             {t.label}

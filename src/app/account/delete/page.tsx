@@ -2,7 +2,7 @@ import Link from "next/link";
 import { fetchAccountState } from "@/features/account/rpc";
 import { deleteAccountAction } from "./actions";
 import { SubmitButton } from "@/app/_pending";
-import { field, surface } from "@/app/_surface";
+import { btnDanger, btnSecondary, field, noticeError, surface } from "@/app/_surface";
 
 /**
  * /account/delete ／ 退会の確認画面。
@@ -98,7 +98,7 @@ export default async function DeleteAccountPage({
   return (
     <Shell>
       {error ? (
-        <p className="rounded-xl bg-danger-tint/10 px-4 py-3 text-sm whitespace-pre-wrap text-danger">
+        <p className={noticeError}>
           {error}
         </p>
       ) : null}
@@ -190,13 +190,13 @@ export default async function DeleteAccountPage({
         <div className="flex flex-wrap gap-3">
           <SubmitButton
             pendingLabel="退会の手続き中…"
-            className="rounded-xl bg-danger-solid px-6 py-3 text-sm font-bold text-on-danger hover:opacity-85"
+            className={btnDanger}
           >
             退会する（取り消せません）
           </SubmitButton>
           <Link
             href="/account"
-            className="rounded-xl border border-line-firm px-6 py-3 text-sm font-bold hover:bg-hover"
+            className={btnSecondary}
           >
             やめる
           </Link>

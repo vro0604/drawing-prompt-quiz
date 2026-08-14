@@ -10,7 +10,7 @@ import {
   divisionLabel,
   type PublicWorkListItem,
 } from "@/features/work/types";
-import { surface } from "@/app/_surface";
+import { noticeMuted, noticeSuccess, surface, tabOff, tabOn } from "@/app/_surface";
 
 /**
  * /works ／ 公開作品の一覧。
@@ -168,7 +168,7 @@ export default async function WorksPage({
       </header>
 
       {notice ? (
-        <p className="rounded-xl bg-success-tint/10 px-4 py-3 text-sm whitespace-pre-wrap text-success">
+        <p className={noticeSuccess}>
           {notice}
         </p>
       ) : null}
@@ -181,8 +181,8 @@ export default async function WorksPage({
             href={hrefWith(current, { tab: t.key, page: 1 })}
             className={
               t.key === tab.key
-                ? "rounded-full bg-accent px-4 py-2 text-xs font-bold text-on-accent"
-                : "rounded-full border border-line-mid px-4 py-2 text-xs font-bold hover:bg-hover"
+                ? tabOn
+                : tabOff
             }
           >
             {t.label}
@@ -234,7 +234,7 @@ export default async function WorksPage({
       </div>
 
       {tab.key === "ai" ? (
-        <p className="rounded-xl bg-sunken px-4 py-3 text-xs text-faint">
+        <p className={noticeMuted}>
           AI生成の作品です。通常の一覧には出ません。
         </p>
       ) : null}

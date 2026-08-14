@@ -6,7 +6,7 @@ import type { MyWork } from "@/features/work/types";
 import { deleteWorkAction } from "../actions";
 import { SubmitButton } from "@/app/_pending";
 import Image from "next/image";
-import { field, surface } from "@/app/_surface";
+import { btnDanger, field, noticeError, surface } from "@/app/_surface";
 
 /**
  * /works/[id]/delete ／ 削除の確認画面。
@@ -75,7 +75,7 @@ export default async function DeleteWorkPage({
       </header>
 
       {error ? (
-        <p className="rounded-xl bg-danger-tint/10 px-4 py-3 text-sm whitespace-pre-wrap text-danger">
+        <p className={noticeError}>
           {error}
         </p>
       ) : null}
@@ -161,7 +161,7 @@ export default async function DeleteWorkPage({
 
         <SubmitButton
           pendingLabel="削除しています…"
-          className="w-full rounded-xl bg-danger-solid px-5 py-3 text-sm font-bold text-on-danger hover:opacity-85"
+          className={`${btnDanger} w-full`}
         >
           この作品を削除する
         </SubmitButton>
