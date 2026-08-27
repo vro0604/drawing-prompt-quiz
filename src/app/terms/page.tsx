@@ -16,6 +16,19 @@ export const metadata = {
   title: "利用規約",
 };
 
+/**
+ * **ビルドの最中に DB を読ませない。**理由は /privacy と同じなので、
+ * 詳しくは `src/app/privacy/page.tsx` の同じ場所に書いてある。
+ *
+ * 短く言うと、`next build` は静的にできるか確かめるためにページを一度実行し、
+ * そこで Supabase の環境変数が無いとビルド全体が止まっていた。
+ * 本番には値が入っているので通っていたが、**PR ごとのプレビューには入っていない。**
+ *
+ * この画面はもともとリクエストごとに描かれていた（ビルドの出力でも ƒ）ので、
+ * 利用者から見た動きは1つも変わらない。
+ */
+export const dynamic = "force-dynamic";
+
 export default async function TermsPage() {
   const { terms } = await fetchCurrentDocuments();
 
