@@ -1,5 +1,6 @@
 import type { Metadata } from "next";
 import { Geist } from "next/font/google";
+import { SITE_URL } from "@/lib/env";
 import { SiteFooter, SiteHeader } from "./_shell";
 import "./globals.css";
 
@@ -54,11 +55,13 @@ const geistSans = Geist({
  *
  * 本番では NEXT_PUBLIC_SITE_URL を設定する（Step 16）。
  * 手元では localhost に落として、開発中も同じ経路で確かめられるようにする。
+ *
+ * **値は src/lib/env.ts の SITE_URL から取る。**ここで
+ * `process.env.NEXT_PUBLIC_SITE_URL ?? "http://localhost:3000"` と書き直すと、
+ * 同じ既定値が2か所になり、末尾スラッシュを落とす処理が片方にしか無い状態になる。
  */
-const siteUrl = process.env.NEXT_PUBLIC_SITE_URL ?? "http://localhost:3000";
-
 export const metadata: Metadata = {
-  metadataBase: new URL(siteUrl),
+  metadataBase: new URL(SITE_URL),
   // サービス名は「つたわるかな」（D114）。
   // 名前が説明を兼ねなくなったので、description が説明の役目を持つ。
   title: {

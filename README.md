@@ -43,7 +43,7 @@
 ## 設計の見どころ 3つ
 
 コードより先に、**なぜそうしたか**を読んでほしい。
-判断は144個すべて [`docs/decisions.md`](docs/decisions.md) に残してある。
+判断は157個すべて [`docs/decisions.md`](docs/decisions.md) に残してある。
 その中から3つ選ぶ。
 
 ### 1. 正解が漏れない構造を、出口の本数で保証する
@@ -213,7 +213,7 @@ migration の中に検査を書く方針にしている（D69）。
 
 | | |
 |---|---|
-| [`docs/decisions.md`](docs/decisions.md) | **決定ログ。D1〜D144。**なぜそうしたかは全部ここ |
+| [`docs/decisions.md`](docs/decisions.md) | **決定ログ。D1〜D157。**なぜそうしたかは全部ここ |
 | [`docs/spec.md`](docs/spec.md) | 仕様 |
 | [`docs/roadmap.md`](docs/roadmap.md) | 公開までの順番と分量 |
 | [`docs/launch-checklist.md`](docs/launch-checklist.md) | 公開手順0〜10 |
