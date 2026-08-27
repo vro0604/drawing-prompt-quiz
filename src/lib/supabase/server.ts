@@ -12,10 +12,23 @@ import { SUPABASE_PUBLISHABLE_KEY, SUPABASE_URL, assertSupabaseEnv } from "@/lib
  *
  * Next.js 16 では cookies() が非同期なので await が必要。
  * 解説記事によっては await なしで書かれているが、このバージョンでは動かない。
+ *
+ * 【cookies() を先に呼ぶ。順番を入れ替えないこと】
+ *   `next build` は、各ページを前もって一度作ってみる。そのとき cookies() を
+ *   呼んだページは「リクエストごとに作るしかない」と判断され、そこで作るのを
+ *   静かにやめてくれる。
+ *
+ *   assertSupabaseEnv() を先に置くと、環境変数の無いビルドではその判断まで
+ *   届かず、ただの例外としてビルドごと止まる。PR ごとのプレビューには
+ *   環境変数が入っていないので、これで全 PR のビルドが落ちていた
+ *   （B-005 / PENDING 9）。
+ *
+ *   入れ替えても、環境変数が無いまま実際にアクセスされたときは
+ *   これまでどおり同じ例外が出る。変わるのはビルド中の振る舞いだけ。
  */
 export async function createSupabaseServerClient() {
-  assertSupabaseEnv();
   const cookieStore = await cookies();
+  assertSupabaseEnv();
 
   return createServerClient(SUPABASE_URL, SUPABASE_PUBLISHABLE_KEY, {
     cookies: {

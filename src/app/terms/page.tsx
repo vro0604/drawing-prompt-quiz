@@ -16,6 +16,12 @@ export const metadata = {
   title: "利用規約",
 };
 
+/**
+ * ビルド中にこのページを作らせない（リクエストのたびに作る）。
+ * 理由は /privacy と同じ。src/app/privacy/page.tsx のコメントを参照。
+ */
+export const dynamic = "force-dynamic";
+
 export default async function TermsPage() {
   const { terms } = await fetchCurrentDocuments();
 
