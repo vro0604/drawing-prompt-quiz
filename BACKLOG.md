@@ -65,3 +65,35 @@
 - 着手前に決めること: D157 の「紙・掲示板寄りにするか」が未確認のまま。
   そこが決まる前に寸法を動かすと、二度手間になる。
 - 影響範囲: tabOn / tabOff を使う全画面（作品一覧・ランキング）。
+
+## B-005 /privacy と /terms がビルド中に DB を読むので、環境変数の無いビルドは落ちる
+
+- 見つかった日: 2026-08-27
+- 場所: src/app/privacy/page.tsx:17、src/app/terms/page.tsx（同じ形）、
+  src/lib/env.ts:65（assertSupabaseEnv）
+- 現状: 規約とポリシーの本文は DB から読む。ページに
+  `export const dynamic = "force-dynamic"` が無いので、`next build` は
+  ページデータを集める段でこの2つを一度実行する。そこで Supabase の
+  環境変数が無いと `assertSupabaseEnv()` が例外を投げ、**ビルド全体が止まる。**
+
+  ```
+  Error occurred prerendering page "/privacy"
+  Error: Supabase の環境変数が設定されていません:
+    NEXT_PUBLIC_SUPABASE_URL, NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY
+  ```
+
+  PR #1 の Vercel プレビューがこれで落ちた。**この PR の差分が原因ではない。**
+  origin/main の木をそのまま環境変数なしでビルドしても、同じ行で同じように
+  落ちることを実測した。逆に、値を入れれば PR のブランチも main も通る。
+  つまり「プレビュー環境に環境変数が入っていない」ことが表に出ただけで、
+  以前からあった状態。PR が1本も無かったので、今まで誰も踏まなかった。
+- なぜ雑務でないか: 直しかたが2通りあり、どちらもデータの読み方か
+  公開の設定を変える（仕分けの3番目・5番目）。
+- 直すとどうなるか: プレビューのデプロイが通るようになり、PR ごとに
+  実際の画面を開いて確かめられるようになる。
+- 着手前に決めること: 次のどちらにするか。docs/PENDING.md の 9 に出した。
+  (a) Vercel の環境変数を Preview にも入れる（コードは変えない）
+  (b) この2ページを `force-dynamic` にして、ビルド中に DB を読まない形にする
+- 影響範囲: (a) はコード変更なし。(b) は src/app/privacy/page.tsx と
+  src/app/terms/page.tsx の2ファイル。どちらの経路でも、この2画面は
+  もともとリクエストごとに描かれている（ビルドの出力でも ƒ）。
