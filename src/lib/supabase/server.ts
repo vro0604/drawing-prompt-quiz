@@ -12,10 +12,40 @@ import { SUPABASE_PUBLISHABLE_KEY, SUPABASE_URL, assertSupabaseEnv } from "@/lib
  *
  * Next.js 16 では cookies() が非同期なので await が必要。
  * 解説記事によっては await なしで書かれているが、このバージョンでは動かない。
+ *
+ * ============================================================================
+ * 【この2行の順番を入れ替えないこと】
+ * ============================================================================
+ *
+ *   `cookies()` を先に、`assertSupabaseEnv()` を後に呼ぶ。**逆にすると、
+ *   環境変数の無いビルドが落ちる。**
+ *
+ *   `next build` は、どの経路が静的にできるかを確かめるために、
+ *   ページを一度実行する。`cookies()` はリクエストのときにしか無いものなので、
+ *   ここに来た時点で Next.js は「この経路は静的にできない」と判断し、
+ *   **その場で実行を打ち切って dynamic に印を付ける。**
+ *
+ *   検査を先に置くと、その打ち切りより前に例外が飛ぶ。すると Next.js には
+ *   「dynamic だと分かった」ではなく「ページが壊れている」と見え、
+ *   ビルド全体が止まる。
+ *
+ *     Error occurred prerendering page "/saves"
+ *     Error: Supabase の環境変数が設定されていません
+ *
+ *   本番には値が入っているので本番のビルドは通っていた。だが
+ *   **PR ごとのプレビューには入っていない**ので、PR を出すたびに
+ *   デプロイが赤くなっていた（docs/QUEUE.md の完了「PENDING 9」）。
+ *   「本番で通る」と「どこでも通る」は別（D123・D152・D154 と同じ形）。
+ *
+ *   【検査が弱くなっていないこと】
+ *     リクエストのときは `cookies()` がふつうに返るので、そのすぐ後で
+ *     検査が走る。**落ちる条件も、出るメッセージも、前と同じ。**
+ *     クライアントを組み立てる前に検査する、という順序も変わっていない。
+ *     変わったのは「ビルド中の下見では、検査に届く前に打ち切られる」ことだけ。
  */
 export async function createSupabaseServerClient() {
-  assertSupabaseEnv();
   const cookieStore = await cookies();
+  assertSupabaseEnv();
 
   return createServerClient(SUPABASE_URL, SUPABASE_PUBLISHABLE_KEY, {
     cookies: {
