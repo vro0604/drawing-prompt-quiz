@@ -28,6 +28,16 @@ import { btnPrimary, btnSecondary, surface } from "@/app/_surface";
  *   この画面では匿名サインインをしない。開いただけで auth.users が
  *   増えると、見に来ただけの人が MAU に乗る（spec 11-1）。
  *   ゲストが発行されるのは、お題を引くなど実際に書き込む瞬間だけ。
+ *
+ * 【末尾に行き先を並べない】
+ *   もとは末尾に「そのほかの入口」として、ランキング・作品一覧・利用規約・
+ *   プライバシーポリシーの4つを並べていた。全ページにヘッダーとフッターが
+ *   付いた（_shell.tsx）ことで、**4つとも同じ画面に二度出る**ようになったので
+ *   外した（B-001 / PENDING 6）。行き先は減っていない。
+ *   ランキングと作品はヘッダーに、規約とポリシーはフッターにある。
+ *
+ *   ここへ行き先を足したくなったら、まず _shell.tsx を見ること。
+ *   この画面だけに要る導線でなければ、そちらに足すほうが全ページに効く。
  */
 
 export const metadata = {
@@ -121,22 +131,6 @@ export default function Home() {
           </Link>
         </p>
       </section>
-
-      {/* --- そのほかの入口 --------------------------------------------------- */}
-      <nav className="flex flex-wrap gap-x-6 gap-y-2 text-sm">
-        <Link href="/rankings" className="underline">
-          ランキング
-        </Link>
-        <Link href="/works" className="underline">
-          作品一覧
-        </Link>
-        <Link href="/terms" className="underline">
-          利用規約
-        </Link>
-        <Link href="/privacy" className="underline">
-          プライバシーポリシー
-        </Link>
-      </nav>
     </main>
   );
 }
