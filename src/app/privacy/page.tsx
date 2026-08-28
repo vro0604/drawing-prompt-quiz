@@ -13,6 +13,20 @@ export const metadata = {
   title: "プライバシーポリシー",
 };
 
+/**
+ * ビルド中にこのページを作らせない（リクエストのたびに作る）。
+ *
+ * 本文は DB から読む。`next build` はページを前もって作ろうとして
+ * その読み取りを一度実行するが、そこで Supabase の環境変数が無いと
+ * assertSupabaseEnv() が投げてビルドごと止まる。PR ごとのプレビューには
+ * 環境変数が入っていないので、これで毎回落ちていた（B-005 / PENDING 9）。
+ *
+ * 中身は Cookie（サインイン状態）に依らないが、**版が変わったときに
+ * 古い本文を配らない**ことのほうが大事なので、キャッシュはせず
+ * 毎回読む。規約ページの表示回数はもともと多くない。
+ */
+export const dynamic = "force-dynamic";
+
 export default async function PrivacyPage() {
   const { privacy } = await fetchCurrentDocuments();
 
