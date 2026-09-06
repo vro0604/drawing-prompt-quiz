@@ -506,8 +506,12 @@ export const checks = [
     // 22表（Step 3B まで）＋ handle_history（P5）は 3B の数に含む。
     // 退会・規約で7表増えて29。増減したら必ずここを直す
     //   ＝「知らないうちに表が増えていた」を検出する仕掛け。
-    name: "public スキーマの表が29個",
-    expected: 29,
+    // 2026-09-04 に17表増えた（お題の再編・持ち出し・時間・フレーバー・計測）。
+    // 内訳は docs/decisions.md の D158〜D164 の実装。
+    // 2026-09-05 にさらに2表増えた（保存枠 saved_carry_slots と、
+    // 保存枠を使った派生お題 prompt_carry_slots）。
+    name: "public スキーマの表が50個",
+    expected: 50,
     sql: `select count(*)::int from pg_tables where schemaname = 'public'`,
     detailSql: `select tablename from pg_tables
                  where schemaname = 'public' order by tablename`,
@@ -522,8 +526,8 @@ export const checks = [
   },
   {
     group: "構造",
-    name: "29表すべてで RLS が有効",
-    expected: 29,
+    name: "50表すべてで RLS が有効",
+    expected: 50,
     sql: `select count(*)::int from pg_class c
             join pg_namespace n on n.oid = c.relnamespace
            where n.nspname = 'public' and c.relkind = 'r' and c.relrowsecurity`,
@@ -594,8 +598,10 @@ export const checks = [
   },
   {
     group: "権限",
-    name: "権限を持つ表がちょうど10表",
-    expected: 10,
+    // 11表目は draw_categories（お題生成用カテゴリ。画面に分類名を出すため）。
+    // 語彙そのもの（tags）と同じく、読める列だけを配っている。
+    name: "権限を持つ表がちょうど11表",
+    expected: 11,
     sql: `select count(distinct table_name)::int from information_schema.column_privileges
            where table_schema = 'public' and grantee in ('anon','authenticated')`,
   },
@@ -678,12 +684,27 @@ export const checks = [
   },
   {
     group: "関数",
+    // 数えるのは**名前の種類**であって、関数の本数ではない。
+    // 互換期間は get_public_works と get_next_work に旧版が並ぶので、
+    // 本数で数えると、旧版を足しただけでこの検査が落ちる。
     name: "公開10本は anon から実行できる",
     expected: 10,
-    sql: `select count(*)::int from pg_proc p
+    sql: `select count(distinct p.proname)::int from pg_proc p
             join pg_namespace n on n.oid = p.pronamespace
            where n.nspname='public' and p.proname = any($1)
              and has_function_privilege('anon', p.oid, 'EXECUTE')`,
+    params: [PUBLIC_RPCS],
+  },
+  {
+    group: "関数",
+    // 名前で数えるようにした以上、**同じ名前の旧版が漏れていないか**を別に見る。
+    // 旧版に権限が無いと、旧い画面が動いている時間帯にそこだけ落ちる。
+    name: "公開RPCは、同名の旧版も含めて全部 anon から実行できる",
+    expected: 0,
+    sql: `select count(*)::int from pg_proc p
+            join pg_namespace n on n.oid = p.pronamespace
+           where n.nspname='public' and p.proname = any($1)
+             and not has_function_privilege('anon', p.oid, 'EXECUTE')`,
     params: [PUBLIC_RPCS],
   },
   {
@@ -843,20 +864,27 @@ export const checks = [
   // ここでは、防いでいる仕掛けが定義から消えていないことを確かめる。
   {
     group: "選択肢",
-    name: "complete_draft がプール単位でハズレを配っている",
+    // 2026-09-04 に complete_draft から build_quiz_for_prompt へ切り出した。
+    // 切り出した理由は、確定の経路と試験の準備の経路に同じ規則を通させるため。
+    //
+    // 2026-09-05（D165）に、問数の引数を落として「お題の全語を出す」形にした。
+    // ここで見るのは、その関数が**問数を引数で受け取らないこと。**
+    // 引数版が残っていると「3問だけ作る」呼び方が生き残る。
+    name: "出題の組み立てが問数を引数で受け取らない（D165）",
     expected: 1,
     sql: `select count(*)::int from pg_proc p
             join pg_namespace n on n.oid = p.pronamespace
-           where n.nspname='public' and p.proname='complete_draft'
-             and p.prosrc like '%seq_in_pool%'`,
+           where n.nspname='public' and p.proname='build_quiz_for_prompt'
+             and p.pronargs = 1
+             and p.proargtypes[0] = 'uuid'::regtype`,
   },
   {
     group: "選択肢",
-    name: "complete_draft が重複を検算して失敗させる",
+    name: "出題の組み立てが重複を検算して失敗させる",
     expected: 1,
     sql: `select count(*)::int from pg_proc p
             join pg_namespace n on n.oid = p.pronamespace
-           where n.nspname='public' and p.proname='complete_draft'
+           where n.nspname='public' and p.proname='build_quiz_for_prompt'
              and p.prosrc like '%QUIZ_CHOICES_DUPLICATE%'
              and p.prosrc like '%QUIZ_CHOICES_INSUFFICIENT%'`,
   },
@@ -1283,6 +1311,77 @@ export const checks = [
           + (select count(*) from public.quiz_choices qc
               where not exists (select 1 from public.tags t where t.id = qc.tag_id))
           )::int`,
+  },
+
+  // ─────────────── 新旧の並存（互換期間だけ置く旧い入口）───────────────
+  //
+  // 本番は「DBを先に更新し、そのあと画面を差し替える」順で当てる。
+  // その間、旧い画面と新しいDBが同時に動く。
+  // 旧い入口が消えていると、その時間帯に一覧・次の作品・モード選択が落ちる。
+  //
+  // ここで見るのは3つ。
+  //   1. 旧い入口が在ること
+  //   2. 新旧が並んでも、呼び出しの行き先が1つに決まること（既定値の数）
+  //   3. 旧い画面が読む列の権限が残っていること
+  {
+    group: "互換",
+    name: "get_next_work が新旧2つある（新1引数・旧2引数）",
+    expected: 2,
+    sql: `select count(*)::int from pg_proc p
+            join pg_namespace n on n.oid = p.pronamespace
+           where n.nspname='public' and p.proname='get_next_work'`,
+  },
+  {
+    group: "互換",
+    name: "旧 get_next_work(uuid, text) に既定値が無い（あると呼び出しが曖昧になる）",
+    expected: 0,
+    sql: `select coalesce(max(p.pronargdefaults),0)::int from pg_proc p
+            join pg_namespace n on n.oid = p.pronamespace
+           where n.nspname='public' and p.proname='get_next_work'
+             and p.pronargs = 2`,
+  },
+  {
+    group: "互換",
+    name: "get_public_works が新旧2つある（旧5引数・新6引数）",
+    expected: 2,
+    sql: `select count(*)::int from pg_proc p
+            join pg_namespace n on n.oid = p.pronamespace
+           where n.nspname='public' and p.proname='get_public_works'`,
+  },
+  {
+    group: "互換",
+    name: "新 get_public_works（6引数）に既定値が無い（あると5引数の呼び出しが曖昧になる）",
+    expected: 0,
+    sql: `select coalesce(max(p.pronargdefaults),0)::int from pg_proc p
+            join pg_namespace n on n.oid = p.pronamespace
+           where n.nspname='public' and p.proname='get_public_works'
+             and p.pronargs = 6`,
+  },
+  {
+    group: "互換",
+    name: "旧列 quiz_question_count が2つの表に残っている（互換期間だけ）",
+    expected: 2,
+    sql: `select count(*)::int from information_schema.columns
+           where table_schema='public' and column_name='quiz_question_count'`,
+  },
+  {
+    group: "互換",
+    // 触ってよいのは draft_state_json だけ（旧い画面へ返す鍵として）
+    name: "新しい実装は quiz_question_count を（旧い鍵を返す1本以外）参照していない",
+    expected: 0,
+    sql: `select count(*)::int from pg_proc p
+            join pg_namespace n on n.oid = p.pronamespace
+           where n.nspname='public' and p.prokind='f'
+             and p.proname <> 'draft_state_json'
+             and pg_get_functiondef(p.oid) like '%quiz_question_count%'`,
+  },
+  {
+    group: "互換",
+    name: "旧い画面が draft_modes.quiz_question_count を読める",
+    expected: 1,
+    sql: `select case when has_column_privilege('anon','public.draft_modes',
+                                                'quiz_question_count','select')
+                     then 1 else 0 end`,
   },
 
   // ──────────────────────── 通常フィードと AI の分離 ────────────────────────
@@ -1910,27 +2009,120 @@ export const checks = [
   },
   {
     group: "漏洩",
-    name: "prompt_cards（＝答え）に触れる関数が4本のまま",
-    // 内訳は complete_draft（書く）／ get_my_prompt（本人のお題）／
-    // get_my_answer（回答済み本人へ正解を返す）／
-    // get_saved_works（回答済みの作品だけお題を添える。Step 14）の4本だけ。
+    name: "お題に触れる関数のうち、外から呼べるものがすべて呼び出した人を見ている",
+    // 【なぜ本数を数えるのをやめたか】
+    //   もとは「prompt_cards に触れる関数が4本のまま」だった。
+    //   機能が増えれば本数は増えるので、そのたびに期待値を上げることになる。
+    //   **上げるだけの作業は、増えた1本が安全かどうかを何も確かめていない。**
     //
-    // submit_answer はここに入らない。正解の組み立てはせず、
-    // 最後に get_my_answer を呼ぶだけだからで、それが狙いどおりであることを
-    // この数で確かめている。5本目が増えたら、それが新しい漏洩経路になりうる。
-    //
-    // **数を増やすのは意図した変更のときだけ。** 下の「回答済み判定」の項目と
-    // 対で見ること（本数が増えても、無条件に読む関数は許さない）。
-    expected: 4,
+    //   見るべきは本数ではなく、次の1点。
+    //     外から呼べる（anon か authenticated に EXECUTE がある）なら、
+    //     本文で auth.uid() を見ていること。
+    //   内部専用の関数（権限を配っていないもの）は、この経路で呼ばれない。
+    expected: 0,
     sql: `select count(*)::int from pg_proc p
             join pg_namespace n on n.oid = p.pronamespace
-           where n.nspname='public'
-             and p.prosrc like '%public.prompt_cards%'`,
-    detailSql: `select p.proname from pg_proc p
-                  join pg_namespace n on n.oid = p.pronamespace
-                 where n.nspname='public'
+           where n.nspname = 'public'
+             and p.prosrc like '%public.prompt_cards%'
+             and (has_function_privilege('anon', p.oid, 'EXECUTE')
+                  or has_function_privilege('authenticated', p.oid, 'EXECUTE'))
+             and p.prosrc not like '%auth.uid()%'`,
+    detailSql: `select p.proname,
+                       has_function_privilege('anon', p.oid, 'EXECUTE') as anon_exec,
+                       has_function_privilege('authenticated', p.oid, 'EXECUTE') as auth_exec,
+                       (p.prosrc like '%auth.uid()%') as checks_caller
+                  from pg_proc p join pg_namespace n on n.oid = p.pronamespace
+                 where n.nspname = 'public'
                    and p.prosrc like '%public.prompt_cards%'
                  order by p.proname`,
+  },
+  {
+    group: "漏洩",
+    name: "お題に触れて外から呼べる関数が、想定した8本だけ",
+    // 上の検査と対で見る。上は「呼び出した人を見ているか」、
+    // こちらは「顔ぶれが勝手に増えていないか」。
+    //   complete_draft        書く（本人のドラフトから）
+    //   get_my_prompt         本人のお題
+    //   get_my_answer         回答済み本人へ正解を返す
+    //   get_saved_works       回答済みの作品にだけお題を添える
+    //   get_answered_prompt   回答済み本人へお題まるごと（D162 の 4）
+    //   save_prompt_elements  回答済み本人が要素を持ち出す（D161）
+    //   get_flavor_vocab      作者が自作の文章に使える語を絞る（D162）
+    //   post_flavor_reply     返歌に置ける語がそのお題のものか見る（D162）
+    expected: 8,
+    sql: `select count(*)::int from pg_proc p
+            join pg_namespace n on n.oid = p.pronamespace
+           where n.nspname = 'public'
+             and p.prosrc like '%public.prompt_cards%'
+             and (has_function_privilege('anon', p.oid, 'EXECUTE')
+                  or has_function_privilege('authenticated', p.oid, 'EXECUTE'))`,
+    detailSql: `select p.proname from pg_proc p
+                  join pg_namespace n on n.oid = p.pronamespace
+                 where n.nspname = 'public'
+                   and p.prosrc like '%public.prompt_cards%'
+                   and (has_function_privilege('anon', p.oid, 'EXECUTE')
+                        or has_function_privilege('authenticated', p.oid, 'EXECUTE'))
+                 order by p.proname`,
+  },
+  {
+    group: "漏洩",
+    name: "回答前のフレーバーの判定が1本に集約されている",
+    // 候補の提示（get_flavor_vocab）・保存（set_flavor_text）・検査が、
+    // すべて flavor_block_reason を通ること。判定を書き写した経路があると、
+    // 規則を直したときに片方だけ古いまま残る。
+    expected: 1,
+    sql: `select count(*)::int from pg_proc p
+            join pg_namespace n on n.oid = p.pronamespace
+           where n.nspname='public' and p.proname='flavor_vocab_is_allowed'
+             and p.prosrc like '%flavor_block_reason%'`,
+  },
+  {
+    group: "漏洩",
+    name: "フレーバーの判定が6つの観点を見ている",
+    // 表記の一致・部分文字列・読み（漢字とかな）・漢字の共有・
+    // 同義グループ・人が登録した禁止。
+    expected: 1,
+    sql: `select count(*)::int from pg_proc p
+            join pg_namespace n on n.oid = p.pronamespace
+           where n.nspname='public' and p.proname='flavor_block_reason'
+             and p.prosrc like '%flavor_normalize%'
+             and p.prosrc like '%position(t.label in v.label)%'
+             and p.prosrc like '%position(v.label in t.label)%'
+             and p.prosrc like '%reading%'
+             and p.prosrc like '%regexp_split_to_table%'
+             and p.prosrc like '%synonym_group%'
+             and p.prosrc like '%flavor_vocab_blocks%'`,
+  },
+  {
+    group: "漏洩",
+    name: "お題語とヒント語に、読みが1語も欠けていない",
+    // 読みが無い語は、漢字とかなの言い換えの判定をすり抜ける。
+    expected: 0,
+    sql: `select (select count(*) from public.tags where reading is null)
+               + (select count(*) from public.flavor_vocab where reading is null)`,
+  },
+  {
+    group: "漏洩",
+    name: "返歌を読める人が、作者と回答済みの人に限られている",
+    // 返歌には開示済みの正解語がそのまま入りうる。
+    // 未回答の人に返すと、それが新しい漏洩経路になる。
+    expected: 1,
+    sql: `select count(*)::int from pg_proc p
+            join pg_namespace n on n.oid = p.pronamespace
+           where n.nspname='public' and p.proname='get_flavor_replies'
+             and p.prosrc like '%public.answers%'
+             and p.prosrc like '%auth.uid()%'`,
+  },
+  {
+    group: "漏洩",
+    name: "共有カード（OGP）がフレーバーにも正解にも触れない",
+    // 画像を作る経路は get_work_detail しか呼ばない。
+    // ここに flavor / prompt_cards が現れたら、任意で開く仕組みを迂回している。
+    expected: 0,
+    sql: `select count(*)::int from pg_proc p
+            join pg_namespace n on n.oid = p.pronamespace
+           where n.nspname='public' and p.proname='get_work_detail'
+             and (p.prosrc like '%flavor%' or p.prosrc like '%prompt_cards%')`,
   },
   {
     group: "漏洩",
@@ -2631,9 +2823,9 @@ export const roleProbes = [
     label: `anon → ${fn}`,
     sql:
       fn === "start_draft"
-        ? `select public.start_draft('easy', null)`
+        ? `select public.start_draft('normal', null)`
         : fn === "reveal_card"
-          ? `select public.reveal_card('00000000-0000-0000-0000-000000000000','motif_a',0)`
+          ? `select public.reveal_card('00000000-0000-0000-0000-000000000000','morph_1',0)`
           : fn === "get_current_draft"
             ? `select public.get_current_draft()`
             : `select public.${fn}('00000000-0000-0000-0000-000000000000')`,
@@ -2722,6 +2914,294 @@ export const roleProbes = [
     label: "anon → toggle_save",
     sql: `select public.toggle_save('00000000-0000-0000-0000-000000000000'::uuid)`,
   },
+  // ── 2026-09-04 に増えた入口（D161 / D162 / D163）──────────────────
+  //
+  // どれも未サインイン（anon）からは呼べないこと。
+  // ゲストを止めるのは関数の中の is_anonymous 判定で、それは
+  // test/db/run.mjs の縦断試験が実際に呼んで確かめている。
+  {
+    role: "anon",
+    mode: "denied",
+    label: "anon → get_answered_prompt（回答後のお題開示）",
+    sql: `select public.get_answered_prompt('00000000-0000-0000-0000-000000000000')`,
+  },
+  {
+    role: "anon",
+    mode: "denied",
+    label: "anon → save_prompt_elements（一部持ち出し）",
+    // 引数は4本（2026-09-05 に p_persist が増えた）。
+    // **古い形で書くと「関数が無い」で失敗し、拒否されたように見える。**
+    sql: `select public.save_prompt_elements(
+            'prompt','00000000-0000-0000-0000-000000000000',array[1]::bigint[], true)`,
+  },
+  {
+    role: "anon",
+    mode: "denied",
+    label: "anon → list_saved_elements",
+    sql: `select public.list_saved_elements()`,
+  },
+  {
+    role: "anon",
+    mode: "denied",
+    label: "anon → delete_saved_element",
+    sql: `select public.delete_saved_element(1)`,
+  },
+  {
+    role: "anon",
+    mode: "denied",
+    label: "anon → delete_saved_carry_slot（保存枠を捨てる）",
+    sql: `select public.delete_saved_carry_slot(1)`,
+  },
+  {
+    role: "anon",
+    mode: "denied",
+    label: "anon → get_my_prompt_carry_origins（持ち出しの出所）",
+    sql: `select public.get_my_prompt_carry_origins(
+            '00000000-0000-0000-0000-000000000000')`,
+  },
+  {
+    role: "anon",
+    mode: "denied",
+    label: "anon → get_prompt_timer（制作時間）",
+    sql: `select public.get_prompt_timer('00000000-0000-0000-0000-000000000000')`,
+  },
+  {
+    role: "anon",
+    mode: "denied",
+    label: "anon → renew_prompt_deadline（オーバー更新）",
+    sql: `select public.renew_prompt_deadline('00000000-0000-0000-0000-000000000000')`,
+  },
+  {
+    role: "anon",
+    mode: "denied",
+    label: "anon → expire_overdue_prompts（掃除）",
+    sql: `select public.expire_overdue_prompts(1)`,
+  },
+  {
+    role: "anon",
+    mode: "denied",
+    label: "anon → get_active_challenge（全ページの帯）",
+    sql: `select public.get_active_challenge()`,
+  },
+  {
+    role: "anon",
+    mode: "denied",
+    label: "anon → renew_current_challenge（帯から時間を延ばす）",
+    sql: `select public.renew_current_challenge()`,
+  },
+  {
+    role: "anon",
+    mode: "denied",
+    label: "anon → renew_draft_deadline（ドラフト中の更新）",
+    sql: `select public.renew_draft_deadline('00000000-0000-0000-0000-000000000000')`,
+  },
+  {
+    role: "anon",
+    mode: "denied",
+    label: "anon → expire_overdue_drafts（掃除）",
+    sql: `select public.expire_overdue_drafts(1)`,
+  },
+  {
+    role: "anon",
+    mode: "denied",
+    label: "anon → promote_session_carry（保存枠を永続へ）",
+    sql: `select public.promote_session_carry(null)`,
+  },
+  {
+    role: "anon",
+    mode: "denied",
+    label: "anon → cleanup_expired_session_carry（掃除）",
+    sql: `select public.cleanup_expired_session_carry(1)`,
+  },
+  {
+    role: "anon",
+    mode: "denied",
+    label: "anon → draft_timer_json（内部専用）",
+    sql: `select public.draft_timer_json('00000000-0000-0000-0000-000000000000')`,
+  },
+  {
+    role: "anon",
+    mode: "denied",
+    label: "anon → timer_core_json（内部専用）",
+    sql: `select public.timer_core_json('active', 60, now(), now(), 0, null, null)`,
+  },
+  {
+    role: "anon",
+    mode: "denied",
+    label: "anon → flavor_block_reason（内部専用）",
+    sql: `select public.flavor_block_reason(1, 1)`,
+  },
+  {
+    role: "anon",
+    mode: "denied",
+    label: "anon → end_session_carry（内部専用）",
+    sql: `select public.end_session_carry('00000000-0000-0000-0000-000000000000')`,
+  },
+  {
+    role: "anon",
+    mode: "denied",
+    label: "anon → get_my_renewals（更新履歴）",
+    sql: `select public.get_my_renewals(10)`,
+  },
+  {
+    role: "anon",
+    mode: "denied",
+    label: "anon → record_renewal（内部専用）",
+    sql: `select public.record_renewal(
+            '00000000-0000-0000-0000-000000000000','prompt',
+            '00000000-0000-0000-0000-000000000000', now(), now(), now(), 1)`,
+  },
+  {
+    role: "anon",
+    mode: "denied",
+    label: "anon → get_flavor_vocab",
+    sql: `select public.get_flavor_vocab('00000000-0000-0000-0000-000000000000')`,
+  },
+  {
+    role: "anon",
+    mode: "denied",
+    label: "anon → set_flavor_text",
+    sql: `select public.set_flavor_text(
+            '00000000-0000-0000-0000-000000000000', array[1]::bigint[])`,
+  },
+  {
+    role: "anon",
+    mode: "denied",
+    label: "anon → get_work_flavor",
+    sql: `select public.get_work_flavor('00000000-0000-0000-0000-000000000000')`,
+  },
+  {
+    role: "anon",
+    mode: "denied",
+    label: "anon → open_flavor_hint",
+    sql: `select public.open_flavor_hint('00000000-0000-0000-0000-000000000000')`,
+  },
+  {
+    role: "anon",
+    mode: "denied",
+    label: "anon → post_flavor_reply",
+    sql: `select public.post_flavor_reply(
+            '00000000-0000-0000-0000-000000000000', '[]'::jsonb)`,
+  },
+  {
+    role: "anon",
+    mode: "denied",
+    label: "anon → get_flavor_replies（返歌には正解語が入りうる）",
+    sql: `select public.get_flavor_replies('00000000-0000-0000-0000-000000000000')`,
+  },
+  {
+    role: "anon",
+    mode: "denied",
+    label: "anon → get_reply_vocab",
+    sql: `select public.get_reply_vocab()`,
+  },
+  {
+    role: "anon",
+    mode: "denied",
+    label: "anon → work_has_flavor",
+    sql: `select public.work_has_flavor('00000000-0000-0000-0000-000000000000')`,
+  },
+  {
+    role: "anon",
+    mode: "denied",
+    label: "anon → get_my_work_hint_result",
+    sql: `select public.get_my_work_hint_result('00000000-0000-0000-0000-000000000000')`,
+  },
+  {
+    role: "anon",
+    mode: "denied",
+    label: "anon → get_usage_summary（運営用）",
+    sql: `select public.get_usage_summary(30)`,
+  },
+  // 次の作品と計測は、未サインインでも通す。
+  // ここを登録者だけにすると、いちばん人数の多い層の動きが数から消える。
+  {
+    role: "anon",
+    mode: "allowed",
+    label: "anon → get_next_work（次の作品）",
+    sql: `select public.get_next_work(null)`,
+  },
+  {
+    role: "anon",
+    mode: "allowed",
+    label: "anon → record_usage_event（共有・遷移の記録）",
+    sql: `select public.record_usage_event('share_opened', null)`,
+  },
+  // D169。次の作品の候補と、一覧の「未回答のみ」。
+  // どちらも未サインインで通る必要がある（ゲストのまま答えられるため）。
+  // 返るのは公開作品のIDと、回答が付いているかどうかだけで、
+  // お題も正解も回答者も含まない。
+  {
+    role: "anon",
+    mode: "allowed",
+    label: "anon → next_work_candidates（次の作品の候補と救済帯）",
+    sql: `select count(*) from public.next_work_candidates(null)`,
+  },
+  {
+    role: "anon",
+    mode: "allowed",
+    label: "anon → get_public_works（未回答のみを指定しても通る）",
+    sql: `select count(*) from public.get_public_works(null, 'new', 5, 0, null, true)`,
+  },
+  // 互換期間だけ置く旧い入口。**旧い画面が動いている時間帯の生命線**なので、
+  // 権限だけでなく、実際に呼べる（呼び先が1つに決まる）ことまで見る。
+  {
+    role: "anon",
+    mode: "allowed",
+    label: "anon → get_public_works（旧5引数版・旧い画面の形）",
+    sql: `select count(*) from public.get_public_works(
+            p_division := null, p_sort := 'new', p_limit := 5,
+            p_offset := 0, p_completeness := null)`,
+  },
+  {
+    role: "anon",
+    mode: "allowed",
+    label: "anon → get_next_work（旧2引数版・旧い画面の形）",
+    sql: `select public.get_next_work(
+            p_current_work_id := null, p_division := null)`,
+  },
+  {
+    role: "anon",
+    mode: "allowed",
+    label: "anon → draft_modes（旧い画面が読む列。quiz_question_count を含む）",
+    sql: `select mode_key, label, candidate_count, max_rerolls,
+                 quiz_question_count, sort_order from public.draft_modes limit 5`,
+  },
+
+  // 内部専用。authenticated からも呼べないこと
+  {
+    role: "authenticated",
+    mode: "denied",
+    label: "authenticated → draft_plan_slots（内部専用）",
+    sql: `select public.draft_plan_slots(
+            '00000000-0000-0000-0000-000000000000', 1, 'normal')`,
+  },
+  {
+    role: "authenticated",
+    mode: "denied",
+    label: "authenticated → build_quiz_for_prompt（内部専用）",
+    sql: `select public.build_quiz_for_prompt(
+            '00000000-0000-0000-0000-000000000000')`,
+  },
+  {
+    role: "authenticated",
+    mode: "denied",
+    label: "authenticated → prompt_timer_json（内部専用）",
+    sql: `select public.prompt_timer_json('00000000-0000-0000-0000-000000000000')`,
+  },
+  {
+    role: "authenticated",
+    mode: "denied",
+    label: "authenticated → flavor_normalize（内部専用）",
+    sql: `select public.flavor_normalize('あ')`,
+  },
+  {
+    role: "authenticated",
+    mode: "denied",
+    label: "authenticated → flavor_vocab_is_allowed（内部専用）",
+    sql: `select public.flavor_vocab_is_allowed(
+            1, '00000000-0000-0000-0000-000000000000')`,
+  },
   ...INTERNAL_FUNCS.map((fn) => ({
     role: "authenticated",
     mode: "denied",
@@ -2729,6 +3209,6 @@ export const roleProbes = [
     sql:
       fn === "draft_state_json"
         ? `select public.draft_state_json('00000000-0000-0000-0000-000000000000')`
-        : `select public.draft_generate_candidates('00000000-0000-0000-0000-000000000000',1,'easy',3)`,
+        : `select public.draft_generate_candidates('00000000-0000-0000-0000-000000000000',1,'normal',5)`,
   })),
 ];

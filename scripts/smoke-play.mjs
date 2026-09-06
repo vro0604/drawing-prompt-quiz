@@ -150,7 +150,12 @@ const must = (ok, label, extra = "") => {
 // ── 1. モード選択画面 ─────────────────────────────
 let page = await get("/play");
 must(page.status === 200, "GET /play が 200");
-must(/モード/.test(page.html) && /標準/.test(page.html), "モード選択が出ている");
+// モードの呼び名は D158 で変わった（お手軽／標準 → 通常／高難度）。
+// **画面の文言を写さず、いま出ているモードのどれかがあることを見る。**
+must(
+  /モード/.test(page.html) && (/通常/.test(page.html) || /高難度/.test(page.html)),
+  "モード選択が出ている",
+);
 // 「まだサインインしていません」の表示は、未サインインで開いたときのもの。
 // この検査は固定の検査用利用者で回すので出ない（smoke:anon が見ている）。
 must(
@@ -163,25 +168,40 @@ const startForm = forms(page.html).find((f) => /ドラフトを始める/.test(f
 must(!!startForm?.actionId, "開始フォームに Server Action がある");
 page = await post("/play", {
   [startForm.actionId]: "",
-  modeKey: "standard",
+  modeKey: "hard",
   timeLimitSeconds: "3600",
 });
-must(/標準/.test(textOf(page.html)) && progress(page.html) === "0/5", "盤面が出た（0/5 枠）");
+
+// 【枠の数は毎回変わる】
+//   カテゴリの構成をドラフトのたびに抽選するので（D159）、
+//   高難度なら5〜6枠のどれかになる。**数を決め打ちにしない。**
+//   盤面が data-slots に実際の枠数を出しているので、そこから読む。
+const slotCount = Number(/data-slots="(\d+)"/.exec(page.html)?.[1] ?? "0");
+must(
+  /高難度/.test(textOf(page.html)) && slotCount >= 5 && slotCount <= 6,
+  "盤面が出た（高難度は5〜6枠）",
+  `実際 ${slotCount}枠`,
+);
+must(progress(page.html) === `0/${slotCount}`, "まだ1枠も決まっていない");
 must(/ゲスト/.test(page.html), "ゲストとして発行された");
 
 const hiddenCount = hiddenCards(page.html);
 must(hiddenCount === 5, "いまめくれるのは1枠ぶんの5枚だけ", `実際 ${hiddenCount}`);
 must(!/万年筆|折り鶴|妖精/.test(textOf(page.html)), "伏せカードの中身が HTML に出ていない");
 
-// ── 3. reveal_card ×5 ─────────────────────────────
-for (let i = 1; i <= 5; i += 1) {
+// ── 3. reveal_card を枠の数だけ ───────────────────
+for (let i = 1; i <= slotCount; i += 1) {
   const f = forms(page.html).find((x) => x.fields.candidateIndex !== undefined);
   if (!f) {
     must(false, `${i}枠目のめくるボタンが見つかる`);
     break;
   }
   page = await post("/play", { [f.actionId]: "", ...f.fields });
-  must(progress(page.html) === `${i}/5`, `${i}枠目を決定`, progress(page.html) ?? "-");
+  must(
+    progress(page.html) === `${i}/${slotCount}`,
+    `${i}枠目を決定`,
+    progress(page.html) ?? "-",
+  );
 }
 must(/このお題で確定する/.test(page.html), "確定ボタンが出た");
 
@@ -189,28 +209,45 @@ must(/このお題で確定する/.test(page.html), "確定ボタンが出た");
 const rerollForm = forms(page.html).find((f) => /全部引き直す/.test(f.text));
 must(!!rerollForm, "引き直しボタンがある");
 page = await post("/play", { [rerollForm.actionId]: "", ...rerollForm.fields });
-must(progress(page.html) === "0/5", "引き直して白紙に戻った", progress(page.html) ?? "-");
+
+// 引き直すとカテゴリの構成ごと引き直されるので、枠の数が変わりうる
+const slotCount2 = Number(/data-slots="(\d+)"/.exec(page.html)?.[1] ?? "0");
+must(
+  progress(page.html) === `0/${slotCount2}`,
+  "引き直して白紙に戻った",
+  progress(page.html) ?? "-",
+);
 must(/引き直し 残り 0 回/.test(textOf(page.html)), "残り回数が0になった");
 must(!/全部引き直す/.test(page.html), "引き直しボタンが消えた");
 
 // ── 5. 再度めくって確定 ────────────────────────────
-for (let i = 1; i <= 5; i += 1) {
+for (let i = 1; i <= slotCount2; i += 1) {
   const f = forms(page.html).find((x) => x.fields.candidateIndex !== undefined);
   page = await post("/play", { [f.actionId]: "", ...f.fields });
 }
-must(progress(page.html) === "5/5", "5枠すべて決定", progress(page.html) ?? "-");
+must(
+  progress(page.html) === `${slotCount2}/${slotCount2}`,
+  "すべての枠が決定",
+  progress(page.html) ?? "-",
+);
 
 // ── 6. complete_draft → 確定お題ページ ─────────────
 const completeForm = forms(page.html).find((f) => /このお題で確定する/.test(f.text));
 page = await post("/play", { [completeForm.actionId]: "", ...completeForm.fields });
 must(/^\/prompt\//.test(page.path), "確定お題ページへ移動した", page.path);
 must(/お題が確定しました/.test(page.html), "確定の見出しが出た");
-const slotLabels = ["モチーフA", "モチーフB", "メインカラー", "種族", "ジャンル類型"];
+// 【枠の名前を決め打ちにしない】
+//   どのカテゴリが出るかは毎回変わる（D159）。
+//   確定お題ページは1枚ずつ data-prompt-card を出しているので、
+//   **その数**を見る。名前の一覧で照合すると、構成が変わるたびに落ちる。
+const cardCount = (page.html.match(/data-prompt-card="/g) ?? []).length;
 must(
-  slotLabels.every((l) => page.html.includes(l)),
-  "5枠すべての答えが並んでいる",
+  cardCount === slotCount2,
+  `${slotCount2}枠すべての答えが並んでいる`,
+  `実際 ${cardCount}枚`,
 );
-must(/制作時間 1時間/.test(textOf(page.html)), "制作時間が出ている");
+must(/モーフ/.test(textOf(page.html)), "描く対象（モーフ）が並んでいる");
+must(/残り |無制限|制作時間/.test(textOf(page.html)), "制作時間が出ている");
 must(/引き直し 1 回/.test(textOf(page.html)), "引き直しの記録が出ている");
 must(/引かなかったカードは/.test(page.html), "未選択カードは未開示のまま");
 

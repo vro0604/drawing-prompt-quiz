@@ -1,3 +1,4 @@
+import { formatDateTime } from "@/lib/datetime";
 import Link from "next/link";
 import { notFound } from "next/navigation";
 import { getCurrentUser, getMyProfile } from "@/features/auth/session";
@@ -69,7 +70,7 @@ export default async function AuthHealthPage({
           <dl className="space-y-1">
             <Field label="ユーザーID">{user.id}</Field>
             <Field label="種別">{user.is_anonymous ? "ゲスト（匿名）" : "登録済み"}</Field>
-            <Field label="発行日時">{new Date(user.created_at).toLocaleString("ja-JP")}</Field>
+            <Field label="発行日時">{formatDateTime(user.created_at)}</Field>
           </dl>
         ) : (
           <p>まだサインインしていません。下のボタンが「初めての書き込み」の代わりです。</p>
@@ -91,7 +92,7 @@ export default async function AuthHealthPage({
             <Field label="成績を公開">{profile.show_answer_stats ? "する" : "しない"}</Field>
             <Field label="回答履歴を公開">{profile.show_answer_history ? "する" : "しない"}</Field>
             <Field label="保存作品を公開">{profile.show_saved_works ? "する" : "しない"}</Field>
-            <Field label="作成日時">{new Date(profile.created_at).toLocaleString("ja-JP")}</Field>
+            <Field label="作成日時">{formatDateTime(profile.created_at)}</Field>
           </dl>
         ) : (
           <p>行がありません。自動生成のしくみがまだ入っていない可能性があります。</p>

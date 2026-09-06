@@ -1,3 +1,4 @@
+import { formatDate } from "@/lib/datetime";
 import Image from "next/image";
 import Link from "next/link";
 import { workImageUrl } from "@/features/work/rpc";
@@ -34,7 +35,7 @@ const statusTone: Record<string, string> = {
 };
 
 function SavedCard({ item, showStatus }: { item: SavedWork; showStatus: boolean }) {
-  const savedAt = new Date(item.saved_at).toLocaleDateString("ja-JP");
+  const savedAt = formatDate(item.saved_at);
   const gone = item.work_status === "deleted";
 
   const body = (

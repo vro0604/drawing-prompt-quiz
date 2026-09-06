@@ -128,7 +128,7 @@ section("3. ID の形式と重複を断る");
 // ── 4. 表示名が作品に反映される ──────────────────────────
 section("4. 表示名が作品一覧と作品ページに出る");
 
-const prompt = await drawPrompt(artist, "easy");
+const prompt = await drawPrompt(artist, "normal");
 let page = await submitWork(
   artist,
   prompt.promptId,

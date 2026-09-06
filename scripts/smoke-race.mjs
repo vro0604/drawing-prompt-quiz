@@ -75,7 +75,7 @@ const author = await fixtureSession("race-author");
 section("1. 準備（通常の投稿を1件）");
 let workId;
 {
-  const first = await drawPrompt(author, "easy");
+  const first = await drawPrompt(author, "normal");
   const page = await submitWork(
     author,
     first.promptId,
@@ -90,7 +90,7 @@ let workId;
 section("2. 投稿ボタンを同時に3回押す");
 {
   // 新しいお題を引く。**作品がまだ無いお題**でないと連打の意味が無い
-  const second = await drawPrompt(author, "easy");
+  const second = await drawPrompt(author, "normal");
   const promptId = second.promptId;
 
   const png = makePng(60, 40);
@@ -253,7 +253,7 @@ section("5. ドラフト開始を同時に押しても1件（同一条件は合�
 
   // 同一条件で5本。**まったく同時**に投げる
   const pages = await Promise.all(
-    Array.from({ length: 5 }, () => send("standard", "3600")),
+    Array.from({ length: 5 }, () => send("hard", "3600")),
   );
   const texts = pages.map((p) => textOf(p.html));
 
@@ -272,7 +272,7 @@ section("5. ドラフト開始を同時に押しても1件（同一条件は合�
   must(new Set(ids).size === 1, "5本とも同じドラフトに合流した", `種類 ${new Set(ids).size}`);
 
   // 条件が違えば、従来どおり案内を出す（勝手に別のドラフトへ連れて行かない）
-  const other = await send("easy", "3600");
+  const other = await send("normal", "3600");
   must(
     /進行中のドラフトがあります/.test(textOf(other.html)),
     "条件が違えば従来の案内が出る",

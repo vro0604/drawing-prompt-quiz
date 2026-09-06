@@ -12,8 +12,8 @@
  *   だからヘッドレスブラウザを入れずに画面の流れを確かめられる。
  */
 
-import { readFileSync } from "node:fs";
 import { deflateSync } from "node:zlib";
+import { readTargetEnv } from "./_env-target.mjs";
 import {
   createThrowawayUser,
   deleteReportsBy,
@@ -62,8 +62,23 @@ function noteInternalRefs(path, html) {
   }
 }
 
+/**
+ * いまどの段を試しているか。**失敗したときに残すためだけに持つ。**
+ *
+ * 通信が切れたとき、どの画面のどの操作で切れたのかが分からないと、
+ * 「たまに落ちる」以上のことが言えない。段の名前を1つ覚えておいて、
+ * 例外の本文に混ぜる。
+ */
+let currentSection = "（開始前）";
+
 export function section(title) {
+  currentSection = title;
   console.log(`\n${title}`);
+}
+
+/** いまの段の名前（失敗の記録に使う） */
+export function currentStage() {
+  return currentSection;
 }
 
 // ── 後片づけ ──────────────────────────────────────────
@@ -249,7 +264,20 @@ export function forms(html) {
  *   404 も 500 も「届いて返ってきた」結果なので、そのまま返す。
  *   やり直してよいのは、**返事が返ってこなかったとき**だけ。
  */
-export async function retryingFetch(url, options, { retry }) {
+/** 例外の中身を、原因の連なりごと1行にする（fetch failed だけで終わらせない） */
+function describeCause(e) {
+  const parts = [];
+  let cur = e;
+  for (let depth = 0; cur && depth < 5; depth += 1) {
+    parts.push(`${cur.name ?? "Error"}: ${cur.message}${cur.code ? `（${cur.code}）` : ""}`);
+    cur = cur.cause;
+  }
+  return parts.join(" ← ");
+}
+
+export async function retryingFetch(url, options, { retry, what } = {}) {
+  const started = Date.now();
+  const attempts = [];
   let last;
 
   for (let attempt = 1; attempt <= (retry ? 3 : 1); attempt += 1) {
@@ -258,21 +286,33 @@ export async function retryingFetch(url, options, { retry }) {
     } catch (e) {
       last = e;
       const cause = e?.cause?.code ?? "";
+      attempts.push(`${attempt}回目 ${describeCause(e)}`);
       const transient = ["ECONNRESET", "ECONNREFUSED", "UND_ERR_SOCKET", "EPIPE"].includes(cause);
       if (!transient || attempt === 3) break;
       await new Promise((r) => setTimeout(r, 200 * attempt));
     }
   }
 
+  // **「fetch failed」だけで終わらせない。**
+  // 何をしようとして、どこへ、どの段で、何秒かけて、
+  // 内側の原因が何だったかを全部残す。
   throw new Error(
     [
-      `${options?.method ?? "GET"} ${url} への通信が切れました（${last?.cause?.code ?? last?.message}）。`,
+      `${options?.method ?? "GET"} ${url} への通信が切れました。`,
+      "",
+      `  用件: ${what ?? "画面の操作"}`,
+      `  段:   ${currentStage()}`,
+      `  経過: ${Date.now() - started}ms`,
+      `  原因: ${describeCause(last)}`,
+      ...attempts.map((a) => `        ${a}`),
       "",
       retry
-        ? "3回やり直しても届きませんでした。npm run dev が動いているか確かめてください。"
+        ? "3回やり直しても届きませんでした。相手のサーバーが動いているか確かめてください。"
         : "**送信（POST）はやり直しません。**届いていた場合に二重送信になるためです。",
       "",
-      "これはアプリの不具合ではなく、手元の接続が切れたときに出ます。",
+      "接続先がローカル（127.0.0.1 / localhost）でこれが出るときは、",
+      "検証用サーバーが落ちたか、作り直しの最中だった可能性があります。",
+      "test/e2e/smoke.mjs は失敗したときにサーバー側の出力も並べます。",
     ].join("\n"),
   );
 }
@@ -294,7 +334,7 @@ export function session(name, initialCookies) {
     const res = await retryingFetch(
       BASE + path,
       { headers: { cookie: cookieHeader() }, redirect: "manual" },
-      { retry: true },
+      { retry: true, what: `画面を開く ${path}` },
     );
     store(res);
     if (res.status >= 300 && res.status < 400) {
@@ -310,13 +350,19 @@ export function session(name, initialCookies) {
 
   async function post(path, fields, file) {
     const body = new FormData();
-    for (const [k, v] of Object.entries(fields)) body.append(k, v);
+    // 同じ name を2回送れるようにする。**2択当てがこの形**（D165）。
+    // チェックボックスは選んだ数だけ同じ name で送られるので、
+    // 配列で渡されたら1つずつ append する。
+    for (const [k, v] of Object.entries(fields)) {
+      if (Array.isArray(v)) for (const one of v) body.append(k, one);
+      else body.append(k, v);
+    }
     if (file) body.append(file.field, new Blob([file.bytes], { type: file.type }), file.name);
 
     const res = await retryingFetch(
       BASE + path,
       { method: "POST", headers: { cookie: cookieHeader() }, body, redirect: "manual" },
-      { retry: false },
+      { retry: false, what: `フォームを送る ${path}` },
     );
     store(res);
     const loc = res.headers.get("location");
@@ -417,18 +463,19 @@ export function rawAuthError(html) {
 
 // ── 前提の確認 ────────────────────────────────────────
 
-function readEnvLocal() {
-  const out = {};
-  try {
-    const text = readFileSync(new URL("../.env.local", import.meta.url), "utf8");
-    for (const line of text.split("\n")) {
-      const m = /^\s*([A-Z0-9_]+)\s*=\s*(.*?)\s*$/.exec(line);
-      if (m) out[m[1]] = m[2].replace(/^['"]|['"]$/g, "");
-    }
-  } catch {
-    // 無ければ下で弾く
-  }
-  return out;
+/**
+ * このスクリプトが使う環境変数。
+ *
+ * **ここで .env.local を読まない。**読むかどうかを決めるのは
+ * scripts/_env-target.mjs の1か所だけで、ローカルの経路では読まれない。
+ *
+ * もとはこの場所で .env.local を直接読み、process.env と混ぜていた。
+ * process.env のほうが強いので実害は出ていなかったが、
+ * **ローカル試験が本番の控えを開いている**ことに変わりはなく、
+ * 「素の npm test は .env.local を読まない」と言えない状態だった。
+ */
+export function targetEnv() {
+  return readTargetEnv({ context: "スモーク（HTTP）" });
 }
 
 /**
@@ -442,9 +489,15 @@ function readEnvLocal() {
  * パスの形は spec 8-6 の {user_id}/{work_id}.{拡張子}。
  */
 export function workImageUrl(userId, workId, ext = "png") {
-  const env = { ...readEnvLocal(), ...process.env };
+  const env = targetEnv();
   const base = env.NEXT_PUBLIC_SUPABASE_URL;
-  if (!base) throw new Error(".env.local に NEXT_PUBLIC_SUPABASE_URL がありません");
+  if (!base) {
+    throw new Error(
+      "NEXT_PUBLIC_SUPABASE_URL が環境にありません。" +
+        "ローカルの検査は test/e2e/smoke.mjs から起動してください" +
+        "（そこが検証用の接続先を渡します）。",
+    );
+  }
   return `${base}/storage/v1/object/public/works/${userId}/${workId}.${ext}`;
 }
 
@@ -466,16 +519,26 @@ export function workImageUrl(userId, workId, ext = "png") {
  *   本番と同じ設定での検査ができなくなる。
  */
 export async function isAutoConfirm() {
-  const env = { ...readEnvLocal(), ...process.env };
+  const env = targetEnv();
   const url = env.NEXT_PUBLIC_SUPABASE_URL;
   const key = env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY;
 
   if (!url || !key) {
-    console.error(".env.local に NEXT_PUBLIC_SUPABASE_URL と ...PUBLISHABLE_KEY が必要です。");
+    console.error(
+      "NEXT_PUBLIC_SUPABASE_URL と ...PUBLISHABLE_KEY が環境にありません。\n" +
+        "ローカルは test/e2e/smoke.mjs から、本番は npm run smoke:prod から起動します。",
+    );
     process.exit(1);
   }
 
-  const res = await fetch(`${url}/auth/v1/settings`, { headers: { apikey: key } });
+  // **やり直しのある取りかたを通す。**素の fetch だと、
+  // 相手がまだ起きていない一瞬に当たっただけで「fetch failed」で終わり、
+  // どの段でこけたのかも残らない（2026-09-05 の間欠失敗の入口の1つ）。
+  const res = await retryingFetch(
+    `${url}/auth/v1/settings`,
+    { headers: { apikey: key } },
+    { retry: true, what: "Supabase の設定（Confirm email）を読む" },
+  );
   const settings = await res.json();
   return settings.mailer_autoconfirm === true;
 }
@@ -587,10 +650,15 @@ export async function drawPrompt(s, modeKey, timeLimitSeconds = "3600") {
   //   0件のときは例外にする。**検査が仕事をしていない状態を、合格にしない。**
   const answers = new Map();
   const html = clean(page.html);
+  //
+  // **キーは枠のキー（morph_1 など）。呼び名（「モーフ」）ではない。**
+  // 新方式では同じ呼び名の枠が1つのお題に何度も出るので、
+  // 呼び名で覚えると後から来た枠が前の枠を上書きし、
+  // 別の枠の答えで採点することになる（実測で 3問中2問しか合わなかった）。
   for (const m of html.matchAll(/<li[^>]*\sdata-prompt-card[^>]*>/g)) {
-    const slot = /data-slot-label="([^"]*)"/.exec(m[0])?.[1];
+    const key = /data-prompt-card="([^"]*)"/.exec(m[0])?.[1];
     const tag = /data-tag-label="([^"]*)"/.exec(m[0])?.[1];
-    if (slot && tag) answers.set(slot.trim(), tag.trim());
+    if (key && tag) answers.set(key.trim(), tag.trim());
   }
 
   if (answers.size === 0) {
@@ -810,7 +878,7 @@ export async function answerWork(s, workId, answers, { correct = true } = {}) {
 
   const fields = { [form.actionId]: "", workId };
   for (const q of parsed) {
-    const correctLabel = answers.get(q.slotLabel);
+    const correctLabel = answers.get(q.slotKey);
     const pick = correct
       ? (q.choices.find((c) => c.label === correctLabel) ?? q.choices[0])
       : (q.choices.find((c) => c.label !== correctLabel) ?? q.choices[0]);
@@ -823,8 +891,12 @@ export async function answerWork(s, workId, answers, { correct = true } = {}) {
 /**
  * 出題フォームを読み解く。
  *
- * 1問 = 1つの `<fieldset data-question data-slot-label="モチーフA">`。
- * 中のラジオが name="q_{問のID}" value="{タグのID}" data-choice-label="{選択肢の文字}"。
+ * 1問 = 1つの `<fieldset data-question data-slot-label="モーフ">`。
+ * 中のチェックボックスが name="q_{問のID}" value="{タグのID}"
+ * data-choice-label="{選択肢の文字}"。
+ *
+ * **1つ選べばビタ当て、2つ選べば2択当てになる**（D165）。
+ * 送る側は同じ name を2回送るだけでよい（session.post が配列を受ける）。
  *
  * 【見た目に依らないようにした】
  *   以前は3つの見た目を手がかりにしていて、**どれを変えても検査が落ちた。**
@@ -851,6 +923,8 @@ export function parseQuiz(html) {
     const frag = fs[0];
 
     const slotLabel = /data-slot-label="([^"]*)"/.exec(frag)?.[1]?.trim() ?? "";
+    // 枠の呼び名は重複する（「モーフ」が3つある）。突き合わせにはキーを使う
+    const slotKey = /data-slot-key="([^"]*)"/.exec(frag)?.[1]?.trim() ?? "";
 
     const choices = [];
     let name = null;
@@ -866,7 +940,7 @@ export function parseQuiz(html) {
       choices.push({ tagId, label: label.trim() });
     }
 
-    if (name) questions.push({ name, slotLabel, choices });
+    if (name) questions.push({ name, slotKey, slotLabel, choices });
   }
 
   return questions;
@@ -877,7 +951,7 @@ export function parseQuiz(html) {
  *
  * 「回答する」という文字列では見分けられない。作者向けの案内にある
  * 「回答すると伝達率が…」にも含まれてしまうため。
- * ラジオボタンそのものの有無で見る。
+ * 選択欄そのものの有無で見る。
  */
 export function hasQuizForm(html) {
   return parseQuiz(html).length > 0;

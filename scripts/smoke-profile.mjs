@@ -127,7 +127,7 @@ section("2. なりすましに使える ID を配らない（D59）");
 // ── 3. 公開プロフィールが誰にでも見える ─────────────────
 section("3. 公開プロフィールは未サインインでも見える");
 
-const promptA = await drawPrompt(artist, "standard", "1800");
+const promptA = await drawPrompt(artist, "hard", "1800");
 let page = await submitWork(
   artist,
   promptA.promptId,

@@ -21,6 +21,11 @@ import { divisionLabel } from "@/features/work/types";
  *   404 を返さないのは、SNS 側の表示が壊れるより、
  *   「見つかりません」と書かれたカードが出るほうが分かりやすいため。
  *
+ * 【作者の文章（フレーバーテキスト）も載せない】
+ *   回答前に読むかどうかは本人が決めるもの（D162）。共有カードに載せると、
+ *   開かないと決めた人にも押し付けることになり、**任意で開く仕組みを
+ *   共有カードが迂回してしまう。**この経路はフレーバーを1度も読まない。
+ *
  * 【画像の埋め込み】
  *   Storage の公開URLをそのまま <img> で参照する。バケットが public
  *   なので署名は要らない。
@@ -128,8 +133,21 @@ export default async function Image({
             {work.author.display_name}
           </div>
 
-          <div style={{ display: "flex", fontSize: 26, color: MUTED, marginTop: "auto" }}>
-            この絵のお題を当ててみてください
+          {/* 共有カードだけを見た人にも、何をする場所かが分かるようにする。
+              作品名と絵しか出ていないと、遊び方が伝わらない */}
+          <div
+            style={{
+              display: "flex",
+              flexDirection: "column",
+              marginTop: "auto",
+            }}
+          >
+            <div style={{ display: "flex", fontSize: 28, color: FG }}>
+              絵だけを見て、引かれたお題を4択で当てる
+            </div>
+            <div style={{ display: "flex", fontSize: 22, color: MUTED, marginTop: 8 }}>
+              つたわるかな — お題ドロー＆伝達率クイズ
+            </div>
           </div>
         </div>
       </div>

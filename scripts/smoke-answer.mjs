@@ -63,7 +63,7 @@ const guesser = await fixtureSession("guesser"); // わざと外す側
 section("1. 作品を用意する（オリジナル1件・AI 1件）");
 
 
-const original = await drawPrompt(author, "standard");
+const original = await drawPrompt(author, "hard");
 let page = await submitWork(
   author,
   original.promptId,
@@ -74,7 +74,7 @@ const workId = /^\/works\/([0-9a-f-]{36})/.exec(page.path)?.[1];
 must(!!workId, "オリジナル作品を投稿した", page.path);
 must(original.answers.size > 0, "お題の答えを控えた", `${original.answers.size}枠`);
 
-const aiPrompt = await drawPrompt(author, "easy");
+const aiPrompt = await drawPrompt(author, "normal");
 page = await submitWork(
   author,
   aiPrompt.promptId,
@@ -137,11 +137,22 @@ let quiz;
   const allChoices = quiz.flatMap((q) => q.choices.map((c) => c.tagId));
   const distinct = new Set(allChoices);
 
-  must(quiz.length === 3, "標準モードは3問", `${quiz.length}問`);
-  must(allChoices.length === 12, "3問で12選択肢", `${allChoices.length}`);
+  // **問数は固定ではない。お題の語数と同じになる（D165）。**
+  // 高難度で引いているので5〜6問になる。3で決め打ちしない。
   must(
-    distinct.size === 12,
-    "12選択肢のタグがすべて異なる（重複ゼロ）",
+    quiz.length === original.answers.size,
+    "お題の全語が出題されている",
+    `出題 ${quiz.length}問 / お題 ${original.answers.size}語`,
+  );
+  must(quiz.length >= 5, "高難度は5問以上", `${quiz.length}問`);
+  must(
+    allChoices.length === quiz.length * 4,
+    `${quiz.length}問で${quiz.length * 4}選択肢`,
+    `${allChoices.length}`,
+  );
+  must(
+    distinct.size === quiz.length * 4,
+    "選択肢のタグがすべて異なる（重複ゼロ）",
     `distinct=${distinct.size}`,
   );
 
@@ -149,7 +160,7 @@ let quiz;
   // 上の distinct=12 が成り立てば自動的に満たされるが、
   // 「何を守っているのか」が読み取れるように明示して見る。
   for (const q of quiz) {
-    const correctLabel = original.answers.get(q.slotLabel);
+    const correctLabel = original.answers.get(q.slotKey);
     const elsewhere = quiz
       .filter((other) => other.name !== q.name)
       .flatMap((other) => other.choices)
@@ -174,7 +185,7 @@ section("4. 採点が正しい（答えを使えば全問正解になる）");
   let matched = 0;
 
   for (const q of quiz) {
-    const correctLabel = original.answers.get(q.slotLabel);
+    const correctLabel = original.answers.get(q.slotKey);
     const hit = q.choices.find((c) => c.label === correctLabel);
     if (hit) {
       fields[q.name] = hit.tagId;
@@ -190,8 +201,9 @@ section("4. 採点が正しい（答えを使えば全問正解になる）");
   const after = await solver.post(`/works/${workId}`, fields);
   const t = textOf(after.html);
 
-  must(new RegExp(`${quiz.length}問中 ${quiz.length}問 正解`).test(t), "全問正解になった");
-  must(/全問正解/.test(t), "全問正解の表示が出た");
+  must(new RegExp(`${quiz.length}問中 ${quiz.length}問 的中`).test(t), "全問的中になった");
+  must(/全問的中/.test(t), "全問的中の表示が出た");
+  must(/ビタ当て/.test(t), "回答方式（ビタ当て）が結果に出ている");
   must(!hasQuizForm(after.html), "回答後は入力欄が消える");
 
   // 正解は「答えたあと」に初めて出る
@@ -222,7 +234,7 @@ section("6. 別の選択を送ると不正解になる");
 
   const fields = { [form.actionId]: "", workId };
   for (const q of parsed) {
-    const correctLabel = original.answers.get(q.slotLabel);
+    const correctLabel = original.answers.get(q.slotKey);
     // 正解ではない選択肢を選ぶ
     const wrong = q.choices.find((c) => c.label !== correctLabel);
     fields[q.name] = wrong.tagId;
@@ -231,8 +243,8 @@ section("6. 別の選択を送ると不正解になる");
   const after = await guesser.post(`/works/${workId}`, fields);
   const t = textOf(after.html);
 
-  must(new RegExp(`${parsed.length}問中 0問 正解`).test(t), "全問不正解になった");
-  must(/不正解/.test(t), "不正解の表示が出た");
+  must(new RegExp(`${parsed.length}問中 0問 的中`).test(t), "全問はずれになった");
+  must(/はずれ/.test(t), "はずれの表示が出た");
   must(
     original.answerLabels.some((l) => t.includes(l)),
     "外した場合も正解が表示される",
@@ -266,6 +278,62 @@ section("7. 作者は自分の作品に回答できない（D28）");
   must(
     /自分の作品には回答できません/.test(textOf(forced.html)),
     "直接 POST しても DB 側で断られる",
+  );
+}
+
+// ── 7-b. 2択当て（D165）─────────────────────────────────
+section("7-b. 2つ選ぶと2択当てになり、どちらかが当たっていれば的中する");
+{
+  const pairSolver = await fixtureSession("pairsolver");
+  const res = await pairSolver.get(`/works/${aiWorkId}`);
+  const parsed = parseQuiz(res.html);
+  const form = forms(res.html).find((f) => /回答する/.test(f.text));
+
+  must(parsed.length > 0, "AI作品にも出題が出ている", `${parsed.length}問`);
+  must(
+    parsed.length === aiPrompt.answers.size,
+    "AI作品もお題の全語が出題されている",
+    `出題 ${parsed.length}問 / お題 ${aiPrompt.answers.size}語`,
+  );
+  must(/2つ選ぶと/.test(textOf(res.html)), "2つ選べることが画面に書いてある");
+
+  // 全問を「正解 ＋ 正解でない1つ」の2択で送る。
+  // **どちらかが当たっていれば的中**なので、全問的中になるはず。
+  const fields = { [form.actionId]: "", workId: aiWorkId };
+  for (const q of parsed) {
+    const correctLabel = aiPrompt.answers.get(q.slotKey);
+    const hit = q.choices.find((c) => c.label === correctLabel);
+    const other = q.choices.find((c) => c.label !== correctLabel);
+    fields[q.name] = [hit.tagId, other.tagId];
+  }
+
+  const after = await pairSolver.post(`/works/${aiWorkId}`, fields);
+  const t = textOf(after.html);
+
+  must(
+    new RegExp(`${parsed.length}問中 ${parsed.length}問 的中`).test(t),
+    "2択当てでも的中になった",
+  );
+  must(/2択当て/.test(t), "回答方式（2択当て）が結果に出ている");
+  must(
+    new RegExp(`2択当て ${parsed.length}問中 ${parsed.length}問`).test(t),
+    "方式別の内訳が出ている",
+    t.slice(0, 200),
+  );
+  must(/2つまでの絞り込みでした/.test(t), "断定ではないことが書かれている");
+
+  // 3つ以上は断られる
+  const third = await fixtureSession("pairtoomany");
+  const res3 = await third.get(`/works/${aiWorkId}`);
+  const parsed3 = parseQuiz(res3.html);
+  const form3 = forms(res3.html).find((f) => /回答する/.test(f.text));
+  const bad = { [form3.actionId]: "", workId: aiWorkId };
+  for (const q of parsed3) bad[q.name] = q.choices.slice(0, 3).map((c) => c.tagId);
+
+  const rejected = await third.post(`/works/${aiWorkId}`, bad);
+  must(
+    /3つ以上選ばれた問があります/.test(textOf(rejected.html)),
+    "1問に3つ以上選ぶと断られる",
   );
 }
 

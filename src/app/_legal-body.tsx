@@ -1,3 +1,4 @@
+import { formatDate } from "@/lib/datetime";
 /**
  * 規約とポリシーの本文を出す。
  *
@@ -86,7 +87,7 @@ export function LegalBody({
   return (
     <article className="space-y-4">
       <p className="text-xs text-faint">
-        版 {version}（{new Date(publishedAt).toLocaleDateString("ja-JP")}）
+        版 {version}（{formatDate(publishedAt)}）
       </p>
 
       {blocks.map((b, i) => {

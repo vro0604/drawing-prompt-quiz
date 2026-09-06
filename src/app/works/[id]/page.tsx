@@ -1,3 +1,4 @@
+import { formatDateTime } from "@/lib/datetime";
 import Image from "next/image";
 import Link from "next/link";
 import { notFound } from "next/navigation";
@@ -20,6 +21,34 @@ import {
   type WorkDetail,
 } from "@/features/work/types";
 import { AnswerResult, AuthorNotice, MyResult, QuizForm, SlotStats } from "./_quiz";
+import {
+  FlavorComposer,
+  FlavorHintBox,
+  FlavorRevealBox,
+  HintSplitStats,
+  NextSteps,
+  ReplyBox,
+  RevealedPromptBox,
+  ShareBox,
+} from "./_after";
+import { fetchRevealedPrompt } from "@/features/carry/rpc";
+import type { RevealedPrompt } from "@/features/carry/types";
+import {
+  fetchFlavorReplies,
+  fetchFlavorVocab,
+  fetchReplyVocab,
+  fetchWorkFlavor,
+  fetchWorkHasFlavor,
+  fetchWorkHintResult,
+} from "@/features/flavor/rpc";
+import type {
+  FlavorReply,
+  FlavorVocabItem,
+  FlavorVocabSet,
+  WorkFlavor,
+  WorkHintResult,
+} from "@/features/flavor/types";
+import { SITE_URL } from "@/lib/env";
 import {
   publishWorkAction,
   toggleLikeAction,
@@ -86,7 +115,11 @@ export async function generateMetadata({
 
   if (!work) return { title: "作品" };
 
-  const description = `${work.author.display_name} さんの作品。絵だけを見て、引かれたお題を当ててみてください。`;
+  // 共有カードの説明文。**答えも、作者の文章も入れない**（D64 / D162）。
+  // 遊び方が1文で分かることだけを目的にする。
+  const description =
+    `${work.author.display_name} さんの作品。` +
+    "絵だけを見て、描き手が引いたお題を4択で当てます。当たった割合が伝達率として残ります。";
 
   return {
     title: work.title,
@@ -150,7 +183,7 @@ function MetaList({
     { label: "部門", value: divisionLabel(division) },
     { label: "お題の制作時間", value: formatDuration(timeLimitSeconds) },
     { label: "実制作時間（自己申告）", value: formatActualTime(actualTimeSeconds) },
-    { label: "投稿日", value: new Date(createdAt).toLocaleString("ja-JP") },
+    { label: "投稿日", value: formatDateTime(createdAt) },
   ];
 
   if (sourceTitle) rows.splice(1, 0, { label: "元作品", value: sourceTitle });
@@ -238,7 +271,18 @@ function Reactions({ work, canReact }: { work: WorkDetail; canReact: boolean }) 
   );
 }
 
-/** 公開されている作品の表示 */
+/**
+ * 公開されている作品の表示。
+ *
+ * 【回答の前と後で、出るものが入れ替わる】
+ *   前  クイズ／作者の言葉をヒントとして開くボタン
+ *   後  正誤／お題まるごと／作者の言葉／持ち出し／返歌／次の作品
+ *
+ *   境目は myAnswer が入っているかどうかの1点だけ。
+ *   **どちらに出すかを画面で判断しているのは並べ方だけで、
+ *   中身が返ってくるかどうかは全部 DB 側が決めている。**
+ *   回答していない人には、そもそもお題も返歌も返ってこない。
+ */
 function PublicView({
   work,
   quiz,
@@ -246,6 +290,7 @@ function PublicView({
   canReact,
   result,
   resultOpen,
+  after,
 }: {
   work: WorkDetail;
   quiz: WorkQuiz | null;
@@ -253,6 +298,7 @@ function PublicView({
   canReact: boolean;
   result: MyWorkResult | null;
   resultOpen: boolean;
+  after: AfterAnswerData;
 }) {
   return (
     <>
@@ -301,8 +347,67 @@ function PublicView({
       ) : myAnswer ? (
         <AnswerResult answer={myAnswer} />
       ) : (
-        <QuizForm quiz={quiz} />
+        <>
+          {/* 回答前のヒント（D162 の 2）。開くかどうかは本人が決める */}
+          <FlavorHintBox
+            workId={work.id}
+            hasFlavor={after.hasFlavor}
+            flavor={after.flavor}
+            canUse={after.isRegistered}
+          />
+          <QuizForm quiz={quiz} />
+        </>
       )}
+
+      {/* 回答したあと。お題と作者の言葉を**一緒に**開示する（D162 の 4） */}
+      {myAnswer && after.revealed ? (
+        <RevealedPromptBox revealed={after.revealed} canPersist={after.isRegistered} />
+      ) : null}
+
+      {myAnswer && after.flavor?.exists ? (
+        <FlavorRevealBox flavor={after.flavor} />
+      ) : null}
+
+      {myAnswer && after.hasFlavor ? (
+        <ReplyBox
+          workId={work.id}
+          revealed={after.revealed}
+          vocab={after.replyVocab}
+          replies={after.replies}
+          canReply={after.isRegistered}
+          open={after.replyOpen}
+        />
+      ) : null}
+
+      {myAnswer ? <NextSteps workId={work.id} /> : null}
+
+      {/* 作者だけに見える2つ */}
+      {work.is_author && after.flavorVocab ? (
+        <FlavorComposer
+          workId={work.id}
+          vocab={after.flavorVocab}
+          current={after.flavor}
+        />
+      ) : null}
+
+      {/*
+        【開くまで数字を出さない（D112）】
+          枠ごとの伝達率（SlotStats）と同じ扱いにする。
+          もとはこの欄だけ、開く前から正答率の % が出ていた。
+          作者が「読み解かれた人数」の予告を見る画面に数字が混ざると、
+          **取りに行く前に数字が目に入る**ことになり、
+          その画面を作った意味が消える。
+      */}
+      {work.is_author && resultOpen && after.hintResult ? (
+        <HintSplitStats result={after.hintResult} />
+      ) : null}
+
+      <ShareBox
+        workId={work.id}
+        workTitle={work.title}
+        shareUrl={`${SITE_URL}/works/${work.id}`}
+        open={after.shareOpen}
+      />
 
       {/*
         **他人には項目別の伝達率を出さない**（D112）。
@@ -425,15 +530,56 @@ function OwnerOnlyView({ work }: { work: MyWork }) {
   );
 }
 
+/**
+ * 回答の前後で出す部品へ渡す一式。
+ *
+ * ばらばらに渡すと引数が10本を超えるので1つにまとめている。
+ * **中身の取得はすべて DB 側の判定を通っている。**
+ * ここに入っている時点で「その人が見てよいもの」だけになっている。
+ */
+type AfterAnswerData = {
+  /** 登録ユーザーか。ゲストと未サインインは false（D164） */
+  isRegistered: boolean;
+  /** 作者が文章を付けているか。本文は含まない */
+  hasFlavor: boolean;
+  /** 作者の文章。見てよい人にだけ入る */
+  flavor: WorkFlavor | null;
+  /** 回答後に開示されるお題まるごと。回答済みの人にだけ入る */
+  revealed: RevealedPrompt | null;
+  /** 返歌の一覧。回答済みの人と作者にだけ入る */
+  replies: FlavorReply[];
+  /** 返歌で使えるつなぎの語 */
+  replyVocab: FlavorVocabItem[];
+  /** 作者が自作の文章を作るときの語の一覧 */
+  flavorVocab: FlavorVocabSet | null;
+  /** ヒント使用別の集計。作者にだけ入る */
+  hintResult: WorkHintResult | null;
+  shareOpen: boolean;
+  replyOpen: boolean;
+};
+
 export default async function WorkPage({
   params,
   searchParams,
 }: {
   params: Promise<{ id: string }>;
-  searchParams: Promise<{ error?: string; notice?: string; result?: string }>;
+  searchParams: Promise<{
+    error?: string;
+    notice?: string;
+    result?: string;
+    share?: string;
+    hint?: string;
+    reply?: string;
+  }>;
 }) {
   const { id } = await params;
-  const { error, notice, result: rawResult } = await searchParams;
+  const {
+    error,
+    notice,
+    result: rawResult,
+    share: rawShare,
+    reply: rawReply,
+  } = await searchParams;
 
   // まず公開の経路で引く。ここで取れたものは誰が見ても同じ。
   const publicWork = await fetchWorkDetail(id);
@@ -475,6 +621,53 @@ export default async function WorkPage({
   // JavaScript が無効でも開ける
   const resultOpen = rawResult === "open";
 
+  // --- 回答の前後で出すもの --------------------------------------------
+  //
+  // **見てよいかの判定はここでしていない。**どの関数も、返す条件を
+  // DB 側に持っている（回答済みか／作者か／登録者か）。
+  // ここでやるのは「呼ぶかどうか」だけで、呼んでも返らないものは返らない。
+  //
+  // 未サインインとゲストには問い合わせない。フレーバー系の RPC は
+  // authenticated だけが呼べるので、anon のまま呼ぶと 500 になる（D90）。
+  const isRegistered = user !== null && !user.is_anonymous;
+
+  const [
+    hasFlavor,
+    flavor,
+    revealed,
+    replies,
+    replyVocab,
+    flavorVocab,
+    hintResult,
+  ] = publicWork
+    ? await Promise.all([
+        isRegistered ? fetchWorkHasFlavor(id) : Promise.resolve(false),
+        isRegistered ? fetchWorkFlavor(id) : Promise.resolve(null),
+        user ? fetchRevealedPrompt(id) : Promise.resolve(null),
+        isRegistered ? fetchFlavorReplies(id) : Promise.resolve([]),
+        isRegistered ? fetchReplyVocab() : Promise.resolve([]),
+        isRegistered && publicWork.is_author
+          ? fetchFlavorVocab(id)
+          : Promise.resolve(null),
+        publicWork.is_author && user
+          ? fetchWorkHintResult(id)
+          : Promise.resolve(null),
+      ])
+    : [false, null, null, [], [], null, null];
+
+  const after: AfterAnswerData = {
+    isRegistered,
+    hasFlavor,
+    flavor,
+    revealed,
+    replies,
+    replyVocab,
+    flavorVocab,
+    hintResult,
+    shareOpen: rawShare === "open",
+    replyOpen: rawReply === "open",
+  };
+
   return (
     <main className="mx-auto w-full max-w-3xl space-y-8 p-6 sm:p-10">
       {error ? (
@@ -497,6 +690,7 @@ export default async function WorkPage({
           canReact={canReact}
           result={result}
           resultOpen={resultOpen}
+          after={after}
         />
       ) : myWork ? (
         <OwnerOnlyView work={myWork} />

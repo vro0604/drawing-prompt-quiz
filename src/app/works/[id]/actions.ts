@@ -12,6 +12,19 @@ import {
   captchaRequired,
   verifyCaptcha,
 } from "@/features/report/captcha";
+import { callSavePromptElements } from "@/features/carry/rpc";
+import {
+  EMPTY_SAVED,
+  type SavedCarrySlot,
+  type SavedElements,
+} from "@/features/carry/types";
+import { fetchNextWorkId, recordUsageEvent } from "@/features/discover/rpc";
+import {
+  callOpenFlavorHint,
+  callPostFlavorReply,
+  callSetFlavorText,
+} from "@/features/flavor/rpc";
+import type { FlavorReplyToken } from "@/features/flavor/types";
 import {
   callDeleteWork,
   callMarkWorkImageDeleted,
@@ -112,12 +125,23 @@ export async function toggleSaveAction(form: FormData): Promise<void> {
  * クイズの回答を送る。
  *
  * 【フォームの読み取り】
- *   出題側は問ごとに name="q_{question_id}"、value=tag_id のラジオを出す。
- *   ここではその接頭辞が付いた項目を拾って並べ直すだけ。
+ *   出題側は問ごとに name="q_{question_id}"、value=tag_id のチェックボックスを出す。
+ *   ここではその接頭辞が付いた項目を問ごとに集め直す。
+ *
+ *     1つ入っていた → ビタ当て（tag_id だけを送る）
+ *     2つ入っていた → 2択当て（tag_id と tag_id_2 を送る）
+ *     3つ以上       → 断る（下記）
  *
  *   答えていない問はそもそも送られてこないので、数が足りなければ
  *   DB 側が INCOMPLETE_ANSWER で断る。ここでは数を数えない
  *   （何問あるべきかを知っているのは DB だけなので、二重管理にしない）。
+ *
+ * 【3つ以上をここで断る理由】
+ *   DB の submit_answer は1問につき2語までしか受け取らない形なので、
+ *   ここで黙って切り捨てると「選んだのに数えられなかった」ことになる。
+ *   **黙って捨てるより、断って選び直してもらう。**
+ *   1問あたりの上限そのものは DB 側にもあり、ここはその写しではなく
+ *   「送る形に直せない入力を断る」処理である。
  *
  * 【匿名サインインのタイミング】
  *   ページを開いただけでは発行しない（spec 11-1）。
@@ -130,17 +154,40 @@ export async function toggleSaveAction(form: FormData): Promise<void> {
  */
 export async function submitAnswerAction(form: FormData): Promise<void> {
   const workId = str(form, "workId");
-  const selections: AnswerSelection[] = [];
+
+  // 問ごとに、選ばれたタグを集める（同じ name が2回来ることがある）
+  const byQuestion = new Map<number, number[]>();
 
   for (const [key, value] of form.entries()) {
     if (!key.startsWith("q_")) continue;
 
     const questionId = Number.parseInt(key.slice(2), 10);
     const tagId = Number.parseInt(typeof value === "string" ? value : "", 10);
+    if (!Number.isFinite(questionId) || !Number.isFinite(tagId)) continue;
 
-    if (Number.isFinite(questionId) && Number.isFinite(tagId)) {
-      selections.push({ question_id: questionId, tag_id: tagId });
+    const picked = byQuestion.get(questionId) ?? [];
+    if (!picked.includes(tagId)) picked.push(tagId);
+    byQuestion.set(questionId, picked);
+  }
+
+  const selections: AnswerSelection[] = [];
+
+  for (const [questionId, tagIds] of byQuestion) {
+    if (tagIds.length > 2) {
+      backWithError(
+        workId,
+        new Error(
+          "1つの問に選べるのは1つ（ビタ当て）か2つ（2択当て）までです。" +
+            "3つ以上選ばれた問があります。",
+        ),
+      );
     }
+
+    selections.push(
+      tagIds.length === 2
+        ? { question_id: questionId, tag_id: tagIds[0], tag_id_2: tagIds[1] }
+        : { question_id: questionId, tag_id: tagIds[0] },
+    );
   }
 
   try {
@@ -299,4 +346,195 @@ export async function createReportAction(form: FormData): Promise<void> {
       "報告を受け付けました。ご協力ありがとうございます。",
     )}`,
   );
+}
+
+/* ===========================================================================
+ * 回答後の導線・共有・持ち出し・フレーバー（2026-09-04 追加）
+ * ===========================================================================
+ *
+ * ここに増えた入口はどれも「押せる人を画面で絞っている」が、
+ * **それは親切であって守りではない。**ゲストか登録者か、回答済みか未回答かは
+ * すべて DB 側の RPC が JWT と行の有無で判定する。
+ * フォームを直接叩かれても、必ずそちらで止まる。
+ */
+
+/**
+ * 共有する。
+ *
+ * 【なぜ押すだけで何も起きないように見えるのか】
+ *   押すと `?share=open` に移り、共有用の面が開く。そこにURLが出る。
+ *   ブラウザの共有機能を呼ぶには JavaScript が要るが、この画面は
+ *   JavaScript 無しでも動くように作ってあるので、URLを見せる形にした。
+ *
+ * 【ここで数える】
+ *   共有は行が増えない操作なので、記録しないと数えられない。
+ *   数えるのに失敗しても共有は止めない（recordUsageEvent が握りつぶす）。
+ */
+export async function openShareAction(form: FormData): Promise<void> {
+  const workId = str(form, "workId");
+
+  await recordUsageEvent("share_opened", workId || null);
+
+  revalidatePath(`/works/${workId}`);
+  redirect(`/works/${workId}?share=open`);
+}
+
+/**
+ * 次の作品へ移る。
+ *
+ * まだ答えていない公開作品を DB に1件選んでもらい、そこへ移動する。
+ * 1件も無いときは作品一覧へ送る（行き止まりにしない）。
+ */
+export async function nextWorkAction(form: FormData): Promise<void> {
+  const workId = str(form, "workId");
+  let nextId: string | null = null;
+
+  try {
+    nextId = await fetchNextWorkId(workId || null);
+  } catch {
+    // 取れなくても行き止まりにしない。一覧へ送る
+    nextId = null;
+  }
+
+  await recordUsageEvent("next_work_opened", nextId);
+
+  redirect(nextId ? `/works/${nextId}` : "/works");
+}
+
+/**
+ * 開示されたお題から要素を1〜3個、**1つの保存枠にまとめて**持ち出す（D161）。
+ *
+ * 保存できる数の上限は保存枠の数で数える（自分のお題から5枠・他者から3枠）。
+ * 数の検査も、その語が本当にそのお題に入っているかの検査も DB 側。
+ * ここでやるのはチェックボックスを数字の配列に直すことだけ。
+ *
+ * 【自分のお題か、他の人のお題かをここで決めない】
+ *   送るのは「どの作品から」と「どの語を」の2つだけ。
+ *   その作品の持ち主が誰かは save_prompt_elements が DB を見て決める。
+ *   画面から `self` や `others` を申告する経路は無い。
+ *   **申告できる形にすると、他人のお題を自分の枠として保存できてしまう。**
+ *
+ * 【何が起きたかを、起きたとおりに書く】
+ *   ゲストの持ち出しは永続保存にならない（DB が session の枠にする）。
+ *   ここで「保存しました」と書くと、残ると思わせてしまう。
+ *   だから戻り値の区分を見てから文面を決める。**画面が決めた区分ではない。**
+ */
+export async function carryElementsAction(form: FormData): Promise<void> {
+  const workId = str(form, "workId");
+
+  const tagIds = form
+    .getAll("tagId")
+    .map((v) => Number.parseInt(typeof v === "string" ? v : "", 10))
+    .filter((n) => Number.isFinite(n));
+
+  if (tagIds.length === 0) {
+    backWithError(workId, new Error("持ち出す要素を選んでください。"));
+  }
+
+  let saved: SavedElements = EMPTY_SAVED;
+  try {
+    saved = await callSavePromptElements("work", workId, tagIds);
+  } catch (e) {
+    backWithError(workId, e);
+  }
+
+  // いま作られた枠（＝いちばん新しい枠）の区分を見る
+  const created = saved.slots.reduce<SavedCarrySlot | null>(
+    (newest, slot) => (newest === null || slot.id > newest.id ? slot : newest),
+    null,
+  );
+  const isSessionOnly = created === null ? !saved.can_persist : created.scope === "session";
+
+  const notice = isSessionOnly
+    ? `${tagIds.length}個をまとめて1つの枠にしました。` +
+      "これは保存ではありません。この流れの間だけ使えます。" +
+      "次のお題を確定すると手元から無くなります。" +
+      "別の日にも残すにはアカウント登録が必要です。"
+    : `${tagIds.length}個をまとめて1つの保存枠にしました（${
+        created?.source_is_own ? "自分のお題から" : "他の人のお題から"
+      }）。次にお題を引くとき、この枠の中から選んで始められます。`;
+
+  revalidatePath(`/works/${workId}`);
+  revalidatePath("/play");
+  redirect(`/works/${workId}?notice=${encodeURIComponent(notice)}`);
+}
+
+/** 回答前に、作者の文章をヒントとして開く（D162）。開いた事実が記録される */
+export async function openFlavorHintAction(form: FormData): Promise<void> {
+  const workId = str(form, "workId");
+
+  try {
+    await callOpenFlavorHint(workId);
+  } catch (e) {
+    backWithError(workId, e);
+  }
+
+  revalidatePath(`/works/${workId}`);
+  redirect(`/works/${workId}?hint=open`);
+}
+
+/**
+ * 作者が自作の文章を保存する（D162）。
+ *
+ * 正解に近すぎる語が混じっていれば set_flavor_text が断る。
+ * **画面で候補を絞っているだけでは守りにならない**ので、保存でも同じ関門を通す。
+ */
+export async function setFlavorTextAction(form: FormData): Promise<void> {
+  const workId = str(form, "workId");
+
+  const vocabIds = form
+    .getAll("vocabId")
+    .map((v) => Number.parseInt(typeof v === "string" ? v : "", 10))
+    .filter((n) => Number.isFinite(n));
+
+  if (vocabIds.length === 0) {
+    backWithError(workId, new Error("語を1つ以上選んでください。"));
+  }
+
+  try {
+    await callSetFlavorText(workId, vocabIds);
+  } catch (e) {
+    backWithError(workId, e);
+  }
+
+  revalidatePath(`/works/${workId}`);
+  redirect(
+    `/works/${workId}?notice=${encodeURIComponent("作者の文章を保存しました。")}`,
+  );
+}
+
+/**
+ * 返歌を送る（D162）。**正誤判定は無い。**
+ *
+ * 送れるのは、すでに正解が開示されている語（そのお題のタグ）と、
+ * 確認済みの制限語彙だけ。判定は post_flavor_reply が行う。
+ */
+export async function postFlavorReplyAction(form: FormData): Promise<void> {
+  const workId = str(form, "workId");
+
+  const tokens: FlavorReplyToken[] = [];
+
+  for (const raw of form.getAll("token")) {
+    if (typeof raw !== "string") continue;
+    // 値は "v:123"（制限語彙）か "t:456"（開示済みの正解タグ）
+    const [kind, idText] = raw.split(":");
+    const id = Number.parseInt(idText ?? "", 10);
+    if (!Number.isFinite(id)) continue;
+
+    if (kind === "v") tokens.push({ vocab_id: id });
+    else if (kind === "t") tokens.push({ tag_id: id });
+  }
+
+  if (tokens.length === 0) {
+    backWithError(workId, new Error("語を1つ以上選んでください。"));
+  }
+
+  try {
+    await callPostFlavorReply(workId, tokens);
+  } catch (e) {
+    backWithError(workId, e);
+  }
+
+  revalidatePath(`/works/${workId}`);
+  redirect(`/works/${workId}?notice=${encodeURIComponent("返歌を送りました。")}`);
 }

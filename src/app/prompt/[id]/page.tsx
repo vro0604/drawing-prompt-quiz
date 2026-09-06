@@ -1,8 +1,9 @@
 import Link from "next/link";
 import { notFound } from "next/navigation";
-import { fetchMyPrompt } from "@/features/draft/rpc";
-import { formatDuration } from "@/features/draft/types";
-import { btnPrimary, btnSecondary } from "@/app/_surface";
+import { fetchMyPrompt, fetchPromptTimer } from "@/features/draft/rpc";
+import { getCurrentUser } from "@/features/auth/session";
+import { btnPrimary, btnSecondary, noticeError, noticeSuccess } from "@/app/_surface";
+import { CarryFromPromptBox, TimerBox } from "./_timer";
 
 /**
  * /prompt/[id] ／ 確定したお題を表示する。
@@ -24,28 +25,49 @@ export const metadata = {
 
 export default async function PromptPage({
   params,
+  searchParams,
 }: {
   params: Promise<{ id: string }>;
+  searchParams: Promise<{ error?: string; notice?: string }>;
 }) {
   const { id } = await params;
+  const { error, notice } = await searchParams;
 
   const prompt = await fetchMyPrompt(id);
   if (!prompt) notFound();
 
+  // 期限の状態（D163）。他人のお題には null が返るが、
+  // ここまで来ている時点で本人のお題だと分かっている
+  const timer = await fetchPromptTimer(id);
+
+  // 持ち出しは登録者のみ（D164）。本当の判定は save_prompt_elements が行う
+  const user = await getCurrentUser();
+  // 自分のお題からの持ち出しは、ゲストもできる（2026-09-05 の3区分）。
+  // 違うのは「どこまで残るか」だけなので、その1点を画面に書く。
+  const canPersist = user !== null && !user.is_anonymous;
+
   return (
     <main className="mx-auto w-full max-w-3xl space-y-8 p-6 sm:p-10">
+      {error ? <p className={noticeError}>{error}</p> : null}
+      {notice ? <p className={noticeSuccess}>{notice}</p> : null}
+
       <header className="space-y-2">
         <p className="text-xs font-bold tracking-wider text-success">
           お題が確定しました
         </p>
         <h1 className="text-2xl font-bold">{prompt.mode_label}のお題</h1>
         <p className="text-sm text-faint">
-          制作時間 {formatDuration(prompt.time_limit_seconds)}
+          {prompt.cards.length} 語
           {prompt.was_rerolled ? `・引き直し ${prompt.reroll_count} 回` : ""}
         </p>
       </header>
 
-      <ol className="space-y-3">
+      {timer ? <TimerBox promptId={prompt.id} timer={timer} /> : null}
+
+      {/* **番号付きの並びにしない。**D158 は「複数のモーフに主対象・副対象の
+          区別を設けない」「モーフ同士の関係もサービス側では固定しない」と
+          決めている。<ol> にすると、上にあるものが主だと読める。 */}
+      <ul className="space-y-3">
         {prompt.cards.map((c) => (
           // data-* は検査の手がかり。
           //
@@ -71,17 +93,24 @@ export default async function PromptPage({
             <span className="text-lg font-bold">{c.tag_label}</span>
           </li>
         ))}
-      </ol>
+      </ul>
 
       <div className="space-y-4 rounded-2xl bg-sunken p-6 text-sm">
         <p className="font-bold">この内容で描いてください。</p>
         <p className="text-muted">
           描き終えたら作品を投稿します。見た人はこのお題を4択で当てることになります。
-          出題されるのは {prompt.cards.length} 枠のうち一部です。
+          出題されるのは {prompt.cards.length} 語のうち一部です。
+        </p>
+        {/* D158「どう接続するかは描き手が解釈する」を、その場に書く。
+            書かないと、並び順が指示に見える。 */}
+        <p className="text-muted">
+          並び順に主従の意味はありません。別々に描いても、1つに融合させても、
+          関係を作っても構いません。どう繋ぐかは描き手が決めます。
         </p>
 
         {/* 1つのお題から作れる作品は1件まで（A11 / D17）。
-            投稿済みなら投稿導線ではなく作品へのリンクを出す。 */}
+            投稿済みなら投稿導線ではなく作品へのリンクを出す。
+            挑戦が終了しているときは投稿の入口を出さない（D163）。 */}
         {prompt.work_id ? (
           <Link
             href={`/works/${prompt.work_id}`}
@@ -96,8 +125,18 @@ export default async function PromptPage({
           >
             このお題で描いた作品を投稿する
           </Link>
+        ) : prompt.status === "failed" ? (
+          <Link href="/play" className={`${btnSecondary} inline-block`}>
+            新しいお題を引く
+          </Link>
         ) : null}
       </div>
+
+      <CarryFromPromptBox
+        promptId={prompt.id}
+        cards={prompt.cards}
+        canPersist={canPersist}
+      />
 
       {prompt.candidates_revealed_at ? (
         <section className="space-y-3">

@@ -47,8 +47,18 @@ const TEST_KEYS = new Set([
   "3x0000000000000000000000000000000AA",
 ]);
 
-/** .env.local も見る（ローカルで確かめられるように） */
+/**
+ * .env.local も見る（ローカルで確かめられるように）。
+ *
+ * **NEXT_DISABLE_ENV_FILES=1 のときは読まない。**
+ * これは Next.js 自身が `.env*` を読まなくなる印なので、
+ * この検査だけが読んでいると「ビルドが見ている環境」と食い違う。
+ * 一括の検査（npm run test:all）はこの印を立てて走るので、
+ * **素の検査が本番の控えを開くことは無い。**
+ */
 function loadEnvLocal() {
+  if (process.env.NEXT_DISABLE_ENV_FILES === "1") return {};
+
   try {
     const text = readFileSync(new URL("../.env.local", import.meta.url), "utf8");
     const out = {};

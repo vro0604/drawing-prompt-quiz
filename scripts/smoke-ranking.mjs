@@ -129,27 +129,27 @@ section("1. 作品を用意する（通常3件・AI 1件・下書き1件）");
 
 // 制限時間を分けて、時間区分の検査に使う。
 //   1800秒 → medium ／ 600秒 → short ／ 無制限 → unlimited ／ 3600秒 → long
-const topPrompt = await drawPrompt(artist, "standard", "1800");
+const topPrompt = await drawPrompt(artist, "hard", "1800");
 const topId = await post(artist, topPrompt.promptId, `ランキング上位${stamp}`, {
   division: "original",
 });
 
-const lowPrompt = await drawPrompt(artist, "standard", "600");
+const lowPrompt = await drawPrompt(artist, "hard", "600");
 const lowId = await post(artist, lowPrompt.promptId, `ランキング下位${stamp}`, {
   division: "original",
 });
 
-const selfPrompt = await drawPrompt(artist, "easy", "");
+const selfPrompt = await drawPrompt(artist, "normal", "");
 const selfId = await post(artist, selfPrompt.promptId, `自作いいねだけ${stamp}`, {
   division: "original",
 });
 
-const aiPrompt = await drawPrompt(artist, "easy", "3600");
+const aiPrompt = await drawPrompt(artist, "normal", "3600");
 const aiId = await post(artist, aiPrompt.promptId, `ランキングAI${stamp}`, {
   division: "ai",
 });
 
-const draftPrompt = await drawPrompt(artist, "easy", "1800");
+const draftPrompt = await drawPrompt(artist, "normal", "1800");
 const draftId = await post(artist, draftPrompt.promptId, `ランキング下書き${stamp}`, {
   division: "original",
   saveAs: "draft",

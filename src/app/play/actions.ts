@@ -4,6 +4,10 @@ import { redirect } from "next/navigation";
 import { revalidatePath } from "next/cache";
 import { ensureUserId } from "@/features/auth/session";
 import {
+  callDeleteSavedCarrySlot,
+  callPromoteSessionCarry,
+} from "@/features/carry/rpc";
+import {
   callAbandonDraft,
   callCompleteDraft,
   callRerollDraft,
@@ -60,9 +64,9 @@ const IN_PROGRESS =
  *
  * 【何を比べるか】
  *   モードと制限時間に加えて、**そのモードがいま持っている
- *   候補数・引き直し上限・出題数**まで比べる。
+ *   候補数と引き直し上限**まで比べる。
  *   マスタが途中で変わっていれば、同じモード名でも中身は別物なので
- *   合流させない。
+ *   合流させない。出題数はお題の語数で決まるので、比べる対象ではない（D165）。
  *
  * 読み取りに失敗したら null を返す。合流の判断ができないので、
  * 呼び出し側は元のエラーをそのまま出す（勝手に成功にしない）。
@@ -83,8 +87,7 @@ async function sameConditionDraft(
       (current.time_limit_seconds ?? null) === timeLimitSeconds &&
       mode !== undefined &&
       current.candidate_count === mode.candidate_count &&
-      current.max_rerolls === mode.max_rerolls &&
-      current.quiz_question_count === mode.quiz_question_count;
+      current.max_rerolls === mode.max_rerolls;
 
     return { matched };
   } catch {
@@ -119,10 +122,17 @@ export async function startDraftAction(form: FormData): Promise<void> {
   const parsed = Number.parseInt(rawLimit, 10);
   const timeLimitSeconds = Number.isFinite(parsed) ? parsed : null;
 
+  // 持ち出す要素（D161）。数の上限も、本人の手持ちかどうかも start_draft が見る。
+  // **ここで数を切らない。**切ると「3個までです」を2か所で管理することになる。
+  const carriedElementIds = form
+    .getAll("carriedElementId")
+    .map((v) => Number.parseInt(typeof v === "string" ? v : "", 10))
+    .filter((n) => Number.isFinite(n));
+
   try {
     // ここが「最初の書き込み」。必要ならこの瞬間に匿名ユーザーが発行される
     await ensureUserId();
-    await callStartDraft(modeKey, timeLimitSeconds);
+    await callStartDraft(modeKey, timeLimitSeconds, carriedElementIds);
   } catch (e) {
     const existing = await sameConditionDraft(modeKey, timeLimitSeconds);
 
@@ -196,6 +206,49 @@ export async function abandonDraftAction(form: FormData): Promise<void> {
 
   try {
     await callAbandonDraft(sessionId);
+  } catch (e) {
+    backWithError(e);
+  }
+
+  revalidatePath(PAGE);
+  redirect(PAGE);
+}
+
+/**
+ * ゲストのときに作った保存枠を、登録後に手元へ残す（D166）。
+ *
+ * 原文「登録後は使用分を保存可能」。**移す先は出所で決まる。**
+ * 自分のお題からのものは「自分のお題から」、他の人のお題からのものは
+ * 「他の人のお題から」に入る。どちらも上限（保存枠の数）があるので、
+ * 超えるときは DB が断る（画面では数えない）。
+ */
+export async function promoteSessionCarryAction(): Promise<void> {
+  try {
+    await callPromoteSessionCarry(null);
+  } catch (e) {
+    backWithError(e);
+  }
+
+  revalidatePath(PAGE);
+  redirect(PAGE);
+}
+
+/**
+ * 手元の保存枠を1つ捨てる。
+ *
+ * 原文「破棄は利用者が行う」「上限到達時は保存不可」。
+ * **古い枠を勝手に押し出さない**ので、上限に達したら
+ * 利用者が枠を捨てるまで新しく保存できない。その捨てる操作がここ。
+ *
+ * 上限を数える単位は保存枠なので、**空きが増えるのは枠ごと捨てたときだけ。**
+ * 他人の枠は消せない（判定は DB 側）。
+ */
+export async function deleteSavedCarrySlotAction(form: FormData): Promise<void> {
+  const id = Number.parseInt(str(form, "carrySlotId"), 10);
+
+  try {
+    if (!Number.isFinite(id)) throw new Error("捨てる保存枠が選ばれていません。");
+    await callDeleteSavedCarrySlot(id);
   } catch (e) {
     backWithError(e);
   }

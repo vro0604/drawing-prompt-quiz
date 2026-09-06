@@ -24,7 +24,7 @@
  *   npm run smoke:draft
  */
 
-import { readFileSync } from "node:fs";
+import { readTargetEnv } from "./_env-target.mjs";
 import { createClient } from "@supabase/supabase-js";
 import { ensureFixtureUser } from "./_smoke-users.mjs";
 
@@ -45,15 +45,20 @@ function check(ok, label, detail = "") {
   else fail += 1;
 }
 
-/** .env.local から値を読む（Next.js の dev サーバーと同じファイル） */
+/**
+ * 接続先を決める。
+ *
+ * **ここでは .env.local を開かない。**開くかどうかを決めるのは
+ * scripts/_env-target.mjs の1か所だけで、ローカルの経路では開かれない。
+ *
+ * もとはこの場所で .env.local を読み、process.env を上に重ねていた。
+ * 順番のおかげで本番の値は勝たなかったが、
+ * **ローカルの検査が本番の控えを開いている**ことに変わりはなかった
+ * （実測: 検証用の合言葉で本番へサインインしようとして
+ * Invalid login credentials になった。書き込みは起きていない）。
+ */
 function readEnvLocal() {
-  const text = readFileSync(new URL("../.env.local", import.meta.url), "utf8");
-  const out = {};
-  for (const line of text.split("\n")) {
-    const m = /^\s*([A-Z0-9_]+)\s*=\s*(.*)\s*$/.exec(line);
-    if (m) out[m[1]] = m[2].replace(/^["']|["']$/g, "");
-  }
-  return out;
+  return readTargetEnv({ context: "スモーク（ドラフト）" });
 }
 
 function newClient(env) {
@@ -78,7 +83,8 @@ function slotKeyOf(state, slotOrder) {
 async function main() {
   const env = readEnvLocal();
   if (!env.NEXT_PUBLIC_SUPABASE_URL || !env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY) {
-    console.error(`${RED}.env.local に Supabase の URL と Publishable key がありません。${RESET}`);
+    console.error(`${RED}Supabase の URL と Publishable key が環境にありません。${RESET}`);
+    console.error("ローカルは test/e2e/smoke.mjs から、本番は npm run smoke:prod から起動します。");
     process.exit(1);
   }
 
@@ -133,26 +139,36 @@ async function main() {
   const { data: existing } = await supabase.rpc("get_current_draft");
   if (existing) await supabase.rpc("abandon_draft", { p_session_id: existing.session_id });
 
-  console.log(`\n${BOLD}[2] start_draft（standard / 1時間）${RESET}`);
+  // 【2026-09-04 以降、枠の数は固定ではない】
+  //   カテゴリの構成をドラフトのたびに抽選するので（D159）、
+  //   高難度なら5〜6枠のどれかになる。**数を決め打ちにしない。**
+  //   この試験が見るのは「範囲に入っているか」と「その数で最後まで通るか」。
+  console.log(`\n${BOLD}[2] start_draft（hard / 1時間）${RESET}`);
   const { data: started, error: startErr } = await supabase.rpc("start_draft", {
-    p_mode_key: "standard",
+    p_mode_key: "hard",
     p_time_limit_seconds: 3600,
   });
   check(!startErr, "ドラフトを開始できる", startErr?.message ?? "");
   if (startErr) process.exit(1);
 
-  check(started.slot_count === 5, "枠が5つ", `実際 ${started.slot_count}`);
+  check(
+    started.slot_count >= 5 && started.slot_count <= 6,
+    "高難度の枠が5〜6",
+    `実際 ${started.slot_count}`,
+  );
   check(started.candidate_count === 5, "1枠あたり候補5枚", `実際 ${started.candidate_count}`);
   check(
     started.slots.every((s) => s.candidates.length === 5),
     "全枠に候補が5枚ずつある",
   );
+  check(started.carried_count === 0, "持ち出しを渡していないので0個");
   check(started.time_limit_seconds === 3600, "制作時間が保存されている");
   check(started.current_slot_order === 1, "1番目の枠から始まる");
 
   console.log(`\n${BOLD}[3] めくる前のカードの中身が漏れていないこと${RESET}`);
   const hidden = started.slots.flatMap((s) => s.candidates).filter((c) => !c.revealed);
-  check(hidden.length === 25, "伏せカードが25枚", `実際 ${hidden.length}`);
+  const wantHidden = started.slot_count * started.candidate_count;
+  check(hidden.length === wantHidden, `伏せカードが${wantHidden}枚`, `実際 ${hidden.length}`);
   check(
     hidden.every((c) => c.label === null),
     "伏せカードの label がすべて null",
@@ -181,7 +197,7 @@ async function main() {
 
   console.log(`\n${BOLD}[6] reveal_card で1枠ずつ確定${RESET}`);
   let state = started;
-  for (let order = 1; order <= 5; order += 1) {
+  for (let order = 1; order <= started.slot_count; order += 1) {
     const { data, error } = await supabase.rpc("reveal_card", {
       p_session_id: state.session_id,
       p_card_slot_key: slotKeyOf(state, order),
@@ -193,11 +209,15 @@ async function main() {
     }
     state = data;
   }
-  check(state.chosen_count === 5, "5枠すべて決まった", `実際 ${state.chosen_count}`);
+  check(
+    state.chosen_count === state.slot_count,
+    "すべての枠が決まった",
+    `実際 ${state.chosen_count} / ${state.slot_count}`,
+  );
   check(state.is_ready_to_complete === true, "確定できる状態になった");
 
   const chosen = state.slots.flatMap((s) => s.candidates).filter((c) => c.is_chosen);
-  check(chosen.length === 5, "選ばれたカードが5枚");
+  check(chosen.length === state.slot_count, `選ばれたカードが${state.slot_count}枚`);
   check(
     chosen.every((c) => c.label !== null && c.tag_id !== null),
     "選んだカードは中身が見える",
@@ -229,8 +249,9 @@ async function main() {
   );
 
   console.log(`\n${BOLD}[8] もう一度めくって確定${RESET}`);
+  // 引き直すとカテゴリの構成ごと引き直されるので、枠の数が変わりうる
   state = rerolled;
-  for (let order = 1; order <= 5; order += 1) {
+  for (let order = 1; order <= rerolled.slot_count; order += 1) {
     const { data, error } = await supabase.rpc("reveal_card", {
       p_session_id: state.session_id,
       p_card_slot_key: slotKeyOf(state, order),
@@ -242,7 +263,7 @@ async function main() {
     }
     state = data;
   }
-  check(state.is_ready_to_complete === true, "5枠すべて決まった");
+  check(state.is_ready_to_complete === true, "すべての枠が決まった");
 
   console.log(`\n${BOLD}[9] complete_draft${RESET}`);
   const { data: done, error: doneErr } = await supabase.rpc("complete_draft", {
@@ -251,8 +272,17 @@ async function main() {
   check(!doneErr, "お題を確定できる", doneErr?.message ?? "");
   if (doneErr) process.exit(1);
   check(!!done.prompt_id, "prompt_id が返る");
-  check(done.card_count === 5, "答えのカードが5枚", `実際 ${done.card_count}`);
-  check(done.question_count === 3, "クイズが3問", `実際 ${done.question_count}`);
+  check(
+    done.card_count === state.slot_count,
+    `答えのカードが${state.slot_count}枚`,
+    `実際 ${done.card_count}`,
+  );
+  // **問数はお題の語数と同じ（D165）。3で決め打ちしない**
+  check(
+    done.question_count === done.card_count,
+    `クイズがお題の語数と同じ${done.card_count}問`,
+    `実際 ${done.question_count}`,
+  );
 
   const { data: after } = await supabase.rpc("get_current_draft");
   check(after === null, "進行中のドラフトが無くなった");
@@ -263,7 +293,11 @@ async function main() {
   });
   check(!promptErr && !!prompt, "自分のお題を取得できる", promptErr?.message ?? "");
   if (prompt) {
-    check(prompt.cards.length === 5, "カードが5枚");
+    check(prompt.cards.length === done.card_count, `カードが${done.card_count}枚`);
+    check(
+      prompt.cards.some((c) => c.pool_key === "morph"),
+      "描く対象（モーフ）が1つ以上入っている",
+    );
     check(
       prompt.cards.every((c) => typeof c.tag_label === "string" && c.tag_label.length > 0),
       "各カードにタグ名が入っている",

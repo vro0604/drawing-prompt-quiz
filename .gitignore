@@ -52,7 +52,10 @@ yarn-error.log*
 next-env.d.ts
 
 # スモークの固定利用者（Cookie と合言葉。Git へは入れない）
+# 周を重ねると .smoke-fixtures.e2e.2.json … .10.json が増えるので、
+# 番号付きもまとめて外す。1つでも取りこぼすと Cookie が Git へ入る。
 .smoke-fixtures.json
+.smoke-fixtures.e2e*.json
 
 # setup:auth が控える変更前の設定（外部サービスの設定が入る。Git へは入れない）
 /backup
@@ -60,3 +63,9 @@ next-env.d.ts
 # 手動で取ったバックアップの圧縮ファイル。リポジトリに入れない。
 # 2026-09-02 に 756MB の zip を誤って記録し、GitHub の 100MB 制限で送信できなくなった。
 *.zip
+
+# 検査の記録と、重い検査どうしの順番待ちの札。
+# 記録は毎回の実行で作り直されるもの、札はプロセスが生きている間だけのもの。
+# どちらもこの計算機の中の話なので Git へは入れない。
+/.test-logs/
+/.test-locks/

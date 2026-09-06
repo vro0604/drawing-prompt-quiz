@@ -21,11 +21,23 @@ import type { NextConfig } from "next";
  *   下の headers() を参照。一般公開に切り替えるときに消す。
  */
 
-const supabaseHost = (() => {
+/**
+ * 画像の配信元。**組み立て先の URL から、そのまま写す。**
+ *
+ * もとは protocol を "https" と直接書いていた。本番はそれでよいが、
+ * 手元で検証用のサーバー（http）に向けたとき、作品画像だけが 400 になって
+ * 画面が確かめられなくなる。環境変数に書いてある通りの方式を使う。
+ */
+const supabaseOrigin = (() => {
   const raw = process.env.NEXT_PUBLIC_SUPABASE_URL ?? "";
   if (raw.trim() === "") return null;
   try {
-    return new URL(raw).hostname;
+    const u = new URL(raw);
+    return {
+      protocol: u.protocol.replace(":", "") as "http" | "https",
+      hostname: u.hostname,
+      port: u.port,
+    };
   } catch {
     // 環境変数が壊れていてもビルドは通す。画像が出ないことで気づける。
     return null;
@@ -34,11 +46,12 @@ const supabaseHost = (() => {
 
 const nextConfig: NextConfig = {
   images: {
-    remotePatterns: supabaseHost
+    remotePatterns: supabaseOrigin
       ? [
           {
-            protocol: "https",
-            hostname: supabaseHost,
+            protocol: supabaseOrigin.protocol,
+            hostname: supabaseOrigin.hostname,
+            ...(supabaseOrigin.port ? { port: supabaseOrigin.port } : {}),
             pathname: "/storage/v1/object/public/**",
           },
         ]

@@ -61,7 +61,7 @@ const visitor = session("visitor");
 
 section("0. 投稿の準備（お題を引く）");
 
-const original = await drawPrompt(author, "standard");
+const original = await drawPrompt(author, "hard");
 const guestId = accountUserId((await author.get("/account")).html);
 
 must(!!guestId, "作者の uid が取れている", guestId ?? "");
@@ -119,7 +119,7 @@ must(
 // ── 3. 下書きを投稿する（ファンアート部門）────────────────
 section("3. 下書きを投稿する（ファンアート部門）");
 
-const fanart = await drawPrompt(author, "easy");
+const fanart = await drawPrompt(author, "normal");
 
 page = await submitWork(
   author,
@@ -221,7 +221,7 @@ section("6. 1つのお題から作れる作品は1件まで（A11 / D17）");
 // ── 7. 他人のお題では投稿できない ──────────────────────
 section("7. 他人のお題では投稿できない（D27-2 / D40）");
 {
-  const strangerPrompt = await drawPrompt(stranger, "easy");
+  const strangerPrompt = await drawPrompt(stranger, "normal");
 
   const res = await author.get(`/works/new?promptId=${strangerPrompt.promptId}`);
   must(
@@ -256,7 +256,8 @@ section("7. 他人のお題では投稿できない（D27-2 / D40）");
 section("8. 画像が公開URLから取れる");
 {
   const res = await visitor.get(`/works/${publicWorkId}`);
-  const url = /https:\/\/[^"'\s]*\/storage\/v1\/object\/public\/works\/[^"'\s&]*\.png/.exec(
+  // 方式（http / https）を決め打ちしない。検証用の環境では http で立つ
+  const url = /https?:\/\/[^"'\s]*\/storage\/v1\/object\/public\/works\/[^"'\s&]*\.png/.exec(
     decodeURIComponent(res.html),
   )?.[0];
 
@@ -285,7 +286,7 @@ section("8. 画像が公開URLから取れる");
 //   検査のたびに残るお題を増やさないため。
 section("9. 壊れた画像・偽装した画像は受け取らない");
 {
-  const badPrompt = await drawPrompt(author, "easy");
+  const badPrompt = await drawPrompt(author, "normal");
 
   /** 画像を1つ送って、返ってきた画面の文言を返す */
   const trySubmit = async (bytes, name, type) => {

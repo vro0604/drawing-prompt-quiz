@@ -116,12 +116,18 @@ export const btnToggleOff = "border-line-mid";
  * タブは「いまどこを見ているか」の表示であって、次に進む操作ではない。
  * 同じ定数にすると、片方を変えたときにもう片方が巻き添えになる。
  *
- * 【いま満たしていないもの】
- *   高さが 12px + 上下 8px = **32px** で、指で押す領域の下限 44px に届かない。
- *   ここを `py-2` から上げれば全タブに効くが、行の高さが変わるので
- *   見た目を決める段でまとめて扱う。
+ * 【2026-09-05 に直した】
+ *   もとは 12px + 上下 8px = **32px** で、指で押す領域の下限 44px に届かず、
+ *   スマホで隣のタブを踏みやすかった。
+ *
+ *   直し方は `min-h-11`（44px）と `inline-flex items-center`。
+ *   文字の大きさも余白も変えていないので、**見た目は文字の位置が
+ *   縦中央にそろうだけ**で、行の高さが 12px 増える。
+ *   py-2 を上げる方法だと文字が上下に押し広げられて字面が変わるので、
+ *   最低の高さだけを決めて中身は中央に置く形にした。
  */
-const tabShape = "rounded-full px-4 py-2 text-xs font-bold";
+const tabShape =
+  "inline-flex min-h-11 items-center rounded-full px-4 py-2 text-xs font-bold";
 
 /** いま見ているタブ */
 export const tabOn = `${tabShape} bg-accent text-on-accent`;

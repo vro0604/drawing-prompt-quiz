@@ -81,6 +81,37 @@ export async function runCleanup(): Promise<CleanupResult> {
     return (data as number) ?? 0;
   });
 
+  // 猶予を使い切った制作挑戦を失敗にする（D163）。
+  // **作品画像にも作品行にも触れない。**prompts の状態を変えるだけ。
+  await step("時間切れのお題", async () => {
+    const { data, error } = await admin.rpc("expire_overdue_prompts", {
+      p_limit: LIMITS.prompts,
+    });
+    if (error) throw new Error(error.message);
+    return (data as number) ?? 0;
+  });
+
+  // 猶予を使い切ったドラフトも失敗にする（2026-09-05）。
+  // お題の確定前に時間切れになった挑戦は、prompts に行が無いので
+  // expire_overdue_prompts では拾えない。
+  await step("時間切れのドラフト", async () => {
+    const { data, error } = await admin.rpc("expire_overdue_drafts", {
+      p_limit: LIMITS.drafts,
+    });
+    if (error) throw new Error(error.message);
+    return (data as number) ?? 0;
+  });
+
+  // 期限を過ぎた「いまの流れの中だけ」の持ち出しを消す（2026-09-05）。
+  // 永続の持ち出し（self / others）には触れない。
+  await step("流れの中だけの持ち出し", async () => {
+    const { data, error } = await admin.rpc("cleanup_expired_session_carry", {
+      p_limit: LIMITS.agreements,
+    });
+    if (error) throw new Error(error.message);
+    return (data as number) ?? 0;
+  });
+
   await step("ドラフト", async () => {
     const { data, error } = await admin.rpc("cleanup_stale_drafts", {
       p_limit: LIMITS.drafts,

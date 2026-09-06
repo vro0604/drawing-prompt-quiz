@@ -72,6 +72,7 @@
  */
 
 import { readFileSync, writeFileSync, unlinkSync } from "node:fs";
+import { readTargetEnv } from "./_env-target.mjs";
 import { createClient } from "@supabase/supabase-js";
 
 /** 実在しないことが規格で保証されているドメイン（RFC 2606） */
@@ -79,25 +80,37 @@ const DOMAIN = "dpq-smoke.invalid";
 const PREFIX = "dpq-fixture-";
 
 /** Cookie と資格情報の控え。Git には入れない（.gitignore 済み） */
-const CACHE_FILE = new URL("../.smoke-fixtures.json", import.meta.url);
+/**
+ * 控えの置き場。
+ *
+ * **検証用の環境で回すときは、本番向けの控えを上書きしない。**
+ * 本番の固定利用者のIDと合言葉が入っているファイルなので、
+ * 別の接続先で走らせたときに書き換えると、次に本番へ向けたときに
+ * 「知らない利用者」になって作り直しが走る。
+ * SMOKE_FIXTURES_FILE を渡せば置き場を分けられる。
+ */
+const CACHE_FILE = process.env.SMOKE_FIXTURES_FILE
+  ? new URL(`file://${process.env.SMOKE_FIXTURES_FILE}`)
+  : new URL("../.smoke-fixtures.json", import.meta.url);
 
 // ── 環境変数 ──────────────────────────────────────────
 
-function readEnvLocal() {
-  const out = {};
-  try {
-    const text = readFileSync(new URL("../.env.local", import.meta.url), "utf8");
-    for (const line of text.split("\n")) {
-      const m = /^([A-Z0-9_]+)=(.*)$/.exec(line.trim());
-      if (m) out[m[1]] = m[2].trim();
-    }
-  } catch {
-    // 無ければ process.env だけで進む
-  }
-  return { ...out, ...process.env };
-}
-
-const env = readEnvLocal();
+/**
+ * 接続先の決定は scripts/_env-target.mjs に1本化した。
+ *
+ * 【前はどうなっていたか】
+ *   ここで .env.local を直接読み、process.env と混ぜていた。
+ *   そのため `npm run smoke:draft` を素で打つと、**本番の Supabase へ
+ *   認証要求が飛んだ。**拒否されたので実害は無かったが、
+ *   止めたのは本番側であって、こちら側ではなかった。
+ *
+ * 【いまはどうなるか】
+ *   --production を付けたときだけ .env.local を読む。
+ *   付けていなければ .env.local は**読まれず**、
+ *   本番のURL・project ref・ホスト名・鍵が環境に入っていれば、
+ *   最初の通信より前に異常終了する。柵は環境変数では外せない。
+ */
+const env = readTargetEnv({ context: "スモーク（HTTP）" });
 
 /**
  * Admin API のクライアント。**秘密鍵を使うので、この値は絶対に表示しない。**
@@ -110,13 +123,16 @@ function adminClient() {
     throw new Error(
       [
         "",
-        "検査用の利用者を作るには SUPABASE_SECRET_KEY が要ります。",
+        "検査用の利用者を作るには接続先と秘密鍵が要ります。",
         "",
-        "  .env.local に次の2つを入れてください（値は表示しません）:",
-        "    NEXT_PUBLIC_SUPABASE_URL",
-        "    SUPABASE_SECRET_KEY   … sb_secret_ で始まる新しい形式",
+        "  ローカルで動かすときは、検証用の環境ごと立ち上げてください:",
+        "    npm run test:smoke:local",
         "",
-        "  取り方: docs/launch-checklist.md 手順4",
+        "  本番へ向けるときは、本番用の入口から入ってください:",
+        "    npm run smoke:prod -- <スクリプト名>",
+        "",
+        "  素の `npm run smoke:*` は .env.local を読みません。",
+        "  本番へうっかり接続しないための決まりです（値は表示しません）。",
       ].join("\n"),
     );
   }

@@ -41,27 +41,39 @@ const NAV = [
 
 export function SiteHeader() {
   return (
-    <header className="border-b border-line">
+    <header data-site-nav="" className="border-b border-line">
       {/*
         本文の幅は画面によって違う（max-w-2xl 〜 max-w-5xl）。
         枠だけ広い幅に揃えると本文とずれて見えるので、
         いちばん広い本文に合わせる。
       */}
-      <div className="mx-auto flex w-full max-w-5xl flex-wrap items-center gap-x-6 gap-y-2 px-6 py-4 sm:px-10">
-        <Link href="/" className="text-base font-bold">
+      {/*
+        【2026-09-05】行き先はどれも min-h-11（44px）。
+        スマホで指が届く下限に届いていなかった（実測 20px）。
+        文字の大きさは変えず、押せる高さだけを確保している。
+      */}
+      <div className="mx-auto flex w-full max-w-5xl flex-wrap items-center gap-x-6 gap-y-1 px-6 py-2 sm:px-10">
+        <Link href="/" className="inline-flex min-h-11 items-center text-base font-bold">
           つたわるかな
         </Link>
 
-        <nav aria-label="サイト内の移動" className="flex flex-wrap items-center gap-x-5 gap-y-1">
+        <nav aria-label="サイト内の移動" className="flex flex-wrap items-center gap-x-5">
           {NAV.map((n) => (
-            <Link key={n.href} href={n.href} className="text-sm hover:underline">
+            <Link
+              key={n.href}
+              href={n.href}
+              className="inline-flex min-h-11 items-center text-sm hover:underline"
+            >
               {n.label}
             </Link>
           ))}
         </nav>
 
         {/* アカウントは右端へ。ゲストのままでも押せるが、主動線ではない */}
-        <Link href="/account" className="ml-auto text-sm text-muted hover:underline">
+        <Link
+          href="/account"
+          className="ml-auto inline-flex min-h-11 items-center text-sm text-muted hover:underline"
+        >
           アカウント
         </Link>
       </div>
@@ -77,13 +89,16 @@ export function SiteHeader() {
  */
 export function SiteFooter() {
   return (
-    <footer className="mt-16 border-t border-line">
-      <div className="mx-auto flex w-full max-w-5xl flex-wrap items-center gap-x-5 gap-y-2 px-6 py-6 text-xs sm:px-10">
-        <span className="text-faint">つたわるかな</span>
-        <Link href="/terms" className="text-muted hover:underline">
+    <footer data-site-nav="" className="mt-16 border-t border-line">
+      <div className="mx-auto flex w-full max-w-5xl flex-wrap items-center gap-x-5 px-6 py-4 text-xs sm:px-10">
+        <span className="inline-flex min-h-11 items-center text-faint">つたわるかな</span>
+        <Link href="/terms" className="inline-flex min-h-11 items-center text-muted hover:underline">
           利用規約
         </Link>
-        <Link href="/privacy" className="text-muted hover:underline">
+        <Link
+          href="/privacy"
+          className="inline-flex min-h-11 items-center text-muted hover:underline"
+        >
           プライバシーポリシー
         </Link>
       </div>

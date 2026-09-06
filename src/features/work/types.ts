@@ -151,12 +151,25 @@ export type PublicWorkListItem = {
   author_display_name: string;
 };
 
-/** 枠ごとの伝達率（get_work_detail / get_my_work の slot_stats） */
+/**
+ * 枠ごとの伝達率（get_work_detail / get_my_work の slot_stats）。
+ *
+ * **ビタ当てと2択当てを1つの割合にまとめない**（D165 の 4 / 11-2）。
+ * attempts / corrects は素の合計として持つが、画面はこの2つから
+ * 百分率を作らない。作ると、断定して当てた人と2つまで絞った人が
+ * 同じ重みで混ざる。
+ */
 export type SlotStat = {
   card_slot_key: string;
   card_slot_label: string;
   attempts: number;
   corrects: number;
+  /** ビタ当て（4択から1語を選んで断定した） */
+  exact_attempts: number;
+  exact_corrects: number;
+  /** 2択当て（4択から2語を選んで、どちらかに正解を含めた） */
+  pair_attempts: number;
+  pair_corrects: number;
 };
 
 /** 作品の投稿者（get_work_detail の author） */
@@ -243,9 +256,37 @@ export type MyWorkResult = {
    */
   blind_count: number;
   /** ここから下は「開く」を押したときだけ画面に出す */
+  /** **実際に出題された問の総数。**3で割らない（D165） */
   total_items: number;
   correct_items: number;
+  /** ビタ当て（1語で断定）の数。2択当てと混ぜない（D165 の 11-2） */
+  exact_items: number;
+  exact_correct: number;
+  /** 2択当て（2語まで絞った）の数 */
+  pair_items: number;
+  pair_correct: number;
+  /** 固定問数だった時代の回答が何件混ざっているか。0 なら全部が新方式 */
+  legacy_answers: number;
+  /** 枠ごとの方式別。どの要素が断定で伝わったかを見る */
+  slots: ResultSlotStat[];
   misreads: { slot_label: string; tag_label: string; count: number }[];
+};
+
+/**
+ * 枠ごとの方式別の内訳（get_my_work_result の slots）。作者だけに見せる。
+ *
+ * attempts は方式を問わない合計で、exact_/pair_ はその内訳。
+ * **重みを付けて1つの数にまとめない**（D165 の 11-2）。
+ */
+export type ResultSlotStat = {
+  card_slot_key: string;
+  card_slot_label: string;
+  attempts: number;
+  corrects: number;
+  exact_attempts: number;
+  exact_corrects: number;
+  pair_attempts: number;
+  pair_corrects: number;
 };
 
 /** create_work / update_work の戻り値 */
@@ -260,14 +301,29 @@ export function divisionLabel(division: string): string {
 }
 
 /**
- * 枠ごとの伝達率を百分率にする。挑戦が0回なら null（「まだ分からない」）。
+ * 割合を百分率にする。挑戦が0回なら null（「まだ分からない」）。
  *
  * 0回のときに 0% と出すと「誰も当てられなかった」と読めてしまう。
  * 「まだ誰も答えていない」と意味が違うので、区別できる形で返す。
  */
-export function slotAccuracy(stat: SlotStat): number | null {
-  if (stat.attempts === 0) return null;
-  return Math.round((stat.corrects / stat.attempts) * 100);
+export function ratioPercent(corrects: number, attempts: number): number | null {
+  if (!attempts) return null;
+  return Math.round((corrects / attempts) * 100);
+}
+
+/**
+ * 枠ごとの、ビタ当てだけの伝達率。
+ *
+ * **2択当てと足さない。**足すと「断定して当てた」と
+ * 「2つまで絞れた」が同じ1つの数になってしまう（D165 の 11-2）。
+ */
+export function slotExactAccuracy(stat: SlotStat): number | null {
+  return ratioPercent(stat.exact_corrects, stat.exact_attempts);
+}
+
+/** 枠ごとの、2択当てだけの伝達率 */
+export function slotPairAccuracy(stat: SlotStat): number | null {
+  return ratioPercent(stat.pair_corrects, stat.pair_attempts);
 }
 
 /** 実制作時間の秒数を「2時間30分」のような表示に変える。null は未申告 */

@@ -28,7 +28,6 @@
  *   npm run smoke:report
  */
 
-import { readFileSync } from "node:fs";
 import {
   accountUserId,
   answerWork,
@@ -43,6 +42,7 @@ import {
   submitWork,
   textOf,
   workImageUrl,
+  targetEnv,
 } from "./_smoke-http.mjs";
 
 const stamp = `${process.pid}${Math.floor(Math.random() * 1000)}`.slice(-8);
@@ -71,14 +71,14 @@ async function post(s, promptId, title, extra) {
   return id;
 }
 
-/** .env.local から値を読む（比べるためだけに使い、表示はしない） */
+/**
+ * 環境から値を読む（比べるためだけに使い、表示はしない）。
+ *
+ * **.env.local をここで開かない。**ローカルの経路では読まれず、
+ * 本番の経路（npm run smoke:prod）だけが _env-target.mjs 経由で載せてくる。
+ */
 function envValue(name) {
-  try {
-    const text = readFileSync(new URL("../.env.local", import.meta.url), "utf8");
-    return new RegExp("^" + name + "=(.*)$", "m").exec(text)?.[1]?.trim() ?? "";
-  } catch {
-    return "";
-  }
+  return (targetEnv()[name] ?? "").trim();
 }
 
 /**
@@ -219,12 +219,12 @@ section("2. 旧ID の URL はいまのページへ移る");
 // ── 3. 共有カード ────────────────────────────────────────
 section("3. 共有カードにお題の答えが入っていない");
 
-const promptA = await drawPrompt(artist, "standard", "1800");
+const promptA = await drawPrompt(artist, "hard", "1800");
 const keepId = await post(artist, promptA.promptId, `残す作品${stamp}`, {
   division: "original",
 });
 
-const draftPrompt = await drawPrompt(artist, "easy", "600");
+const draftPrompt = await drawPrompt(artist, "normal", "600");
 const draftId = await post(artist, draftPrompt.promptId, `下書き作品${stamp}`, {
   division: "original",
   saveAs: "draft",
@@ -398,7 +398,7 @@ section("5. 非公開にしても画像は残り、公開に戻せる");
 // ── 6. 削除する作品を用意して、参照を作る ────────────────
 section("6. 削除する作品を用意する（回答・いいね・お気に入り・通報を付ける）");
 
-const doomedPrompt = await drawPrompt(artist, "standard", "3600");
+const doomedPrompt = await drawPrompt(artist, "hard", "3600");
 const doomedId = await post(artist, doomedPrompt.promptId, `削除される作品${stamp}`, {
   division: "original",
 });

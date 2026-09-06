@@ -20,6 +20,9 @@
     "db:deploy": "bash scripts/db-deploy.sh",
     "db:verify": "node scripts/db-verify.mjs",
     "db:verify:keychain": "bash scripts/db-verify-keychain.sh",
+    "db:audit:prod": "bash scripts/db-audit-prod.sh",
+    "audit:schema-diff": "node test/audit/schema-diff.mjs",
+    "audit:migration-ops": "node scripts/scan-migration-ops.mjs",
     "db:privs": "node scripts/db-privs.mjs",
     "db:link": "npx supabase link --project-ref oyyiutiptsffckujqkvl",
     "smoke:draft": "node scripts/smoke-draft.mjs",
@@ -34,7 +37,18 @@
     "typecheck": "tsc --noEmit",
     "smoke:race": "node scripts/smoke-race.mjs",
     "smoke:anon": "node scripts/smoke-anon.mjs",
-    "smoke:fixtures:purge": "node scripts/_smoke-users.mjs --purge"
+    "smoke:fixtures:purge": "node scripts/_smoke-users.mjs --purge",
+    "test:db": "node scripts/heavy.mjs 縦断試験（test:db） -- node test/db/run.mjs",
+    "db:verify:local": "node scripts/heavy.mjs DB構造の検査（db:verify:local） -- node scripts/db-verify-local.mjs",
+    "test:db:upgrade": "node scripts/heavy.mjs アップグレード試験（test:db:upgrade） -- node test/db/upgrade.mjs",
+    "check:vocab": "node scripts/vocab-audit.mjs",
+    "check:docs": "node scripts/check-doc-counts.mjs",
+    "test:e2e": "node test/e2e/browser.mjs",
+    "test:e2e:selftest": "node test/e2e/record-selftest.mjs",
+    "test:smoke:local": "node test/e2e/smoke.mjs",
+    "smoke:prod": "node scripts/run-production-smoke.mjs",
+    "test:guard": "node test/guard/selftest.mjs",
+    "test:all": "node scripts/run-all-checks.mjs"
   },
   "dependencies": {
     "@supabase/ssr": "^0.12.4",
@@ -44,6 +58,7 @@
     "react-dom": "19.2.4"
   },
   "devDependencies": {
+    "@electric-sql/pglite": "^0.5.8",
     "@tailwindcss/postcss": "^4",
     "@types/node": "^20",
     "@types/react": "^19",
@@ -51,6 +66,7 @@
     "eslint": "^9",
     "eslint-config-next": "16.2.12",
     "pg": "^8.22.0",
+    "playwright": "^1.62.1",
     "supabase": "^2.111.0",
     "tailwindcss": "^4",
     "typescript": "^5"

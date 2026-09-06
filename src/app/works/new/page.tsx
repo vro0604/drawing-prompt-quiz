@@ -1,8 +1,9 @@
 import Link from "next/link";
 import { getCurrentUser } from "@/features/auth/session";
-import { fetchMyPrompt } from "@/features/draft/rpc";
+import { fetchMyPrompt, fetchPromptTimer } from "@/features/draft/rpc";
 import { fetchAccountState, fetchCurrentDocuments } from "@/features/account/rpc";
 import { formatDuration } from "@/features/draft/types";
+import { TimerBox } from "@/app/prompt/[id]/_timer";
 import { WorkForm } from "./_form";
 import { noticeError, surface } from "@/app/_surface";
 
@@ -171,6 +172,26 @@ export default async function NewWorkPage({
     );
   }
 
+  // 猶予を使い切った挑戦（D163）。**作品や記録が消えたわけではない**ことを書く。
+  // ここを「状態: failed」とだけ出すと、何かを失ったように読める。
+  if (prompt.status === "failed") {
+    return (
+      <Shell>
+        <Notice title="この挑戦は時間切れで終了しました">
+          <p>
+            制作時間を延ばさないまま猶予を過ぎたため、このお題では投稿できません。
+            描いた絵も、これまでの作品や記録も消えていません。
+          </p>
+          <p>
+            <Link href="/play" className="underline">
+              新しいお題を引く
+            </Link>
+          </p>
+        </Notice>
+      </Shell>
+    );
+  }
+
   if (prompt.status !== "active") {
     return (
       <Shell>
@@ -186,10 +207,37 @@ export default async function NewWorkPage({
     );
   }
 
+  // 投稿の画面でも時計は止まらない（D163）。ここに残り時間を出さないと、
+  // 「投稿画面を開いたまま猶予が切れた」が説明できない事故になる。
+  const timer = await fetchPromptTimer(promptId);
+
+  // 猶予を使い切っているときは、フォームを出さない。
+  // **status を待たない。**status が 'failed' になるのは掃除が回ったあとで、
+  // それまでの間もこのお題では投稿できない（投稿の受け口が断る）。
+  if (timer?.is_expired) {
+    return (
+      <Shell>
+        <Notice title="この挑戦は時間切れで終了しました">
+          <p>
+            制作時間を延ばさないまま猶予を過ぎたため、このお題では投稿できません。
+            描いた絵も、これまでの作品や記録も消えていません。
+          </p>
+          <p>
+            <Link href="/play" className="underline">
+              新しいお題を引く
+            </Link>
+          </p>
+        </Notice>
+      </Shell>
+    );
+  }
+
   // --- 投稿フォーム ----------------------------------------------------------
   return (
     <Shell>
       {errorBox}
+
+      {timer ? <TimerBox promptId={promptId} timer={timer} /> : null}
 
       {/* 何を描いたはずかを手元で確認できるように、答えを並べておく。
           この情報が外へ出ないのは get_my_prompt が本人にしか返さないから。 */}

@@ -37,6 +37,14 @@ export async function fetchPublicWorks(params: {
   limit: number;
   offset: number;
   completeness?: string | null;
+  /**
+   * 自分が回答済みの作品を外すか（D169 の11）。
+   *
+   * **見ているのは回答の行だけ。**作品を開いただけでは外れない。
+   * 誰なのか分からない状態（サインインも匿名の発行もされていない）では
+   * 判定できないので、DB 側が絞り込まずに全件を返す。
+   */
+  unansweredOnly?: boolean;
 }): Promise<PublicWorkListItem[]> {
   const supabase = await createSupabaseServerClient();
   const { data, error } = await supabase.rpc("get_public_works", {
@@ -45,6 +53,7 @@ export async function fetchPublicWorks(params: {
     p_limit: params.limit,
     p_offset: params.offset,
     p_completeness: params.completeness ?? null,
+    p_unanswered_only: params.unansweredOnly ?? false,
   });
 
   if (error) throw new Error(readableRpcError(error.message));

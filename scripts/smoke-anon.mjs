@@ -104,7 +104,7 @@ section("0. ページを開いただけではゲストを発行しない（spec 
 section("1. お題を引くとゲストとして発行される");
 
 const guest = session("guest");
-const drawn = await drawPrompt(guest, "standard");
+const drawn = await drawPrompt(guest, "hard");
 const guestId = accountUserId((await guest.get("/account")).html);
 
 must(!!guestId, "お題を引いた時点でゲストになった", guestId ?? "(無し)");
@@ -210,7 +210,7 @@ let promotedWorkId;
     // 確認が済んでいないので投稿はできない。
     // 代わりに、回答の的になる作品を固定利用者で用意する
     const owner = await fixtureSession("anon-work-owner");
-    const ownerPrompt = await drawPrompt(owner, "standard");
+    const ownerPrompt = await drawPrompt(owner, "hard");
     const posted = await submitWork(
       owner,
       ownerPrompt.promptId,
@@ -228,7 +228,7 @@ section("3-b. 登録を同時に5本送っても失敗しない");
 
 {
   const rapid = session("rapid");
-  await drawPrompt(rapid, "easy");
+  await drawPrompt(rapid, "normal");
   const before = accountUserId((await rapid.get("/account")).html);
   must(!!before, "ゲストとして発行された");
 
@@ -288,7 +288,16 @@ const player = session("player");
 {
   // まず回答する。**ここでこのゲストが発行される**
   const result = await answerWork(player, promotedWorkId, drawn.answers, { correct: true });
-  must(/あなたの回答/.test(textOf(result.html)), "ゲストのまま回答できた");
+  const answered = /あなたの回答/.test(textOf(result.html));
+  // **落ちたときに画面が何と言っていたかを残す。**
+  // 「回答できなかった」だけでは、断られたのか届かなかったのか分からない。
+  must(
+    answered,
+    "ゲストのまま回答できた",
+    answered
+      ? ""
+      : `着いた先 ${result.path} / 画面: ${textOf(result.html).slice(0, 300)}`,
+  );
 
   const playerId = accountUserId((await player.get("/account")).html);
   must(!!playerId, "回答した時点でゲストになった", playerId ?? "(無し)");
@@ -310,7 +319,7 @@ section("5. ゲストのまま通報できる");
   // 通報の的は、固定の検査用利用者に用意させる。
   // ゲストは自分の作品も通報できるが、他人の作品を通報する形にそろえたい。
   const owner = await fixtureSession("anon-target-owner");
-  const prompt = await drawPrompt(owner, "easy");
+  const prompt = await drawPrompt(owner, "normal");
   const posted = await submitWork(
     owner,
     prompt.promptId,

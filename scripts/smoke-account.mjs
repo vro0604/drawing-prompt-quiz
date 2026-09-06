@@ -29,7 +29,6 @@
  *   npm run smoke:account
  */
 
-import { readFileSync } from "node:fs";
 import {
   accountUserId,
   answerWork,
@@ -47,19 +46,21 @@ import {
   submitWork,
   textOf,
   workImageUrl,
+  targetEnv,
 } from "./_smoke-http.mjs";
 
 
 const stamp = `${process.pid}${Math.floor(Math.random() * 1000)}`.slice(-8);
 
-/** .env.local に Secret key が入っているか（値は読まない） */
+/**
+ * Secret key が環境に入っているか（値は読まない）。
+ *
+ * **.env.local をここで開かない。**開くかどうかを決めるのは
+ * scripts/_env-target.mjs の1か所だけで、ローカルの経路では開かれない。
+ * 本番の経路（npm run smoke:prod）では、そちらが読んで環境に載せてくる。
+ */
 function hasSecretKey() {
-  try {
-    const text = readFileSync(new URL("../.env.local", import.meta.url), "utf8");
-    return /^SUPABASE_SECRET_KEY=\S/m.test(text);
-  } catch {
-    return false;
-  }
+  return Boolean(targetEnv().SUPABASE_SECRET_KEY);
 }
 
 async function submitAccountForm(s, buttonText, fields) {
@@ -116,7 +117,7 @@ section("1. 規約に同意しないと投稿できない（P3）");
   );
 }
 
-const leaverPrompt = await drawPrompt(leaver, "easy");
+const leaverPrompt = await drawPrompt(leaver, "normal");
 
 {
   const page = await leaver.get(`/works/new?promptId=${leaverPrompt.promptId}`);
@@ -168,7 +169,7 @@ let leaverWorkId;
 }
 
 // 残る人も作品を持つ（退会者がいいねを押す先として使う）
-const stayerPrompt = await drawPrompt(stayer, "easy");
+const stayerPrompt = await drawPrompt(stayer, "normal");
 const stayerWorkId = await (async () => {
   const page = await submitWork(
     stayer,

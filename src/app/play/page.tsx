@@ -1,6 +1,8 @@
 import Link from "next/link";
 import { getCurrentUser } from "@/features/auth/session";
 import { fetchCurrentDraft, fetchDraftModes } from "@/features/draft/rpc";
+import { fetchSavedElements } from "@/features/carry/rpc";
+import { EMPTY_SAVED, type SavedElements } from "@/features/carry/types";
 import type { DraftState } from "@/features/draft/types";
 import { DraftBoard, ErrorBox, StartForm } from "./_components";
 
@@ -46,12 +48,26 @@ export default async function PlayPage({
     }
   }
 
+  // 持ち出しはゲストも使える（2026-09-05 の3区分）。
+  // ゲストが持てるのは「いまの流れの中だけ」の分で、
+  // **どこまで残せるかは DB が返す can_persist が持つ。**画面では決めない。
+  let savedElements: SavedElements = EMPTY_SAVED;
+  if (user) {
+    try {
+      savedElements = await fetchSavedElements();
+    } catch {
+      // 手持ちが読めなくてもドラフトは始められる。**画面を止めない**
+      savedElements = EMPTY_SAVED;
+    }
+  }
+
   return (
     <main className="mx-auto w-full max-w-3xl space-y-8 p-6 sm:p-10">
       <header className="space-y-2">
         <h1 className="text-2xl font-bold">お題を引く</h1>
         <p className="text-sm text-faint">
-          伏せられたカードを1枠につき1枚めくると、その内容がお題になります。
+          何を描くか（描く対象）と、それをどう解釈するか（状態）の組み合わせが
+          毎回抽選されます。伏せられたカードを1枠につき1枚めくると、その内容がお題になります。
           描き終えたら作品を投稿し、見た人がお題を当てます。
         </p>
       </header>
@@ -59,7 +75,11 @@ export default async function PlayPage({
       {error ? <ErrorBox message={error} /> : null}
       {loadError ? <ErrorBox message={loadError} /> : null}
 
-      {draft ? <DraftBoard state={draft} /> : <StartForm modes={modes} />}
+      {draft ? (
+        <DraftBoard state={draft} />
+      ) : (
+        <StartForm modes={modes} saved={savedElements} signedIn={user !== null} />
+      )}
 
       <footer className="border-t border-ink/10 pt-6 text-xs text-faint">
         {user ? (

@@ -20,8 +20,15 @@ export function profilePath(handle: string): string {
 export type SlotStatSummary = {
   card_slot_key: string;
   label: string;
+  /** 方式を問わない素の合計。**ここから割合を作らない**（D165 の 11-2） */
   attempts: number;
   corrects: number;
+  /** ビタ当て（1語で断定）の挑戦数と的中数 */
+  exact_attempts: number;
+  exact_corrects: number;
+  /** 2択当て（2語まで絞った）の挑戦数と的中数 */
+  pair_attempts: number;
+  pair_corrects: number;
 };
 
 /** 描き手としての記録。常に公開（spec 12-0） */
@@ -31,8 +38,17 @@ export type CreatorStats = {
   /** 他人から受け取ったいいねの数。自作へのいいねは含まない（D57 と同じ考え方） */
   likes_received: number;
   total_actual_seconds: number;
-  /** 伝わりやすさ（0〜1）。回答5人以上の作品だけで平均する。対象が無ければ null */
+  /**
+   * 伝わりやすさ（0〜1）。回答5人以上の作品だけで平均する。対象が無ければ null。
+   *
+   * **ビタ当てだけの割合。**2択当ての的中を同じ重みで混ぜない（D165 の 11-2）。
+   */
   accuracy: number | string | null;
+  /** 上の割合の母数（ビタ当てで答えられた項目の数） */
+  exact_attempts: number;
+  /** 2択当てだけの割合。ビタ当てと足して1つにしない */
+  pair_accuracy: number | string | null;
+  pair_attempts: number;
   slot_stats: SlotStatSummary[];
 };
 
@@ -52,8 +68,15 @@ export type MaskedCreatorStats = {
 /** 回答者としての記録。show_answer_stats が false の他人には null */
 export type AnswerStats = {
   total_answers: number;
+  /** 答えた問の総数。**方式を問わない素の数**（割合の分母には使わない） */
   total_items: number;
   total_correct_items: number;
+  /** ビタ当てで答えた問の数と、そのうち的中した数 */
+  exact_items: number;
+  exact_correct_items: number;
+  /** 2択当てで答えた問の数と、そのうち的中した数 */
+  pair_items: number;
+  pair_correct_items: number;
   slot_stats: SlotStatSummary[];
 };
 

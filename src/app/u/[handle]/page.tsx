@@ -1,3 +1,4 @@
+import { formatDate } from "@/lib/datetime";
 import Image from "next/image";
 import Link from "next/link";
 import { notFound, permanentRedirect } from "next/navigation";
@@ -73,7 +74,12 @@ export async function generateMetadata({
   };
 }
 
-/** 枠ごとの正答率。挑戦0回は「—」にする（0% と区別する） */
+/**
+ * 枠ごとの正答率。挑戦0回は「—」にする（0% と区別する）。
+ *
+ * **ビタ当てと2択当てを1つの割合にまとめない**（D165 の 11-2）。
+ * 断定して当てた回数と、2つまで絞って当てた回数は別々に出す。
+ */
 function SlotStatList({ stats }: { stats: SlotStatSummary[] }) {
   if (stats.length === 0) {
     return (
@@ -86,15 +92,32 @@ function SlotStatList({ stats }: { stats: SlotStatSummary[] }) {
   return (
     <ul className="space-y-1 text-xs">
       {stats.map((s) => {
-        const percent = percentOf(s.corrects, s.attempts);
+        const exact = percentOf(s.exact_corrects, s.exact_attempts);
+        const pair = percentOf(s.pair_corrects, s.pair_attempts);
         return (
-          <li key={s.card_slot_key} className="flex items-center gap-3">
+          <li
+            key={s.card_slot_key}
+            data-slot-stat={s.card_slot_key}
+            className="flex flex-wrap items-center gap-x-3"
+          >
             <span className="w-24 shrink-0 text-faint">{s.label}</span>
-            <span className="font-bold tabular-nums">
-              {percent === null ? "—" : `${percent}%`}
+            <span className="tabular-nums">
+              <span className="text-faint">断定 </span>
+              <span className="font-bold">
+                {exact === null ? "—" : `${exact}%`}
+              </span>
+              <span className="pl-1 text-faint">
+                {s.exact_corrects} / {s.exact_attempts}
+              </span>
             </span>
-            <span className="text-faint">
-              {s.corrects} / {s.attempts}
+            <span className="tabular-nums">
+              <span className="text-faint">絞り込み </span>
+              <span className="font-bold">
+                {pair === null ? "—" : `${pair}%`}
+              </span>
+              <span className="pl-1 text-faint">
+                {s.pair_corrects} / {s.pair_attempts}
+              </span>
             </span>
           </li>
         );
@@ -112,6 +135,7 @@ function CreatorStats({ profile }: { profile: PublicProfile }) {
   if (isCreatorHidden(creator)) return null;
 
   const accuracy = ratioPercent(creator.accuracy);
+  const pairAccuracy = ratioPercent(creator.pair_accuracy);
 
   return (
     <section className={`${surface} space-y-4`}>
@@ -138,14 +162,33 @@ function CreatorStats({ profile }: { profile: PublicProfile }) {
         ))}
       </dl>
 
+      {/*
+        伝わりやすさは2つ出す。**足して1つにしない**（D165 の 11-2）。
+        断定して当てられた割合（ビタ当て）と、2つまで絞って当てられた
+        割合（2択当て）は、伝わり方の強さが違う。
+      */}
       <div className="space-y-2 border-t border-ink/10 pt-4">
-        <div className="flex items-baseline gap-3">
-          <h3 className="text-xs text-faint">伝わりやすさ</h3>
-          <span className="text-lg font-bold tabular-nums">
-            {accuracy === null ? "—" : `${accuracy}%`}
+        <h3 className="text-xs text-faint">
+          伝わりやすさ（回答が5人以上集まった作品だけで平均しています）
+        </h3>
+        <div className="flex flex-wrap items-baseline gap-x-6 gap-y-1">
+          <span className="text-sm">
+            <span className="text-faint">断定で当てられた </span>
+            <span
+              className="text-lg font-bold tabular-nums"
+              data-creator-accuracy="exact"
+            >
+              {accuracy === null ? "—" : `${accuracy}%`}
+            </span>
           </span>
-          <span className="text-xs text-faint">
-            回答が5人以上集まった作品だけで平均しています
+          <span className="text-sm">
+            <span className="text-faint">2つまで絞って当てられた </span>
+            <span
+              className="text-lg font-bold tabular-nums"
+              data-creator-accuracy="pair"
+            >
+              {pairAccuracy === null ? "—" : `${pairAccuracy}%`}
+            </span>
           </span>
         </div>
         <SlotStatList stats={creator.slot_stats} />
@@ -158,7 +201,10 @@ function AnswerStats({ profile }: { profile: PublicProfile }) {
   const stats = profile.answer_stats;
   if (!stats) return null;
 
-  const overall = percentOf(stats.total_correct_items, stats.total_items);
+  // **1つの総合正答率は出さない**（D165 の 11-2）。
+  // 断定して当てた割合と、2つまで絞って当てた割合を別々に出す。
+  const exact = percentOf(stats.exact_correct_items, stats.exact_items);
+  const pair = percentOf(stats.pair_correct_items, stats.pair_items);
 
   return (
     <section className={`${surface} space-y-4`}>
@@ -173,13 +219,21 @@ function AnswerStats({ profile }: { profile: PublicProfile }) {
         </h2>
         <p className="text-xs text-faint">
           クイズにどれだけ当てられたかです。
+          1語に断定して当てた分と、2語まで絞って当てた分は別々に数えています。
         </p>
       </div>
 
-      <dl className="grid grid-cols-2 gap-4 sm:grid-cols-3">
+      <dl className="grid grid-cols-2 gap-4 sm:grid-cols-4">
         {[
           { label: "回答した作品", value: `${stats.total_answers}` },
-          { label: "総合正答率", value: overall === null ? "—" : `${overall}%` },
+          {
+            label: `断定して的中（${stats.exact_correct_items}/${stats.exact_items}）`,
+            value: exact === null ? "—" : `${exact}%`,
+          },
+          {
+            label: `2つまで絞って的中（${stats.pair_correct_items}/${stats.pair_items}）`,
+            value: pair === null ? "—" : `${pair}%`,
+          },
           { label: "答えた設問", value: `${stats.total_items}` },
         ].map((item) => (
           <div key={item.label}>
@@ -404,7 +458,7 @@ export default async function ProfilePage({
                       {a.author_display_name}
                     </p>
                     <p className="text-xs text-faint">
-                      {new Date(a.answered_at).toLocaleDateString("ja-JP")}・
+                      {formatDate(a.answered_at)}・
                       {a.item_count}問中 {a.correct_count}問 正解
                     </p>
                   </div>

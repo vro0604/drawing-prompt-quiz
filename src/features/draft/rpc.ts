@@ -5,6 +5,7 @@ import type {
   DraftMode,
   DraftState,
   PromptDetail,
+  PromptTimer,
 } from "@/features/draft/types";
 
 /**
@@ -58,7 +59,7 @@ export async function fetchDraftModes(): Promise<DraftMode[]> {
   const { data, error } = await supabase
     .from("draft_modes")
     // select * は使えない。列権限を絞ってあるため（D30）
-    .select("mode_key, label, candidate_count, max_rerolls, quiz_question_count, sort_order")
+    .select("mode_key, label, candidate_count, max_rerolls, sort_order, uses_two_stage, word_count_min, word_count_max, morph_max")
     .order("sort_order");
 
   if (error) throw new Error(`モード一覧を取得できませんでした: ${error.message}`);
@@ -79,14 +80,23 @@ export async function fetchCurrentDraft(): Promise<DraftState | null> {
   return (data as DraftState | null) ?? null;
 }
 
+/**
+ * ドラフトを始める。
+ *
+ * carriedElementIds を渡すと、その要素が最初から埋まった状態で始まる（D161）。
+ * 空配列と null は同じ扱い（何も持ち出さない）。
+ * 持ち出しは登録者だけで、判定は start_draft が JWT で行う（D164）。
+ */
 export async function callStartDraft(
   modeKey: string,
   timeLimitSeconds: number | null,
+  carriedElementIds: number[] = [],
 ): Promise<DraftState> {
   const supabase = await createSupabaseServerClient();
   const { data, error } = await supabase.rpc("start_draft", {
     p_mode_key: modeKey,
     p_time_limit_seconds: timeLimitSeconds,
+    p_carried_element_ids: carriedElementIds.length > 0 ? carriedElementIds : null,
   });
 
   if (error) throw new Error(readableRpcError(error.message));
@@ -164,4 +174,42 @@ export async function fetchMyPrompt(promptId: string): Promise<PromptDetail | nu
 
   if (error) throw new Error(readableRpcError(error.message));
   return (data as PromptDetail | null) ?? null;
+}
+
+/**
+ * 制作挑戦の残り時間（D163）。自分のお題以外には null が返る。
+ *
+ * **画面はこの値を毎回読み直す。**ブラウザ側で秒を数え続けても、
+ * ページを閉じている間の経過は数えられない。時計はサーバーにしか無い。
+ */
+export async function fetchPromptTimer(promptId: string): Promise<PromptTimer | null> {
+  if (!isUuid(promptId)) return null;
+
+  const supabase = await createSupabaseServerClient();
+
+  const { data: auth } = await supabase.auth.getUser();
+  if (!auth.user) return null;
+
+  const { data, error } = await supabase.rpc("get_prompt_timer", {
+    p_prompt_id: promptId,
+  });
+
+  if (error) throw new Error(readableRpcError(error.message));
+  return (data as PromptTimer | null) ?? null;
+}
+
+/**
+ * 期限を更新する（オーバー更新。D163）。
+ *
+ * 早すぎる／遅すぎる／無制限のときは、それぞれ別の理由で失敗する。
+ * **失敗の文言をここで作らない。**DB 側が理由ごとに違う文を返す。
+ */
+export async function callRenewPromptDeadline(promptId: string): Promise<PromptTimer> {
+  const supabase = await createSupabaseServerClient();
+  const { data, error } = await supabase.rpc("renew_prompt_deadline", {
+    p_prompt_id: promptId,
+  });
+
+  if (error) throw new Error(readableRpcError(error.message));
+  return data as PromptTimer;
 }

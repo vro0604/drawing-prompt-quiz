@@ -207,3 +207,99 @@ body {
   background: var(--background);
   color: var(--foreground);
 }
+
+/*
+ * 制作挑戦の帯（_challenge-bar.tsx）は画面の上に貼り付く。
+ * そのままだと、リンクで飛んだ先やキーボードで移った先が
+ * **帯の下に隠れる。**スクロールの基準を帯の高さぶん下げておく。
+ *
+ * 3.5rem は帯1行ぶんの高さ（実測 48px 前後）に少し余裕を足した値。
+ * 帯が2行になる幅では、その分は隠れる（そこは画面を少し動かせば見える）。
+ */
+html {
+  scroll-padding-top: 3.5rem;
+}
+
+/*
+ * クイズの回答方式を、問ごとに文字で出す（D165 の 3）。
+ *
+ * 【何をしているか】
+ *   1つの問の選択肢のうち、チェックが何個入っているかによって、
+ *   4つの説明文のうち1つだけを見せる。
+ *
+ *     0個 … 「回答を選んでください」
+ *     1個 … 「ビタ当て」
+ *     2個 … 「2択当て」
+ *     3個以上 … 「3つ以上は選べません」
+ *
+ * 【なぜ JavaScript を使わないか】
+ *   この画面は JavaScript が無効でも動く作りになっている（すべて
+ *   Server Component ＋ form の送信）。方式の表示だけ JavaScript に
+ *   頼ると、無効の人には**自分がどちらで送るのか分からないまま**になる。
+ *
+ * 【数え方】
+ *   `label:has(input:checked) ~ .answer-mode-state` は
+ *   「チェック済みの選択肢が1つ以上先行している説明文」。
+ *   `~ label:has(input:checked)` をもう1つ挟めば2個以上、
+ *   もう1つで3個以上。**「ちょうど1個」は、1個以上を出してから
+ *   2個以上で消す**という順番で作る（後ろに書いた規則が勝つ）。
+ *
+ *   説明文を選択肢より後ろに置いているのは、CSS が数えられるのが
+ *   「その要素より前にある兄弟」だけだから。
+ *
+ * 【:has() を入れ子にしていない】
+ *   `:has()` の中に `:has()` は書けない（書くと選択子ごと無効になる）。
+ *   ここでは `label:has(...)` を並べているだけで、入れ子にはしていない。
+ */
+.answer-mode-state > span {
+  display: none;
+}
+
+/* 0個。チェック済みの選択肢が1つも先行していない */
+.answer-mode-state > [data-state="none"] {
+  display: inline;
+}
+
+/* 1個以上 */
+.answer-mode-choices > label:has(input:checked) ~ .answer-mode-state
+  > [data-state="none"] {
+  display: none;
+}
+.answer-mode-choices > label:has(input:checked) ~ .answer-mode-state
+  > [data-state="exact"] {
+  display: inline;
+}
+
+/* 2個以上 */
+.answer-mode-choices
+  > label:has(input:checked)
+  ~ label:has(input:checked)
+  ~ .answer-mode-state
+  > [data-state="exact"] {
+  display: none;
+}
+.answer-mode-choices
+  > label:has(input:checked)
+  ~ label:has(input:checked)
+  ~ .answer-mode-state
+  > [data-state="pair"] {
+  display: inline;
+}
+
+/* 3個以上 */
+.answer-mode-choices
+  > label:has(input:checked)
+  ~ label:has(input:checked)
+  ~ label:has(input:checked)
+  ~ .answer-mode-state
+  > [data-state="pair"] {
+  display: none;
+}
+.answer-mode-choices
+  > label:has(input:checked)
+  ~ label:has(input:checked)
+  ~ label:has(input:checked)
+  ~ .answer-mode-state
+  > [data-state="over"] {
+  display: inline;
+}
