@@ -534,20 +534,27 @@ export const checks = [
   },
   {
     group: "構造",
-    name: "マスタ行数 tag_pools=8",
-    expected: 8,
+    // 8 → 17。20260904090000 が抽象カテゴリの入れ物を9つ足す。
+    // 期待値の出どころ: 40本を当てた手元のDBの実測（migration が定める姿）。
+    name: "マスタ行数 tag_pools=17",
+    expected: 17,
     sql: `select count(*)::int from public.tag_pools`,
   },
   {
     group: "構造",
-    name: "マスタ行数 card_slots=10",
-    expected: 10,
+    // 10 → 40。モーフ3・カラー3・状態24 の枠が増える（旧10枠は消さない）。
+    // 期待値の出どころ: 40本を当てた手元のDBの実測。
+    name: "マスタ行数 card_slots=40",
+    expected: 40,
     sql: `select count(*)::int from public.card_slots`,
   },
   {
     group: "構造",
-    name: "マスタ行数 draft_modes=2",
-    expected: 2,
+    // 2 → 4。normal / hard を足す。easy / standard は**行を消さず**
+    // is_active=false にするだけなので、合計は4になる。
+    // 期待値の出どころ: 40本を当てた手元のDBの実測と docs/prod-audit-2026-09-06.md 3-1。
+    name: "マスタ行数 draft_modes=4",
+    expected: 4,
     sql: `select count(*)::int from public.draft_modes`,
   },
   {
@@ -1218,8 +1225,12 @@ export const checks = [
   // 意味が無いので、下限（4-1 の式）と重みの分布も見る。
   {
     group: "タグ",
-    name: "有効タグが156件ある",
-    expected: 156,
+    // 156 → 474。20260904091000 が318語を足す。
+    // 期待値の出どころ: docs/prod-audit-2026-09-06.md 4章
+    // 「tags への INSERT と UPDATE ／ 156 →474（増分318。実測）」と、
+    // 40本を当てた手元のDBの実測。
+    name: "有効タグが474件ある",
+    expected: 474,
     sql: `select count(*)::int from public.tags where is_active`,
   },
   {
