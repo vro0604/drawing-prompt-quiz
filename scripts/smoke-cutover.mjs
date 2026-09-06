@@ -260,9 +260,12 @@ const guest = session("cutover-guest");
 
   // ヒント（作者の言葉）。**ゲストは開けない**のが仕様なので、
   // 案内は出るが入口は出ない、を確かめる。開くほうは登録2人目で見る。
-  must(/作者からの言葉があります/.test(textOf(page.html)), "作者の言葉があることは分かる");
+  // フレーバー系の RPC は authenticated だけが呼べる（D90）ので、
+  // ゲストの画面にはこの欄そのものが出ない。**出ないことが正しい。**
   must(!formByText(page.html, /ヒントとして開く/),
     "ゲストにはヒントを開く入口が出ない（登録者だけ）");
+  must(!/作者からの言葉/.test(textOf(page.html)),
+    "ゲストには作者の言葉の欄自体が出ない");
 }
 
 // ビタ当て（1つ選ぶ）で回答
@@ -328,7 +331,8 @@ record("answererUserId", answererId ?? null);
   must(!!hint?.actionId, "登録者にはヒントを開く入口が出る");
   if (hint?.actionId) {
     const opened = await answerer.post(`/works/${workId}`, { [hint.actionId]: "", workId });
-    must(/作者の言葉/.test(textOf(opened.html)), "ヒントが開いた");
+    must(/作者からの言葉（ヒント）/.test(textOf(opened.html)), "ヒントが開いた",
+      opened.path);
     ids.hintOpenedByAnswerer = true;
   }
 
@@ -388,10 +392,15 @@ record("answererUserId", answererId ?? null);
 section("6-b. ヒントの使用有無が分かれて記録される");
 
 {
-  const page = await author.get(`/works/${workId}`);
+  // 数字は開くまで出さない決まりなので、?result=open を付けて開く
+  const page = await author.get(`/works/${workId}?result=open`);
   const t = textOf(page.html);
   must(/文章を読んだ人と、読まなかった人/.test(t),
     "作者の画面に、読んだ人と読まなかった人の欄が出る");
+  const stats = [...clean(page.html).matchAll(
+    /data-hint-stat="(with|without)"[^>]*data-answers="(\d+)"/g)]
+    .map((m) => `${m[1]}=${m[2]}人`);
+  must(stats.length === 2, "読んだ人と読まなかった人が別々に数えられている", stats.join(" "));
 }
 
 // ══════════════════════════════════════════════════════
