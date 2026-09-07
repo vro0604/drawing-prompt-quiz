@@ -2198,12 +2198,39 @@ export const diagnostics = [
            where qc.tag_id <> pc.tag_id`,
   },
   {
+    // 【2026-09-07 に直した。**期待値のほうが古かった。**】
+    //   もとは「どのモードでも、答えの枚数は draft_mode_slots の行数と同じ」
+    //   と見ていた。これは枠が固定だった頃の決まりで、
+    //   2段抽選のモード（normal / hard）には当てはまらない。
+    //   2段抽選のモードは枠を毎回その場で決めるので、
+    //   **draft_mode_slots に行が1つも無い**（実測: 行があるのは easy と
+    //   standard だけ）。そのため normal のお題4件が、
+    //   「3枚 対 0枠」で不一致として数えられていた。
+    //   4件のうち3件は今回の適用より前（2026-09-06）に作られたもので、
+    //   この不一致は今回の変更で生まれたものではない。
+    //
+    //   モードの区別は draft_modes.uses_two_stage が持っている。
+    //   枠が固定のモードだけを、これまでどおり行数と突き合わせる。
     id: "A4",
-    label: "答えの枚数がモードの枠数と合わないお題",
+    label: "答えの枚数がモードの枠数と合わないお題（枠が固定のモード）",
     sql: `select p.id from public.prompts p
-           where (select count(*) from public.prompt_cards pc where pc.prompt_id = p.id)
+            join public.draft_modes dm on dm.mode_key = p.mode_key
+           where dm.uses_two_stage = false
+             and (select count(*) from public.prompt_cards pc where pc.prompt_id = p.id)
               <> (select count(*) from public.draft_mode_slots dms
                    where dms.mode_key = p.mode_key)`,
+  },
+  {
+    // 2段抽選のモードは枚数が幅で決まる（normal は3〜4語、hard は5〜6語）。
+    // **幅の外に出ていないこと**を見る。上の A4 と対になっている。
+    id: "A4b",
+    label: "答えの枚数がモードの範囲から外れたお題（2段抽選のモード）",
+    sql: `select p.id from public.prompts p
+            join public.draft_modes dm on dm.mode_key = p.mode_key
+           where dm.uses_two_stage
+             and (select count(*) from public.prompt_cards pc where pc.prompt_id = p.id)
+                 not between coalesce(dm.word_count_min, 1)
+                         and coalesce(dm.word_count_max, 99)`,
   },
   {
     id: "A5",
