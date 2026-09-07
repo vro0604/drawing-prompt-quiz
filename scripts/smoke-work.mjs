@@ -185,9 +185,18 @@ for (const [s, label] of [
   // そのまま DB へ渡すと「invalid input syntax for type uuid」で 500 になり、
   // そこだけ応答が変わってしまう。URL を打ち間違えただけの人に
   // 「うまく表示できませんでした」と出るのも正しくない。
+  //
+  // 本番では、経路によってはアプリまで届かず、手前の層が 400 で断ることがある
+  // （実測: 2026-09-07 に `../../etc/passwd` が Vercel 側で 400）。
+  // **見たいのは「作品ページが出ないこと」と「500 にならないこと」**なので、
+  // 400 も断りとして数える。200 と 5xx だけを不合格にする。
   for (const bad of ["not-a-uuid", "12345", "../../etc/passwd"]) {
     const r = await visitor.get(`/works/${encodeURIComponent(bad)}`);
-    must(r.status === 404, `形が違うIDも 404（${bad}）`, `実際 ${r.status}`);
+    must(
+      r.status === 404 || r.status === 400,
+      `形が違うIDは開けない（${bad}）`,
+      `実際 ${r.status}`,
+    );
   }
 }
 
@@ -350,8 +359,13 @@ section("9. 壊れた画像・偽装した画像は受け取らない");
   for (const c of cases) {
     const { text, path } = await trySubmit(c.bytes, c.name, c.type);
     const accepted = /^\/works\/[0-9a-f-]{36}/.test(path);
+    // 本番では、大きすぎる本体はアプリまで届かず手前の層が断る
+    // （実測: 2026-09-07 に FUNCTION_PAYLOAD_TOO_LARGE が返った）。
+    // **どちらで断られても、受け取らなかったことに変わりはない。**
+    const stoppedEarly = /PAYLOAD_TOO_LARGE|Request Entity Too Large/i.test(text);
     must(
-      !accepted && /扱えません|画像を選んで|読み取れません|5MBまで/.test(text),
+      !accepted &&
+        (stoppedEarly || /扱えません|画像を選んで|読み取れません|5MBまで/.test(text)),
       `${c.label} を断る`,
       accepted ? "受け取ってしまった" : text.slice(0, 60),
     );
