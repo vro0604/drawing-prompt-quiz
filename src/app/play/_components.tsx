@@ -473,6 +473,15 @@ function SlotRow({ state, slot }: { state: DraftState; slot: DraftSlot }) {
 
 /** 進行中のドラフト盤面 */
 export function DraftBoard({ state }: { state: DraftState }) {
+  // 【残りを開いた枠が1つでもあると、もう引き直せない（D171）】
+  //   引き直しはドラフト全体を作り直すので、開いた枠があると
+  //   総ドラフト基数を超えて候補を見られてしまう。DB 側が
+  //   POOL_ALREADY_REVEALED で断る。
+  //
+  //   **断られるボタンを置いたままにしない。**押してから断られるのは、
+  //   押す前に分かることを隠しているのと同じ。理由をその場に書いて消す。
+  const poolRevealed = state.slots.some((s) => s.pool_revealed);
+
   return (
     <div className="space-y-8">
       {/* 進み具合は data-* にも出す。以前の検査は「0 / 5 枠 決定」という
@@ -527,7 +536,7 @@ export function DraftBoard({ state }: { state: DraftState }) {
           </form>
         ) : null}
 
-        {state.rerolls_left > 0 ? (
+        {state.rerolls_left > 0 && !poolRevealed ? (
           <form action={rerollDraftAction}>
             <input type="hidden" name="sessionId" value={state.session_id} />
             <SubmitButton
@@ -550,12 +559,19 @@ export function DraftBoard({ state }: { state: DraftState }) {
         </form>
       </div>
 
-      <p className="text-xs text-faint">
-        引き直すと選んだカードは白紙に戻り、カテゴリの組み合わせから引き直しになります。
-        {state.carried_count > 0
-          ? "持ち出した要素は引き直しても残ります。"
-          : ""}
-      </p>
+      {poolRevealed && state.rerolls_left > 0 ? (
+        <p className="text-xs text-faint">
+          候補の残りを開いた枠があるので、このドラフトはもう引き直せません。
+          開いた候補の中から選んでください。
+        </p>
+      ) : (
+        <p className="text-xs text-faint">
+          引き直すと選んだカードは白紙に戻り、カテゴリの組み合わせから引き直しになります。
+          {state.carried_count > 0
+            ? "持ち出した要素は引き直しても残ります。"
+            : ""}
+        </p>
+      )}
     </div>
   );
 }

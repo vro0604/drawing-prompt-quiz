@@ -2210,6 +2210,52 @@ async function main() {
     assert(live.rows[0].n === 0, `進行中のドラフトが ${live.rows[0].n} 件残っている`);
   });
 
+  await test("P", "枠の残りを開くと、引き直しのボタンが消えて理由が出る", async (t) => {
+    t.stage("進行中のドラフトを片づけてから引き始める");
+    await db.query(
+      `update public.draft_sessions set status = 'abandoned', abandoned_at = now()
+        where user_id = $1 and status = 'in_progress'`,
+      [seeded.viewer],
+    );
+    await drawThroughUi(m, base, { timeLimit: "3600" });
+
+    assert(
+      /全部引き直す/.test(await settledBody(m)),
+      "引き始めた時点で引き直しのボタンが出ていない",
+    );
+
+    t.stage("1枚めくって残す");
+    await submitAndSettle(m, m.locator("button[data-card=hidden]:not([disabled])").first());
+    const hold = m.getByRole("button", { name: "残しておく" });
+    await hold.first().waitFor({ state: "visible", timeout: 15000 });
+    await submitAndSettle(m, hold.first());
+
+    t.stage("その枠の残りを開く");
+    const open = m.getByRole("button", { name: /この枠の残りを見る/ });
+    await open.first().waitFor({ state: "visible", timeout: 15000 });
+    await submitAndSettle(m, open.first());
+
+    const body = await settledBody(m);
+    assert(
+      /この枠は残りを開きました/.test(body),
+      `残りを開いた印が出ていない: ${body.replace(/\s+/g, " ").slice(0, 200)}`,
+    );
+    assert(
+      !/全部引き直す/.test(body),
+      "残りを開いたのに、引き直しのボタンが残っている（押しても断られる）",
+    );
+    assert(
+      /もう引き直せません/.test(body),
+      "引き直せない理由が画面に出ていない",
+    );
+
+    t.stage("読み込み直しても同じ");
+    await m.reload();
+    const again = await settledBody(m);
+    assert(!/全部引き直す/.test(again), "読み込み直すと引き直しのボタンが戻ってくる");
+    assert(/もう引き直せません/.test(again), "読み込み直すと理由が消える");
+  });
+
   /* =====================================================================
    * Q. メールの確認を、別のタブで開いたとき（D171）
    *
