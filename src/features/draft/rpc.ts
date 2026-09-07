@@ -44,11 +44,58 @@ const UNEXPECTED = "うまく処理できませんでした。時間をおいて
  *   なので本番では差し替える。開発では原文を残す
  *   （ここを伏せると、直すときに何が起きたのか分からなくなる）。
  */
+/**
+ * 日本語を持たないまま投げられる合図と、その言い換え。
+ *
+ * 【なぜ要るか】
+ *   RPC の多くは 'CODE: 日本語' の形で断るが、**8つだけ合図だけを投げる。**
+ *   `raise exception 'TERMS_NOT_AGREED'` のように英字しか無い。
+ *   下の分解は当たらないので、本番ではまとめて
+ *   「うまく処理できませんでした」に化けていた。
+ *
+ *   本番で実際に起きていたこと（実測: 2026-09-07 の本番スモーク）:
+ *     ・退会の合言葉を打ち間違えた人 … 何が違うのか分からない文が出る
+ *     ・退会した人の ID を取ろうとした人 … 同上
+ *     ・規約に同意せずに投稿した人 … 同上
+ *
+ *   **利用者は入力を直しようがない。**開発では原文が出るので気づけなかった。
+ *   合図ごとに1行の日本語を持たせて、本番でも理由が読めるようにする。
+ *
+ * 【DB を直さない理由】
+ *   合図を投げているのは引き金（trigger）で、置き換えるには migration が要る。
+ *   文言は画面の言葉なので、画面側に置いても意味は変わらない。
+ *   **本番のDBへ当てる回数を増やさない**ほうが、切替の最中は安全。
+ */
+const BARE_CODES: Record<string, string> = {
+  TERMS_NOT_AGREED:
+    "利用規約とプライバシーポリシーへの同意が必要です。同意の欄にチェックを入れて、もう一度お試しください。",
+  HANDLE_RETIRED:
+    "その ID は以前ほかの方が使っていたため登録できません。別の ID をお選びください。",
+  CONFIRM_MISMATCH:
+    "入力が一致しません。画面に表示されている言葉をそのまま入力してください。",
+  ANONYMOUS_NOT_ALLOWED:
+    "ゲストのままでは、この操作はできません。アカウントを登録してからお試しください。",
+  ALREADY_PENDING: "このアカウントはすでに退会の処理に入っています。",
+  ACCOUNT_DELETION_PENDING:
+    "このアカウントは退会の処理に入っているため、操作できません。",
+  NOT_SIGNED_IN: "サインインし直してから、もう一度お試しください。",
+  VERSION_MISMATCH:
+    "表示していた規約が、その間に新しくなりました。画面を読み込み直して、新しい内容をご確認ください。",
+};
+
 export function readableRpcError(message: string): string {
+  const trimmed = message.trim();
+
   // [\s\S] を使うのは、複数行のメッセージでも最後まで取るため
   // （. は既定で改行に当たらない。s フラグは tsconfig の target が古いと使えない）
-  const m = /^[A-Z_]+:\s*([\s\S]+)$/.exec(message.trim());
+  const m = /^[A-Z_]+:\s*([\s\S]+)$/.exec(trimmed);
   if (m) return m[1];
+
+  // 合図だけが投げられた場合。**前後に何が付いていても拾う。**
+  // Postgres は文脈（CONTEXT 行）を足して返すことがある。
+  for (const [code, text] of Object.entries(BARE_CODES)) {
+    if (new RegExp(`\\b${code}\\b`).test(trimmed)) return text;
+  }
 
   return process.env.NODE_ENV === "production" ? UNEXPECTED : message;
 }

@@ -228,7 +228,7 @@ async function main() {
     const { data: probe, error: probeErr } = await supabase.rpc("start_draft", {
       p_mode_key: "hard",
       p_time_limit_seconds: 3600,
-      p_carry_element_ids: null,
+      p_carried_element_ids: null,
     });
     if (probeErr) {
       check(false, "確認用のドラフトを開始できる", probeErr.message);
@@ -293,7 +293,7 @@ async function main() {
   const { data: restarted, error: restartErr } = await supabase.rpc("start_draft", {
     p_mode_key: "hard",
     p_time_limit_seconds: 3600,
-    p_carry_element_ids: null,
+    p_carried_element_ids: null,
   });
   if (restartErr) {
     check(false, "本筋のドラフトを開始し直せる", restartErr.message);
@@ -405,16 +405,33 @@ async function main() {
   );
 
   console.log(`\n${BOLD}[8] もう一度めくって確定${RESET}`);
-  // 引き直すとカテゴリの構成ごと引き直されるので、枠の数が変わりうる
+  // 引き直すとカテゴリの構成ごと引き直されるので、枠の数が変わりうる。
+  //
+  // **ここも2段で進める（D170）。**めくっただけでは枠が進まないので、
+  // めくって決めるまでを1周にする。片方だけだと、次の枠をめくろうとした
+  // ところで WRONG_SLOT_ORDER になる（実測: 2026-09-07 の本番スモーク）。
   state = rerolled;
   for (let order = 1; order <= rerolled.slot_count; order += 1) {
-    const { data, error } = await supabase.rpc("reveal_card", {
+    const key = slotKeyOf(state, order);
+    const index = firstIndex(state, order);
+
+    const { error: flipErr } = await supabase.rpc("reveal_card", {
       p_session_id: state.session_id,
-      p_card_slot_key: slotKeyOf(state, order),
-      p_candidate_index: firstIndex(state, order),
+      p_card_slot_key: key,
+      p_candidate_index: index,
+    });
+    if (flipErr) {
+      check(false, `${order}番目の枠をめくる`, flipErr.message);
+      process.exit(1);
+    }
+
+    const { data, error } = await supabase.rpc("choose_card", {
+      p_session_id: state.session_id,
+      p_card_slot_key: key,
+      p_candidate_index: index,
     });
     if (error) {
-      check(false, `${order}番目の枠をめくる`, error.message);
+      check(false, `${order}番目の枠に決める`, error.message);
       process.exit(1);
     }
     state = data;

@@ -151,6 +151,21 @@ const must = (ok, label, extra = "") => {
 // ── 1. モード選択画面 ─────────────────────────────
 let page = await get("/play");
 must(page.status === 200, "GET /play が 200");
+
+// 【前の実行が途中で止まっていたら、その続きを片づける】
+//   /play は進行中のドラフトがあれば、モード選択ではなく盤面を出す。
+//   前回が途中で落ちていると、この検査は「モード選択が出ていない」で
+//   落ちる。**それは前回の残りであって、いまの本番の不具合ではない。**
+//   検査用の利用者のドラフトなので、画面と同じ「このドラフトを捨てる」で
+//   片づけてから始める。利用者のデータには触らない。
+if (/data-slots="/.test(page.html)) {
+  const drop = forms(page.html).find((f) => /このドラフトを捨てる/.test(f.text));
+  if (drop) {
+    page = await post("/play", { [drop.actionId]: "", ...drop.fields });
+    console.log("  （前の実行が残したドラフトを1つ捨ててから始めます）");
+  }
+}
+
 // モードの呼び名は D158 で変わった（お手軽／標準 → 通常／高難度）。
 // **画面の文言を写さず、いま出ているモードのどれかがあることを見る。**
 must(
@@ -199,34 +214,54 @@ must(!/万年筆|折り鶴|妖精/.test(textOf(page.html)), "伏せカードの�
 //
 // 画面は2段になった。めくるボタンを押しても確定せず、
 // 「これに決める」を押して初めて次の枠へ進む。
-for (let i = 1; i <= slotCount; i += 1) {
-  const flip = forms(page.html).find((x) => x.fields.candidateIndex !== undefined);
-  if (!flip) {
-    must(false, `${i}枠目のめくるボタンが見つかる`);
-    break;
-  }
-  page = await post("/play", { [flip.actionId]: "", ...flip.fields });
+//
+// **この2段は、引き直したあとの節でも同じことをする。**
+// 片方だけ書くと、片方だけが古い作法のまま残る（実測: 2026-09-07 の
+// 本番スモークで、引き直し後の節がめくるだけを繰り返して 3/6 で止まった）。
+// だから1つの関数にして、両方から呼ぶ。
+async function decideAllSlots(start, count, { checkPending = false } = {}) {
+  let p = start;
 
-  if (i === 1) {
+  for (let i = 1; i <= count; i += 1) {
+    // めくるボタンは、まだ伏せているカードのボタン。
+    // 「これに決める」「残しておく」も candidateIndex を持つので、
+    // 文言で外してから選ぶ。
+    const flip = forms(p.html).find(
+      (x) =>
+        x.fields.candidateIndex !== undefined &&
+        !/これに決める|残しておく/.test(x.text),
+    );
+    if (!flip) {
+      must(false, `${i}枠目のめくるボタンが見つかる`);
+      return p;
+    }
+    p = await post("/play", { [flip.actionId]: "", ...flip.fields });
+
+    if (checkPending && i === 1) {
+      must(
+        progress(p.html) === `0/${count}`,
+        "めくっただけでは決まらない",
+        progress(p.html) ?? "-",
+      );
+    }
+
+    const decide = forms(p.html).find((x) => /これに決める/.test(x.text));
+    if (!decide) {
+      must(false, `${i}枠目の「これに決める」が出る`);
+      return p;
+    }
+    p = await post("/play", { [decide.actionId]: "", ...decide.fields });
     must(
-      progress(page.html) === `0/${slotCount}`,
-      "めくっただけでは決まらない",
-      progress(page.html) ?? "-",
+      progress(p.html) === `${i}/${count}`,
+      `${i}枠目を決定`,
+      progress(p.html) ?? "-",
     );
   }
 
-  const decide = forms(page.html).find((x) => /これに決める/.test(x.text));
-  if (!decide) {
-    must(false, `${i}枠目の「これに決める」が出る`);
-    break;
-  }
-  page = await post("/play", { [decide.actionId]: "", ...decide.fields });
-  must(
-    progress(page.html) === `${i}/${slotCount}`,
-    `${i}枠目を決定`,
-    progress(page.html) ?? "-",
-  );
+  return p;
 }
+
+page = await decideAllSlots(page, slotCount, { checkPending: true });
 must(/このお題で確定する/.test(page.html), "確定ボタンが出た");
 
 // ── 4. reroll ─────────────────────────────────────
@@ -245,10 +280,7 @@ must(/引き直し 残り 0 回/.test(textOf(page.html)), "残り回数が0に�
 must(!/全部引き直す/.test(page.html), "引き直しボタンが消えた");
 
 // ── 5. 再度めくって確定 ────────────────────────────
-for (let i = 1; i <= slotCount2; i += 1) {
-  const f = forms(page.html).find((x) => x.fields.candidateIndex !== undefined);
-  page = await post("/play", { [f.actionId]: "", ...f.fields });
-}
+page = await decideAllSlots(page, slotCount2);
 must(
   progress(page.html) === `${slotCount2}/${slotCount2}`,
   "すべての枠が決定",

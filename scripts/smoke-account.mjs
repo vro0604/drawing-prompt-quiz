@@ -137,11 +137,17 @@ const leaverPrompt = await drawPrompt(leaver, "normal");
   );
   // 「同意していないから」断られたことを確かめる。
   // ほかの入力不備で断られても通ってしまわないよう、理由まで見る。
+  // **合図そのものではなく、利用者に出る理由で判定する。**
+  //   本番では英字の合図をそのまま画面へ出さない。2026-09-07 まで、
+  //   合図だけを投げる例外は本番で「うまく処理できませんでした」に
+  //   化けていた（実測）。いまは合図ごとに日本語を持たせてある。
+  //   どちらの環境でも「同意が要る」と読めることを見る。
+  const deniedText =
+    decodeURIComponent(denied.path) + " " + textOf(denied.html);
   must(
-    /TERMS_NOT_AGREED/.test(decodeURIComponent(denied.path)) ||
-      /TERMS_NOT_AGREED/.test(textOf(denied.html)),
-    "同意せずに送ると TERMS_NOT_AGREED で断られる",
-    decodeURIComponent(denied.path).slice(0, 120),
+    /TERMS_NOT_AGREED|同意が必要/.test(deniedText),
+    "同意せずに送ると「同意が必要」と断られる",
+    deniedText.replace(/\s+/g, " ").slice(0, 160),
   );
   must(
     !/^\/works\/[0-9a-f-]{36}/.test(denied.path),
@@ -234,7 +240,13 @@ section("4. 合言葉が違えば退会しない");
   const wrong = await submitPageForm(leaver, "/account/delete", "退会する", {
     confirm: "まちがった合言葉",
   });
-  must(/一致しません/.test(textOf(wrong.html)), "合言葉が違うと断られる");
+  // **落ちたときに、画面が何と言っていたかを残す。**
+  // 文言を見て判定している検査は、落ちた理由が本文にしか無い。
+  must(
+    /一致しません/.test(textOf(wrong.html)),
+    "合言葉が違うと断られる",
+    textOf(wrong.html).replace(/\s+/g, " ").slice(0, 200),
+  );
 
   const still = await leaver.get("/account");
   must(still.status === 200, "アカウントはまだ生きている", `実際 ${still.status}`);
@@ -254,6 +266,7 @@ section("5. 他人のアカウントは消せない");
   must(
     /一致しません/.test(textOf(attempt.html)),
     "他人の合言葉を入れても自分の合言葉として判定される",
+    textOf(attempt.html).replace(/\s+/g, " ").slice(0, 200),
   );
 
   const victim = await leaver.get("/account");
@@ -375,8 +388,9 @@ section("10. 使っていた ID は他人に渡らない");
   });
   const text = textOf(taken.html);
   must(
-    /使えません|使われています|HANDLE_RETIRED/.test(text),
+    /使えません|使われています|以前ほかの方が使っていた|HANDLE_RETIRED/.test(text),
     "退会した人の ID は取れない",
+    text.replace(/\s+/g, " ").slice(0, 200),
   );
 
   const check = await other.get(`/u/${leaverHandle}`);
