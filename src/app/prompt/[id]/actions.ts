@@ -2,7 +2,11 @@
 
 import { redirect } from "next/navigation";
 import { revalidatePath } from "next/cache";
-import { callRenewPromptDeadline } from "@/features/draft/rpc";
+import {
+  callAbandonPrompt,
+  callRenewPromptDeadline,
+  callRevealPromptCandidates,
+} from "@/features/draft/rpc";
 import { callSavePromptElements } from "@/features/carry/rpc";
 
 /**
@@ -80,6 +84,59 @@ export async function carryFromPromptAction(form: FormData): Promise<void> {
   redirect(
     `/prompt/${promptId}?notice=${encodeURIComponent(
       `${tagIds.length}個を持ち出しました。次にお題を引くとき、この要素から始められます。`,
+    )}`,
+  );
+}
+
+/**
+ * 引かなかったカードを開く（spec 4-4 の「他の候補を見る」／D171）。
+ *
+ * 【本人確認をここでしない】
+ *   reveal_prompt_candidates が created_by = auth.uid() を見る。
+ *   他人のお題IDを送っても「そのお題は見つかりません」で終わる（D40）。
+ *   画面側でボタンを隠しているのは見やすさのためで、**錠は DB 側にある。**
+ *
+ * 二度押されても、開いた時刻と理由は最初の1回ぶんしか記録されない。
+ */
+export async function revealPromptCandidatesAction(form: FormData): Promise<void> {
+  const promptId = str(form, "promptId");
+
+  try {
+    await callRevealPromptCandidates(promptId);
+  } catch (e) {
+    backWithError(promptId, e);
+  }
+
+  revalidatePath(`/prompt/${promptId}`);
+  redirect(
+    `/prompt/${promptId}?notice=${encodeURIComponent(
+      "引かなかったカードを開きました。この表示は元に戻せません。",
+    )}`,
+  );
+}
+
+/**
+ * このお題は描かない（spec 4-4 の「チャレンジ放棄」／D171）。
+ *
+ * 押すとお題が放棄になり、そのお題では作品を投稿できなくなる。
+ * 引き換えに、引かなかったカードが開く。
+ *
+ * **投稿済みのお題は放棄できない。**その判定も DB 側にある。
+ */
+export async function abandonPromptAction(form: FormData): Promise<void> {
+  const promptId = str(form, "promptId");
+
+  try {
+    await callAbandonPrompt(promptId);
+  } catch (e) {
+    backWithError(promptId, e);
+  }
+
+  revalidatePath(`/prompt/${promptId}`);
+  revalidatePath("/play");
+  redirect(
+    `/prompt/${promptId}?notice=${encodeURIComponent(
+      "このお題をやめました。引かなかったカードを開いています。",
     )}`,
   );
 }

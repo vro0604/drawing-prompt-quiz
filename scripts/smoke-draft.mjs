@@ -9,8 +9,9 @@
  *   1. 匿名サインインができる
  *   2. start_draft で候補が正しい数だけできる
  *   3. **めくっていないカードの中身が返ってこない**（いちばん大事）
- *   4. reveal_card で1枠ずつ確定できる
+ *   4. めくる（reveal_card）→ 決める（choose_card）の2段で進む
  *   5. 順番を飛ばした reveal_card が拒否される
+ *   6. 保持の上限と、保持後の残り開示、開示後の引き直し禁止
  *   6. reroll_draft で引き直せる
  *   7. complete_draft でお題とクイズができる
  *   8. get_my_prompt で答えが取れる
@@ -156,18 +157,41 @@ async function main() {
     "高難度の枠が5〜6",
     `実際 ${started.slot_count}`,
   );
-  check(started.candidate_count === 5, "1枠あたり候補5枚", `実際 ${started.candidate_count}`);
+  // D170: 1枠一律ではなく、総ドラフト基数を2〜5枚で配る
+  const lotSlots = started.slots.filter((x) => !x.is_carried);
+  const counts = lotSlots.map((x) => x.candidates.length);
+  const total = counts.reduce((a, b) => a + b, 0);
   check(
-    started.slots.every((s) => s.candidates.length === 5),
-    "全枠に候補が5枚ずつある",
+    counts.every((n) => n >= 2 && n <= 5),
+    "どの枠も候補2〜5枚",
+    `実際 ${counts.join("/")}`,
   );
+  check(
+    total === lotSlots.length * 3,
+    `候補の合計が総ドラフト基数（枠${lotSlots.length}×3＝${lotSlots.length * 3}）と一致`,
+    `実際 ${total}`,
+  );
+  check(
+    started.draft_base === total,
+    "draft_base と実際の枚数が一致",
+    `${started.draft_base} / ${total}`,
+  );
+  check(
+    new Set(counts).size > 1 || counts.length === 1,
+    "枚数が全枠同じ値に固定されていない（1枠のときは対象外）",
+    `実際 ${counts.join("/")}`,
+  );
+  const morphs = started.slots.filter((x) => x.card_slot_key.startsWith("morph_")).length;
+  check(morphs >= 1 && morphs <= 2, "モーフは1〜2枠", `実際 ${morphs}`);
+  const colors = started.slots.filter((x) => x.card_slot_key.startsWith("color_")).length;
+  check(colors <= 1, "カラーは多くても1枠（必須ではない）", `実際 ${colors}`);
   check(started.carried_count === 0, "持ち出しを渡していないので0個");
   check(started.time_limit_seconds === 3600, "制作時間が保存されている");
   check(started.current_slot_order === 1, "1番目の枠から始まる");
 
   console.log(`\n${BOLD}[3] めくる前のカードの中身が漏れていないこと${RESET}`);
   const hidden = started.slots.flatMap((s) => s.candidates).filter((c) => !c.revealed);
-  const wantHidden = started.slot_count * started.candidate_count;
+  const wantHidden = total;
   check(hidden.length === wantHidden, `伏せカードが${wantHidden}枚`, `実際 ${hidden.length}`);
   check(
     hidden.every((c) => c.label === null),
@@ -195,16 +219,148 @@ async function main() {
     skipErr ? "" : "拒否されなかった",
   );
 
-  console.log(`\n${BOLD}[6] reveal_card で1枠ずつ確定${RESET}`);
-  let state = started;
-  for (let order = 1; order <= started.slot_count; order += 1) {
-    const { data, error } = await supabase.rpc("reveal_card", {
+  console.log(`\n${BOLD}[5-b] 保持の上限・残りの開示・開示後の引き直し禁止（D170 / D171）${RESET}`);
+  //
+  // **この節だけ別のドラフトを使う。**残りを開くと引き直せなくなるので、
+  // ここで使ったセッションは最後に捨てる。上の started はそのまま残す。
+  {
+    await supabase.rpc("abandon_draft", { p_session_id: started.session_id });
+    const { data: probe, error: probeErr } = await supabase.rpc("start_draft", {
+      p_mode_key: "hard",
+      p_time_limit_seconds: 3600,
+      p_carry_element_ids: null,
+    });
+    if (probeErr) {
+      check(false, "確認用のドラフトを開始できる", probeErr.message);
+      process.exit(1);
+    }
+    const key = slotKeyOf(probe, probe.current_slot_order);
+    const slot = probe.slots.find((x) => x.card_slot_key === key);
+    const n = slot.candidates.length;
+    const limit = Math.min(2, n - 1);
+    check(slot.held_limit === limit, `残せる上限が min(2, ${n} - 1) = ${limit}`,
+      `実際 ${slot.held_limit}`);
+
+    for (let i = 0; i < limit; i += 1) {
+      await supabase.rpc("reveal_card", {
+        p_session_id: probe.session_id, p_card_slot_key: key, p_candidate_index: i,
+      });
+      const { error } = await supabase.rpc("hold_card", {
+        p_session_id: probe.session_id, p_card_slot_key: key,
+        p_candidate_index: i, p_hold: true,
+      });
+      check(!error, `${i + 1}枚目を残せる`, error?.message ?? "");
+    }
+
+    await supabase.rpc("reveal_card", {
+      p_session_id: probe.session_id, p_card_slot_key: key, p_candidate_index: limit,
+    });
+    const { error: overErr } = await supabase.rpc("hold_card", {
+      p_session_id: probe.session_id, p_card_slot_key: key,
+      p_candidate_index: limit, p_hold: true,
+    });
+    check(
+      !!overErr && overErr.message.includes("HOLD_LIMIT"),
+      "上限を超えて残そうとすると断られる（全部は残せない）",
+      overErr ? "" : "断られなかった",
+    );
+
+    const { data: opened, error: poolErr } = await supabase.rpc("reveal_slot_pool", {
+      p_session_id: probe.session_id, p_card_slot_key: key,
+    });
+    check(!poolErr, "残した候補があるので、その枠の残りを開ける", poolErr?.message ?? "");
+    if (opened) {
+      const s2 = opened.slots.find((x) => x.card_slot_key === key);
+      check(s2.pool_revealed === true, "開示の印が付く");
+      check(s2.candidates.every((c) => c.revealed), "その枠の候補が全部見える");
+      check(s2.candidates.length === n, "開示しても候補は増えない", `実際 ${s2.candidates.length}`);
+    }
+
+    const { error: rerollErr } = await supabase.rpc("reroll_draft", {
+      p_session_id: probe.session_id,
+    });
+    check(
+      !!rerollErr && rerollErr.message.includes("POOL_ALREADY_REVEALED"),
+      "残りを開いたあとは引き直せない（新しい候補を出す抜け道が無い）",
+      rerollErr ? "" : "引き直せてしまった",
+    );
+
+    // 確認用のセッションはここで捨てる
+    await supabase.rpc("abandon_draft", { p_session_id: probe.session_id });
+  }
+
+  // 本筋の続きに使うドラフトを引き直す
+  const { data: restarted, error: restartErr } = await supabase.rpc("start_draft", {
+    p_mode_key: "hard",
+    p_time_limit_seconds: 3600,
+    p_carry_element_ids: null,
+  });
+  if (restartErr) {
+    check(false, "本筋のドラフトを開始し直せる", restartErr.message);
+    process.exit(1);
+  }
+
+  console.log(`\n${BOLD}[6] めくる → 決める の2段（D170）${RESET}`);
+  let state = restarted;
+
+  // まず1枠だけ、めくった時点で確定していないことを確かめる
+  {
+    const key = slotKeyOf(state, state.current_slot_order);
+    const idx = firstIndex(state, state.current_slot_order);
+    const { data: revealed, error: rErr } = await supabase.rpc("reveal_card", {
       p_session_id: state.session_id,
-      p_card_slot_key: slotKeyOf(state, order),
-      p_candidate_index: firstIndex(state, order),
+      p_card_slot_key: key,
+      p_candidate_index: idx,
+    });
+    if (rErr) {
+      check(false, "1枠目をめくる", rErr.message);
+      process.exit(1);
+    }
+    const slot = revealed.slots.find((x) => x.card_slot_key === key);
+    const card = slot.candidates.find((c) => c.candidate_index === idx);
+    check(card.revealed === true, "めくった印が付く");
+    check(card.is_chosen === false, "めくっただけでは確定にならない");
+    check(
+      revealed.current_slot_order === state.current_slot_order,
+      "めくっただけでは次の枠へ進まない",
+    );
+    check(revealed.chosen_count === state.chosen_count, "確定数が増えない");
+
+    const { data: chosen, error: cErr } = await supabase.rpc("choose_card", {
+      p_session_id: state.session_id,
+      p_card_slot_key: key,
+      p_candidate_index: idx,
+    });
+    if (cErr) {
+      check(false, "1枠目を決める", cErr.message);
+      process.exit(1);
+    }
+    check(chosen.chosen_count === state.chosen_count + 1, "決めると確定数が増える");
+    check(chosen.current_slot_order > state.current_slot_order, "決めると次の枠へ進む");
+    state = chosen;
+  }
+
+  // 残りの枠は、めくる→決める を続けて通す
+  while (state.chosen_count < state.slot_count) {
+    const order = state.current_slot_order;
+    const key = slotKeyOf(state, order);
+    const idx = firstIndex(state, order);
+    const { error: rErr } = await supabase.rpc("reveal_card", {
+      p_session_id: state.session_id,
+      p_card_slot_key: key,
+      p_candidate_index: idx,
+    });
+    if (rErr) {
+      check(false, `${order}番目の枠をめくる`, rErr.message);
+      process.exit(1);
+    }
+    const { data, error } = await supabase.rpc("choose_card", {
+      p_session_id: state.session_id,
+      p_card_slot_key: key,
+      p_candidate_index: idx,
     });
     if (error) {
-      check(false, `${order}番目の枠をめくる`, error.message);
+      check(false, `${order}番目の枠を決める`, error.message);
       process.exit(1);
     }
     state = data;

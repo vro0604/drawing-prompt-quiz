@@ -2,8 +2,9 @@
 /**
  * smoke-play.mjs ／ /play の一連の流れを、ブラウザと同じ道筋で通す
  *
- * モード選択 → start_draft → 伏せカード表示 → reveal_card ×5 →
- * reroll_draft → reveal_card ×5 → complete_draft → 確定お題ページ
+ * モード選択 → start_draft → 伏せカード表示 →
+ * （めくる → これに決める）を枠の数だけ → reroll_draft →
+ * 同じことをもう一度 → complete_draft → 確定お題ページ
  *
  * 【どうやってボタンを押しているか】
  *   Next.js の Server Action は JavaScript が無効でも動くように、
@@ -186,17 +187,40 @@ must(progress(page.html) === `0/${slotCount}`, "まだ1枠も決まっていな�
 must(/ゲスト/.test(page.html), "ゲストとして発行された");
 
 const hiddenCount = hiddenCards(page.html);
-must(hiddenCount === 5, "いまめくれるのは1枠ぶんの5枚だけ", `実際 ${hiddenCount}`);
+// D170: 1枠あたりの枚数は2〜5で毎回変わる。固定5を期待しない
+must(
+  hiddenCount >= 2 && hiddenCount <= 5,
+  "いまめくれるのは1枠ぶんの2〜5枚だけ",
+  `実際 ${hiddenCount}`,
+);
 must(!/万年筆|折り鶴|妖精/.test(textOf(page.html)), "伏せカードの中身が HTML に出ていない");
 
-// ── 3. reveal_card を枠の数だけ ───────────────────
+// ── 3. めくる → 決める を枠の数だけ（D170）─────────
+//
+// 画面は2段になった。めくるボタンを押しても確定せず、
+// 「これに決める」を押して初めて次の枠へ進む。
 for (let i = 1; i <= slotCount; i += 1) {
-  const f = forms(page.html).find((x) => x.fields.candidateIndex !== undefined);
-  if (!f) {
+  const flip = forms(page.html).find((x) => x.fields.candidateIndex !== undefined);
+  if (!flip) {
     must(false, `${i}枠目のめくるボタンが見つかる`);
     break;
   }
-  page = await post("/play", { [f.actionId]: "", ...f.fields });
+  page = await post("/play", { [flip.actionId]: "", ...flip.fields });
+
+  if (i === 1) {
+    must(
+      progress(page.html) === `0/${slotCount}`,
+      "めくっただけでは決まらない",
+      progress(page.html) ?? "-",
+    );
+  }
+
+  const decide = forms(page.html).find((x) => /これに決める/.test(x.text));
+  if (!decide) {
+    must(false, `${i}枠目の「これに決める」が出る`);
+    break;
+  }
+  page = await post("/play", { [decide.actionId]: "", ...decide.fields });
   must(
     progress(page.html) === `${i}/${slotCount}`,
     `${i}枠目を決定`,

@@ -109,10 +109,15 @@ function typesToTry(raw: string | null): string[] {
  * **token_hash・type・code は載せない。**戻り先の URL は履歴にも
  * 共有先にも残るので、確認用の値をそこへ置かない。
  */
-function backToAccount(params: { notice?: string; error?: string }): NextResponse {
+function backToAccount(
+  params: { notice?: string; error?: string; confirmed?: boolean },
+): NextResponse {
   const query = new URLSearchParams();
   if (params.notice) query.set("notice", params.notice);
   if (params.error) query.set("error", params.error);
+  // 確認が通ったときだけ印を付ける。/account がこれを見て
+  // 「完了しました」の面を出し、同じブラウザの他のタブへ合図を送る（D171）
+  if (params.confirmed) query.set("confirmed", "1");
 
   const target = query.toString()
     ? `${siteUrl("/account")}?${query.toString()}`
@@ -181,5 +186,5 @@ export async function GET(request: NextRequest) {
 
   // Supabase が書いた Cookie を、この応答へ貼ってから返す。
   // これをしないと、戻った先でサインインしていない
-  return applyCookies(backToAccount({ notice: DONE }));
+  return applyCookies(backToAccount({ notice: DONE, confirmed: true }));
 }

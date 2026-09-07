@@ -12,6 +12,9 @@ import {
   callCompleteDraft,
   callRerollDraft,
   callRevealCard,
+  callChooseCard,
+  callHoldCard,
+  callRevealSlotPool,
   callStartDraft,
   fetchCurrentDraft,
   fetchDraftModes,
@@ -159,6 +162,65 @@ export async function revealCardAction(form: FormData): Promise<void> {
       throw new Error("カードの番号が読み取れませんでした。");
     }
     await callRevealCard(sessionId, cardSlotKey, candidateIndex);
+  } catch (e) {
+    backWithError(e);
+  }
+
+  revalidatePath(PAGE);
+  redirect(PAGE);
+}
+
+/**
+ * めくったカードに決める（D170）。
+ *
+ * **めくる操作とは分けてある。**押した瞬間に確定するのは、この操作だけ。
+ * ドローの途中で読み込み直しても、決めていないカードは確定にならない。
+ */
+export async function chooseCardAction(form: FormData): Promise<void> {
+  const sessionId = str(form, "sessionId");
+  const cardSlotKey = str(form, "cardSlotKey");
+  const candidateIndex = Number.parseInt(str(form, "candidateIndex"), 10);
+
+  try {
+    if (!Number.isFinite(candidateIndex)) {
+      throw new Error("カードの番号が読み取れませんでした。");
+    }
+    await callChooseCard(sessionId, cardSlotKey, candidateIndex);
+  } catch (e) {
+    backWithError(e);
+  }
+
+  revalidatePath(PAGE);
+  redirect(PAGE);
+}
+
+/** 枠の中で候補を残す／外す（D170） */
+export async function holdCardAction(form: FormData): Promise<void> {
+  const sessionId = str(form, "sessionId");
+  const cardSlotKey = str(form, "cardSlotKey");
+  const candidateIndex = Number.parseInt(str(form, "candidateIndex"), 10);
+  const hold = str(form, "hold") !== "off";
+
+  try {
+    if (!Number.isFinite(candidateIndex)) {
+      throw new Error("カードの番号が読み取れませんでした。");
+    }
+    await callHoldCard(sessionId, cardSlotKey, candidateIndex, hold);
+  } catch (e) {
+    backWithError(e);
+  }
+
+  revalidatePath(PAGE);
+  redirect(PAGE);
+}
+
+/** その枠の残り候補を開示する（D170）。新しい候補は増えない */
+export async function revealSlotPoolAction(form: FormData): Promise<void> {
+  const sessionId = str(form, "sessionId");
+  const cardSlotKey = str(form, "cardSlotKey");
+
+  try {
+    await callRevealSlotPool(sessionId, cardSlotKey);
   } catch (e) {
     backWithError(e);
   }

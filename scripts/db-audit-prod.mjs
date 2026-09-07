@@ -80,7 +80,29 @@ await client.connect();
 // **ここから先、この接続では1文字も書けない。**
 await client.query("begin transaction read only");
 
-const q = async (sql, params) => (await client.query(sql, params)).rows;
+/**
+ * 1問ずつ読む。**失敗しても、その1問だけを取り消す。**
+ *
+ * 【なぜ savepoint が要るか】
+ *   Postgres は、トランザクションの中で1回でも失敗すると、
+ *   そのあとの命令を全部 `current transaction is aborted` で断る。
+ *   この監査には「無ければ無いと分かればよい」問い（本番に無い関数の
+ *   依存を調べる、など）があり、JavaScript 側では try/catch で拾っている。
+ *   ところが**拾ってもトランザクションは壊れたまま**なので、
+ *   そこから先の節が1つも読めなくなっていた（実測: 5節で落ちた）。
+ *   1問ごとに戻せる目印を置けば、拾った失敗が後ろへ伝わらない。
+ */
+const q = async (sql, params) => {
+  await client.query("savepoint audit_q");
+  try {
+    const { rows } = await client.query(sql, params);
+    await client.query("release savepoint audit_q");
+    return rows;
+  } catch (e) {
+    await client.query("rollback to savepoint audit_q");
+    throw e;
+  }
+};
 
 let notes = [];
 const note = (t) => notes.push(t);

@@ -75,7 +75,8 @@ export async function drawPrompt(db, uid, {
 
     for (const slot of state.slots) {
       if (slot.candidates.some((x) => x.is_chosen)) continue;
-      const r = await c.query(`select public.reveal_card($1, $2, 0) as s`, [
+      const r = await c.query(`select public.choose_card($1, $2, 0) as s
+           from (select public.reveal_card($1, $2, 0)) as r`, [
         state.session_id,
         slot.card_slot_key,
       ]);
@@ -340,7 +341,8 @@ export async function finishDraft(db, uid, sessionId) {
     let state = (await c.query(`select public.get_current_draft() as s`)).rows[0].s;
     for (const slot of state.slots) {
       if (slot.candidates.some((x) => x.is_chosen)) continue;
-      const r = await c.query(`select public.reveal_card($1, $2, 0) as s`, [
+      const r = await c.query(`select public.choose_card($1, $2, 0) as s
+           from (select public.reveal_card($1, $2, 0)) as r`, [
         sessionId,
         slot.card_slot_key,
       ]);

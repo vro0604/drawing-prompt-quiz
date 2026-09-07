@@ -1,4 +1,5 @@
 import type { Metadata } from "next";
+import { AuthSyncWatcher } from "@/app/_auth-sync";
 import { Geist } from "next/font/google";
 import { SITE_URL } from "@/lib/env";
 import { ChallengeBar } from "./_challenge-bar";
@@ -129,6 +130,7 @@ export default function RootLayout({
             挑戦をしていない人には何も出ない（部品の中で null を返す）。
             中身はブラウザから /api/challenge を読んで作る。
             ここでサーバー側から読むと、**全ページが利用者ごとの生成に変わる。** */}
+        <AuthSyncWatcher />
         <ChallengeBar />
         {/* 上下の枠。中身は _shell.tsx が持つので、ここは置く場所だけ。
             枠をやめるならこの2行を消す。 */}

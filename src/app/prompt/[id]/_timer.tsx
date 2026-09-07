@@ -1,6 +1,6 @@
 import { SubmitButton } from "@/app/_pending";
 import { btnPrimary, btnSecondary, noticeError, noticeMuted, surface } from "@/app/_surface";
-import { formatDuration, formatRemaining, type PromptTimer } from "@/features/draft/types";
+import { formatDuration, type PromptTimer } from "@/features/draft/types";
 import { clock } from "@/features/challenge/types";
 import { formatShortDateTime } from "@/lib/datetime";
 import type { PromptCard } from "@/features/draft/types";
@@ -49,13 +49,9 @@ export function TimerBox({
       <section className={`${surface} space-y-2`}>
         <h2 className="text-sm font-bold">制作時間</h2>
         <p className="text-lg font-bold">無制限</p>
-        <p className="text-sm tabular-nums" data-field="elapsed">
-          開始からの経過 {clock(timer.elapsed_seconds)}
-          <span className="pl-2 text-xs text-faint">（この画面を開いた時点）</span>
-        </p>
         <p className="text-xs text-faint">
           このお題に期限はありません。時間切れで挑戦が終わることもありません。
-          経過時間は画面いちばん上の帯で秒ごとに進みます。
+          経過時間は画面いちばん上の帯に出ます。
         </p>
       </section>
     );
@@ -122,25 +118,28 @@ export function TimerBox({
     <section className={`${surface} space-y-4`}>
       <div className="space-y-1">
         <h2 className="text-sm font-bold">制作時間</h2>
+        {/*
+          【2026-09-07 に静止表示を外した（D171）】
+            残り時間と経過は、画面いちばん上の帯が1秒ごとに描いている。
+            同じ数を動く側と動かない側の2か所に出すと、
+            **どちらが本当か読めなくなる**（利用者からの指摘）。
+            ここに残すのは、帯が出していない「期限の時刻」だけ。
+
+            data-* の印は消さずにこの行へ移した。
+            本番の検査がこの印でお題ページを見ているため。
+        */}
         <p
           data-timer=""
           data-seconds-left={left}
           data-can-renew={timer.can_renew ? "1" : "0"}
-          className="text-2xl font-bold tabular-nums"
+          className="text-sm"
         >
-          {overrun ? `${formatRemaining(left)}` : `残り ${formatRemaining(left)}`}
-        </p>
-        <p className="text-sm tabular-nums" data-field="elapsed">
-          {formatDuration(timer.time_limit_seconds)}枠・開始からの経過{" "}
-          {clock(timer.elapsed_seconds)}
-        </p>
-        <p className="text-xs text-faint">
-          期限 {at(timer.deadline_at)}
+          {formatDuration(timer.time_limit_seconds)}枠・期限 {at(timer.deadline_at)}
           {timer.renew_count > 0 ? `・${timer.renew_count} 回延長` : ""}
         </p>
         <p className="text-xs text-faint">
-          経過は「お題を引き始めた時刻」から数えます。カードをめくっていた時間も
-          入っていて、時間を延ばしても戻りません。秒は画面いちばん上の帯で進みます。
+          残り時間と経過は、画面いちばん上の帯に出ます。
+          経過は「お題を引き始めた時刻」から数え、時間を延ばしても戻りません。
         </p>
       </div>
 

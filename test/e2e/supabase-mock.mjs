@@ -549,6 +549,20 @@ export async function startSupabaseMock({ db = null } = {}) {
     db: database,
     url: `http://127.0.0.1:${port}`,
     objects,
+
+    /**
+     * いちばん新しい「確認メールの印」を返す。**試験だけが読む。**
+     *
+     * 本物では、この値は利用者の受信箱に届くリンクの中にしか無い。
+     * ブラウザ試験は受信箱を持てないので、送ったはずの印をここから取り出して
+     * リンクを自分で組み立てる。**リンクを開いたあとの流れは本物と同じ道**
+     * （/auth/confirm → verifyOtp → Cookie）を通る。
+     */
+    lastConfirmToken() {
+      let last = null;
+      for (const token of confirmTokens.keys()) last = token;
+      return last;
+    },
     async close() {
       await new Promise((resolve) => server.close(resolve));
     },

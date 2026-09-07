@@ -2,7 +2,15 @@ import Link from "next/link";
 import { notFound } from "next/navigation";
 import { fetchMyPrompt, fetchPromptTimer } from "@/features/draft/rpc";
 import { getCurrentUser } from "@/features/auth/session";
-import { btnPrimary, btnSecondary, noticeError, noticeSuccess } from "@/app/_surface";
+import {
+  btnPrimary,
+  btnQuiet,
+  btnSecondary,
+  noticeError,
+  noticeSuccess,
+} from "@/app/_surface";
+import { SubmitButton } from "@/app/_pending";
+import { abandonPromptAction, revealPromptCandidatesAction } from "./actions";
 import { CarryFromPromptBox, TimerBox } from "./_timer";
 
 /**
@@ -52,9 +60,17 @@ export default async function PromptPage({
       {notice ? <p className={noticeSuccess}>{notice}</p> : null}
 
       <header className="space-y-2">
-        <p className="text-xs font-bold tracking-wider text-success">
-          お題が確定しました
-        </p>
+        {/* 放棄したお題を開いたときに「確定しました」と出ると、
+            まだ描ける状態に見える。状態ごとに一言だけ変える。 */}
+        {prompt.status === "abandoned" ? (
+          <p className="text-xs font-bold tracking-wider text-faint">
+            このお題はやめました
+          </p>
+        ) : (
+          <p className="text-xs font-bold tracking-wider text-success">
+            お題が確定しました
+          </p>
+        )}
         <h1 className="text-2xl font-bold">{prompt.mode_label}のお題</h1>
         <p className="text-sm text-faint">
           {prompt.cards.length} 語
@@ -125,7 +141,10 @@ export default async function PromptPage({
           >
             このお題で描いた作品を投稿する
           </Link>
-        ) : prompt.status === "failed" ? (
+        ) : prompt.status === "failed" || prompt.status === "abandoned" ? (
+          // やめたお題では投稿の入口を出さない。**画面で隠すだけではない。**
+          // create_work が status <> 'active' を断るので、
+          // /works/new へ直接来ても同じところで止まる。
           <Link href="/play" className={`${btnSecondary} inline-block`}>
             新しいお題を引く
           </Link>
@@ -138,13 +157,29 @@ export default async function PromptPage({
         canPersist={canPersist}
       />
 
+      {/* ------------------------------------------------------------------
+          引かなかったカード（spec 4-4）
+
+          【この画面に居る人は、必ずそのお題の作成者】
+            get_my_prompt が created_by = auth.uid() の行しか返さないので、
+            他人が開くと上で 404 になっている（D40）。だからここでは
+            改めて本人か確かめていない。**ただし錠は画面ではなく DB 側にある。**
+            reveal_prompt_candidates も abandon_prompt も、それぞれ自分で
+            作成者を確かめる。ボタンを隠すのは見やすさのためだけ。
+
+          【制作中の「残りを見る」とは別の操作】
+            あちらは /play でカードをめくっている最中に、枠1つぶんの残りを
+            開くもの。こちらはお題が決まったあとに、お題ごと開くもの。
+            同じ画面には出ないが、読む人が混ぜないように一行そえる。
+      ------------------------------------------------------------------ */}
       {prompt.candidates_revealed_at ? (
-        <section className="space-y-3">
+        <section className="space-y-3" data-unchosen="open">
           <h2 className="text-sm font-bold">引かなかったカード</h2>
           <ul className="flex flex-wrap gap-2">
             {prompt.unchosen.map((u) => (
               <li
                 key={`${u.card_slot_key}-${u.candidate_index}`}
+                data-unchosen-card={u.card_slot_key}
                 className="rounded-lg bg-hover px-3 py-1.5 text-xs"
               >
                 {u.card_slot_label}: {u.tag_label}
@@ -153,10 +188,55 @@ export default async function PromptPage({
           </ul>
         </section>
       ) : (
-        <p className="text-xs text-faint">
-          引かなかったカードは、作品を投稿したあと、または挑戦をやめたあとに見られます。
-        </p>
+        <section className="space-y-3" data-unchosen="closed">
+          <h2 className="text-sm font-bold">引かなかったカード</h2>
+          <p className="text-xs text-faint">
+            引かなかったカードは、作品を投稿したあと、または挑戦をやめたあとに見られます。
+            待たずに、いま見ることもできます。
+          </p>
+          {/* 投稿が済んでいるお題には出さない。投稿の完了そのものが開示の契機
+              （reveal_reason = work_submitted）なので、押す操作が要らない。 */}
+          {prompt.work_id === null ? (
+            <>
+              <form action={revealPromptCandidatesAction}>
+                <input type="hidden" name="promptId" value={prompt.id} />
+                <SubmitButton
+                  pendingLabel="開いています…"
+                  className={btnSecondary}
+                  data={{ "data-reveal-candidates": "manual" }}
+                >
+                  他の候補を見る
+                </SubmitButton>
+              </form>
+              <p className="text-xs text-faint">
+                一度開くと元に戻せません。開いても、このお題で描いて投稿することは
+                そのまま続けられます。
+              </p>
+            </>
+          ) : null}
+        </section>
       )}
+
+      {/* このお題は描かない（spec 4-4 のチャレンジ放棄）。
+          進行中のお題にだけ出す。投稿済み・期限切れ・やめたあとには出さない。 */}
+      {prompt.status === "active" && prompt.work_id === null ? (
+        <section className="space-y-3 border-t border-line pt-6">
+          <p className="text-xs text-faint">
+            描かないことにした場合は、ここでやめられます。やめると、このお題では
+            作品を投稿できなくなります。かわりに引かなかったカードが開きます。
+          </p>
+          <form action={abandonPromptAction}>
+            <input type="hidden" name="promptId" value={prompt.id} />
+            <SubmitButton
+              pendingLabel="やめています…"
+              className={btnQuiet}
+              data={{ "data-abandon-prompt": "1" }}
+            >
+              このお題は描かない
+            </SubmitButton>
+          </form>
+        </section>
+      ) : null}
     </main>
   );
 }

@@ -183,11 +183,17 @@ async function main() {
     //   400回引いたときの標準偏差は、確率0.5でおよそ 0.025。
     //   許容を 0.10（＝4標準偏差）にすると、正しく動いていても落ちる確率は
     //   1万回に1回未満になる。**狭くすると、直すところが無いのに赤くなる。**
-    //   広すぎないかは、0.55 と 0.40 が区別できる幅かで見た（差 0.15 > 0.10）。
+    //   広すぎないかは、0.60 と 0.40 が区別できる幅かで見た（差 0.20 > 0.10）。
+    //
+    // 【2026-09-07 に直した（D170）】
+    //   モーフ上限が2になり、確率も 0.60 / 0.40 へ配り直された。
+    //   期待値を旧い 0.55 / 0.40 / 0.05 のままにしていたので、
+    //   **正しく動いていても 50回に1回ほど落ちていた**（実測で1回観測）。
+    //   モーフ3個は上限で塞がれたので、近さではなく **0件そのもの**を見る。
     assertNear(words3 / N, 0.5, 0.1, "通常で3語になる割合");
-    assertNear(morph1 / N, 0.55, 0.1, "モーフ1個の割合");
+    assertNear(morph1 / N, 0.6, 0.1, "モーフ1個の割合");
     assertNear(morph2 / N, 0.4, 0.1, "モーフ2個の割合");
-    assertNear(morph3 / N, 0.05, 0.05, "モーフ3個の割合");
+    assert(morph3 === 0, `モーフ3個が ${morph3} 回出た（上限2のはず）`);
 
     // 状態カテゴリの重複。通常は状態が1〜3個なので、重複が起きうる回数は少ない。
     // 「起きる」と「頻発しない」の2つを見る（D158）
@@ -743,7 +749,8 @@ async function main() {
       let state = start.rows[0].s;
       for (const slot of state.slots) {
         if (slot.candidates.some((x) => x.is_chosen)) continue;
-        const r = await c.query(`select public.reveal_card($1, $2, 0) as s`, [
+        const r = await c.query(`select public.choose_card($1, $2, 0) as s
+           from (select public.reveal_card($1, $2, 0)) as r`, [
           state.session_id,
           slot.card_slot_key,
         ]);
@@ -3255,6 +3262,374 @@ async function main() {
 
     const cand = await candidatesFor(me, current);
     assert(cand.has(opened), "開いただけの作品が次の作品の候補から消えている");
+  });
+
+  // ==========================================================================
+  // O ／ D170 候補の配分・ドローと確定の分離・枠内の保持と開示
+  // ==========================================================================
+
+  /** 進行中のドラフトの状態を読む */
+  async function draftState(uid) {
+    return value(db, asMember(uid), `select public.get_current_draft() as s`);
+  }
+
+  await test("O", "配分の合計が総ドラフト基数と一致し、各枠2〜5枚に収まる", async () => {
+    const u = await makeMember(db, "alloc1");
+    for (let i = 0; i < 30; i++) {
+      const st = await startDraftOnly(db, u, { mode: i % 2 ? "hard" : "normal" });
+      const lots = st.slots.filter((x) => !x.is_carried);
+      const counts = lots.map((x) => x.candidates.length);
+      const total = counts.reduce((a, b) => a + b, 0);
+      assert(total === lots.length * 3, `合計 ${total}（枠 ${lots.length} なら ${lots.length * 3}）`);
+      assert(st.draft_base === total, `draft_base ${st.draft_base} と実数 ${total} が違う`);
+      for (const n of counts) assert(n >= 2 && n <= 5, `枠に ${n} 枚配られた`);
+      await asRole(db, asMember(u), (c) =>
+        c.query(`select public.abandon_draft($1)`, [st.session_id]));
+    }
+  });
+
+  await test("O", "3枠なら9枚、4枠なら12枚（枠数×3で決まる）", async () => {
+    const u = await makeMember(db, "alloc2");
+    const seen = new Map();
+    for (let i = 0; i < 40; i++) {
+      const st = await startDraftOnly(db, u, { mode: "normal" });
+      const lots = st.slots.filter((x) => !x.is_carried);
+      const total = lots.reduce((a, x) => a + x.candidates.length, 0);
+      seen.set(lots.length, total);
+      await asRole(db, asMember(u), (c) =>
+        c.query(`select public.abandon_draft($1)`, [st.session_id]));
+    }
+    for (const [n, total] of seen) {
+      assert(total === n * 3, `${n}枠のとき合計 ${total}（期待 ${n * 3}）`);
+    }
+    assert(seen.size >= 1, "枠数が1通りも観測できなかった");
+  });
+
+  await test("O", "配分が毎回同じ形に固定されていない", async () => {
+    const u = await makeMember(db, "alloc3");
+    const shapes = new Set();
+    for (let i = 0; i < 40; i++) {
+      const st = await startDraftOnly(db, u, { mode: "hard" });
+      const lots = st.slots.filter((x) => !x.is_carried);
+      shapes.add(lots.map((x) => x.candidates.length).join("/"));
+      await asRole(db, asMember(u), (c) =>
+        c.query(`select public.abandon_draft($1)`, [st.session_id]));
+    }
+    assert(shapes.size >= 2, `40回引いて配分が ${shapes.size} 通りしか出ていない`);
+  });
+
+  await test("O", "モーフは最低1枠・最大2枠（通常も高難度も）", async () => {
+    const u = await makeMember(db, "morphcap");
+    for (let i = 0; i < 60; i++) {
+      const st = await startDraftOnly(db, u, { mode: i % 2 ? "hard" : "normal" });
+      const morphs = st.slots.filter((x) => x.card_slot_key.startsWith("morph_")).length;
+      assert(morphs >= 1, "モーフが0枠のお題が出た");
+      assert(morphs <= 2, `モーフが ${morphs} 枠出た（上限2）`);
+      await asRole(db, asMember(u), (c) =>
+        c.query(`select public.abandon_draft($1)`, [st.session_id]));
+    }
+  });
+
+  await test("O", "カラーは最大1枠。必須ではない", async () => {
+    const u = await makeMember(db, "colorcap");
+    let without = 0;
+    for (let i = 0; i < 60; i++) {
+      const st = await startDraftOnly(db, u, { mode: "normal" });
+      const colors = st.slots.filter((x) => x.card_slot_key.startsWith("color_")).length;
+      assert(colors <= 1, `カラーが ${colors} 枠出た（上限1）`);
+      if (colors === 0) without++;
+      await asRole(db, asMember(u), (c) =>
+        c.query(`select public.abandon_draft($1)`, [st.session_id]));
+    }
+    assert(without > 0, "60回すべてにカラーが入った（必須になっている疑い）");
+  });
+
+  await test("O", "めくっただけでは決まらず、次の枠へも進まない", async () => {
+    const u = await makeMember(db, "reveal1");
+    const st = await startDraftOnly(db, u, { mode: "normal" });
+    const slot = st.slots.find((x) => !x.is_carried);
+    const after = await value(db, asMember(u),
+      `select public.reveal_card($1, $2, 0) as s`, [st.session_id, slot.card_slot_key]);
+    const s2 = after.slots.find((x) => x.card_slot_key === slot.card_slot_key);
+    assert(s2.candidates[0].revealed === true, "めくった印が付いていない");
+    assert(s2.candidates[0].is_chosen === false, "めくっただけで確定になった");
+    assert(after.current_slot_order === st.current_slot_order, "枠が進んでしまった");
+    assert(after.chosen_count === st.chosen_count, "確定数が増えた");
+  });
+
+  await test("O", "めくったあと読み込み直しても、同じカードがめくれたまま残る", async () => {
+    const u = await makeMember(db, "reveal2");
+    const st = await startDraftOnly(db, u, { mode: "normal" });
+    const slot = st.slots.find((x) => !x.is_carried);
+    await value(db, asMember(u), `select public.reveal_card($1, $2, 0) as s`,
+      [st.session_id, slot.card_slot_key]);
+    const again = await draftState(u);
+    const s2 = again.slots.find((x) => x.card_slot_key === slot.card_slot_key);
+    assert(s2.candidates[0].revealed === true, "読み込み直したらめくった印が消えた");
+    assert(s2.candidates[0].is_chosen === false, "読み込み直したら確定になっていた");
+  });
+
+  await test("O", "同じドローを二重に送っても別の候補に変わらない", async () => {
+    const u = await makeMember(db, "reveal3");
+    const st = await startDraftOnly(db, u, { mode: "normal" });
+    const slot = st.slots.find((x) => !x.is_carried);
+    const a = await value(db, asMember(u), `select public.reveal_card($1, $2, 0) as s`,
+      [st.session_id, slot.card_slot_key]);
+    const b = await value(db, asMember(u), `select public.reveal_card($1, $2, 0) as s`,
+      [st.session_id, slot.card_slot_key]);
+    const pick = (x) => x.slots.find((y) => y.card_slot_key === slot.card_slot_key)
+      .candidates[0].tag_id;
+    assert(pick(a) === pick(b), "二度めくったら別の語になった");
+  });
+
+  await test("O", "決めて初めて次の枠へ進む。二重確定でも壊れない", async () => {
+    const u = await makeMember(db, "choose1");
+    const st = await startDraftOnly(db, u, { mode: "normal" });
+    const slot = st.slots.find((x) => !x.is_carried);
+    await value(db, asMember(u), `select public.reveal_card($1, $2, 0) as s`,
+      [st.session_id, slot.card_slot_key]);
+    const c1 = await value(db, asMember(u), `select public.choose_card($1, $2, 0) as s`,
+      [st.session_id, slot.card_slot_key]);
+    assert(c1.chosen_count === st.chosen_count + 1, "確定数が増えていない");
+    assert(c1.current_slot_order > st.current_slot_order, "枠が進んでいない");
+    const c2 = await value(db, asMember(u), `select public.choose_card($1, $2, 0) as s`,
+      [st.session_id, slot.card_slot_key]);
+    assert(c2.chosen_count === c1.chosen_count, "二重確定で数が動いた");
+  });
+
+  await test("O", "めくっていないカードは決められない", async () => {
+    const u = await makeMember(db, "choose2");
+    const st = await startDraftOnly(db, u, { mode: "normal" });
+    const slot = st.slots.find((x) => !x.is_carried);
+    await expectFailure(
+      () => value(db, asMember(u), `select public.choose_card($1, $2, 1) as s`,
+        [st.session_id, slot.card_slot_key]),
+      "NOT_REVEALED",
+    );
+  });
+
+  await test("O", "残せるのは min(2, 候補数 - 1) 枚まで。全部は残せない", async () => {
+    const u = await makeMember(db, "hold1");
+    const st = await startDraftOnly(db, u, { mode: "hard" });
+    const slot = st.slots.find((x) => !x.is_carried);
+    const n = slot.candidates.length;
+    const limit = Math.min(2, n - 1);
+    assert(slot.held_limit === limit, `held_limit が ${slot.held_limit}（期待 ${limit}）`);
+
+    for (let i = 0; i < limit; i++) {
+      await value(db, asMember(u), `select public.hold_card($1, $2, $3, true) as s
+           from (select public.reveal_card($1, $2, $3)) as r`,
+        [st.session_id, slot.card_slot_key, i]);
+    }
+    await expectFailure(
+      () => value(db, asMember(u), `select public.hold_card($1, $2, $3, true) as s
+             from (select public.reveal_card($1, $2, $3)) as r`,
+        [st.session_id, slot.card_slot_key, limit]),
+      "HOLD_LIMIT",
+    );
+  });
+
+  await test("O", "残した候補があるときだけ、残りを開示できる", async () => {
+    const u = await makeMember(db, "pool1");
+    const st = await startDraftOnly(db, u, { mode: "hard" });
+    const slot = st.slots.find((x) => !x.is_carried);
+    await expectFailure(
+      () => value(db, asMember(u), `select public.reveal_slot_pool($1, $2) as s`,
+        [st.session_id, slot.card_slot_key]),
+      "NOTHING_HELD",
+    );
+    await value(db, asMember(u), `select public.hold_card($1, $2, 0, true) as s
+         from (select public.reveal_card($1, $2, 0)) as r`,
+      [st.session_id, slot.card_slot_key]);
+    const after = await value(db, asMember(u), `select public.reveal_slot_pool($1, $2) as s`,
+      [st.session_id, slot.card_slot_key]);
+    const s2 = after.slots.find((x) => x.card_slot_key === slot.card_slot_key);
+    assert(s2.pool_revealed === true, "開示の印が付いていない");
+    assert(s2.candidates.every((x) => x.revealed), "開示したのに伏せたままの候補がある");
+  });
+
+  await test("O", "開示しても候補は1枚も増えず、総ドラフト基数を超えない", async () => {
+    const u = await makeMember(db, "pool2");
+    const st = await startDraftOnly(db, u, { mode: "hard" });
+    const before = st.slots.reduce((a, x) => a + x.candidates.length, 0);
+    const slot = st.slots.find((x) => !x.is_carried);
+    const n = slot.candidates.length;
+    await value(db, asMember(u), `select public.hold_card($1, $2, 0, true) as s
+         from (select public.reveal_card($1, $2, 0)) as r`,
+      [st.session_id, slot.card_slot_key]);
+    const after = await value(db, asMember(u), `select public.reveal_slot_pool($1, $2) as s`,
+      [st.session_id, slot.card_slot_key]);
+    const total = after.slots.reduce((a, x) => a + x.candidates.length, 0);
+    assert(total === before, `候補が ${before} 枚から ${total} 枚に変わった`);
+    const s2 = after.slots.find((x) => x.card_slot_key === slot.card_slot_key);
+    assert(s2.candidates.length === n, "その枠の候補数が変わった");
+  });
+
+  await test("O", "開示した枠からも、ふつうに1枚選んで確定できる", async () => {
+    const u = await makeMember(db, "pool3");
+    const st = await startDraftOnly(db, u, { mode: "hard" });
+    const slot = st.slots.find((x) => !x.is_carried);
+    await value(db, asMember(u), `select public.hold_card($1, $2, 0, true) as s
+         from (select public.reveal_card($1, $2, 0)) as r`,
+      [st.session_id, slot.card_slot_key]);
+    await value(db, asMember(u), `select public.reveal_slot_pool($1, $2) as s`,
+      [st.session_id, slot.card_slot_key]);
+    const last = slot.candidates.length - 1;
+    const done = await value(db, asMember(u), `select public.choose_card($1, $2, $3) as s`,
+      [st.session_id, slot.card_slot_key, last]);
+    assert(done.chosen_count === st.chosen_count + 1, "開示後に確定できなかった");
+  });
+
+  await test("O", "カテゴリの表示名が、2つの表でずれていない", async () => {
+    const { rows } = await db.query(`select * from public.category_label_mismatches()`);
+    assert(rows.length === 0,
+      `表示名がずれているカテゴリがある: ${rows.map((r) => r.category_key).join(", ")}`);
+  });
+
+  await test("O", "表示名は1回の呼び出しで抽選側も画面側も変わる", async () => {
+    await db.query(`select public.set_category_label('color', '色あい')`);
+    const { rows } = await db.query(
+      `select dc.label as a, tp.label as b
+         from public.draw_categories dc
+         join public.tag_pools tp on tp.pool_key = dc.pool_key
+        where dc.category_key = 'color'`);
+    assert(rows[0].a === "色あい" && rows[0].b === "色あい",
+      `片方しか変わっていない（${rows[0].a} / ${rows[0].b}）`);
+    // 元に戻す。**この試験で最終名称を決めない**
+    await db.query(`select public.set_category_label('color', 'カラー')`);
+  });
+
+  await test("O", "未開示なら、これまでどおり引き直せる", async () => {
+    const u = await makeMember(db, "reroll-ok");
+    const st = await startDraftOnly(db, u, { mode: "normal" });
+    const after = await value(db, asMember(u), `select public.reroll_draft($1) as s`,
+      [st.session_id]);
+    assert(after.generation === st.generation + 1, "世代が進んでいない");
+    assert(after.rerolls_left === st.rerolls_left - 1, "引き直しの残りが減っていない");
+  });
+
+  await test("O", "残りを開示した枠があると、引き直しを断る（RPCを直に叩いても）", async () => {
+    const u = await makeMember(db, "reroll-ng");
+    const st = await startDraftOnly(db, u, { mode: "hard" });
+    const slot = st.slots.find((x) => !x.is_carried);
+    await value(db, asMember(u), `select public.hold_card($1, $2, 0, true) as s
+         from (select public.reveal_card($1, $2, 0)) as r`,
+      [st.session_id, slot.card_slot_key]);
+    await value(db, asMember(u), `select public.reveal_slot_pool($1, $2) as s`,
+      [st.session_id, slot.card_slot_key]);
+    await expectFailure(
+      () => value(db, asMember(u), `select public.reroll_draft($1) as s`, [st.session_id]),
+      "POOL_ALREADY_REVEALED",
+    );
+  });
+
+  await test("O", "開示のあと読み込み直しても、開示済みのまま残る", async () => {
+    const u = await makeMember(db, "reroll-keep");
+    const st = await startDraftOnly(db, u, { mode: "hard" });
+    const slot = st.slots.find((x) => !x.is_carried);
+    await value(db, asMember(u), `select public.hold_card($1, $2, 0, true) as s
+         from (select public.reveal_card($1, $2, 0)) as r`,
+      [st.session_id, slot.card_slot_key]);
+    await value(db, asMember(u), `select public.reveal_slot_pool($1, $2) as s`,
+      [st.session_id, slot.card_slot_key]);
+    const again = await draftState(u);
+    const s2 = again.slots.find((x) => x.card_slot_key === slot.card_slot_key);
+    assert(s2.pool_revealed === true, "読み込み直したら開示の印が消えた");
+    assert(s2.candidates.every((x) => x.revealed), "読み込み直したら伏せ札が戻った");
+  });
+
+  await test("O", "開示しても、そのセッションで見られる候補の総数は増えない", async () => {
+    const u = await makeMember(db, "reroll-cap");
+    const st = await startDraftOnly(db, u, { mode: "hard" });
+    const base = st.draft_base;
+    const slot = st.slots.find((x) => !x.is_carried);
+    await value(db, asMember(u), `select public.hold_card($1, $2, 0, true) as s
+         from (select public.reveal_card($1, $2, 0)) as r`,
+      [st.session_id, slot.card_slot_key]);
+    await value(db, asMember(u), `select public.reveal_slot_pool($1, $2) as s`,
+      [st.session_id, slot.card_slot_key]);
+    const { rows } = await db.query(
+      `select count(*)::int as n from public.draft_candidates where session_id = $1`,
+      [st.session_id]);
+    assert(rows[0].n === base, `候補の行が ${rows[0].n} 件（総数 ${base} のはず）`);
+  });
+
+  await test("O", "お題を放棄すると、未選択候補が開く（理由は abandoned）", async () => {
+    const u = await makeMember(db, "abandon1");
+    const { prompt_id: promptId } = await drawPrompt(db, u, {});
+    const b = await db.query(
+      `select candidates_revealed_at from public.prompts where id = $1`, [promptId]);
+    assert(b.rows[0].candidates_revealed_at === null,
+      "投稿も放棄もしていないのに開示済みになっている");
+
+    await value(db, asMember(u), `select public.abandon_prompt($1) as s`, [promptId]);
+    const row = (await db.query(
+      `select reveal_reason as r, candidates_revealed_at as a, status as s
+         from public.prompts where id = $1`, [promptId])).rows[0];
+    assert(row.r === "abandoned", `理由が ${row.r}（abandoned のはず）`);
+    assert(row.a !== null, "放棄したのに開示されていない");
+    assert(row.s === "abandoned", `状態が ${row.s}`);
+  });
+
+  await test("O", "放棄したお題は、他人からは見えないまま", async () => {
+    const mine = await makeMember(db, "abandon2");
+    const other = await makeMember(db, "abandon3");
+    const { prompt_id: promptId } = await drawPrompt(db, mine, {});
+    await value(db, asMember(mine), `select public.abandon_prompt($1) as s`, [promptId]);
+    const seen = await value(db, asMember(other),
+      `select public.get_my_prompt($1) as s`, [promptId]);
+    assert(seen === null, "他人に放棄済みのお題が見えた");
+  });
+
+  await test("O", "放棄は二度押しても壊れず、投稿済みのお題は放棄できない", async () => {
+    const u = await makeMember(db, "abandon4");
+    const { prompt_id: promptId } = await drawPrompt(db, u, {});
+    await value(db, asMember(u), `select public.abandon_prompt($1) as s`, [promptId]);
+    await value(db, asMember(u), `select public.abandon_prompt($1) as s`, [promptId]);
+
+    const u2 = await makeMember(db, "abandon5");
+    const { prompt_id: p2 } = await drawPrompt(db, u2, {});
+    await postWork(db, u2, p2, {});
+    await expectFailure(
+      () => value(db, asMember(u2), `select public.abandon_prompt($1) as s`, [p2]),
+      "ALREADY_SUBMITTED",
+    );
+  });
+
+  await test("O", "「他の候補を見る」で開くと理由は manual。投稿は続けられる", async () => {
+    const u = await makeMember(db, "manual1");
+    const { prompt_id: promptId } = await drawPrompt(db, u, {});
+    await value(db, asMember(u),
+      `select public.reveal_prompt_candidates($1) as s`, [promptId]);
+    const row = (await db.query(
+      `select reveal_reason as r, status as s from public.prompts where id = $1`,
+      [promptId])).rows[0];
+    assert(row.r === "manual", `理由が ${row.r}（manual のはず）`);
+    assert(row.s === "active", `状態が ${row.s}（active のはず）`);
+    // 開いたあとでも投稿できる（仮定A9）
+    await postWork(db, u, promptId, {});
+  });
+
+  await test("O", "投稿後の開示は work_submitted のまま。制作中開示で上書きされない", async () => {
+    const u = await makeMember(db, "reason1");
+    const { prompt_id: promptId } = await drawPrompt(db, u, {});
+    await postWork(db, u, promptId, {});
+    const row = (await db.query(
+      `select reveal_reason as r from public.prompts where id = $1`, [promptId])).rows[0].r;
+    assert(row === "work_submitted", `理由が ${row}（work_submitted のはず）`);
+  });
+
+  await test("O", "ゲストも同じ上限で残せる（登録の有無で差を付けない）", async () => {
+    const g = await makeGuest(db);
+    const st = await asRole(db, asGuest(g), async (c) =>
+      (await c.query(`select public.start_draft('hard', 3600, null) as s`)).rows[0].s);
+    const slot = st.slots.find((x) => !x.is_carried);
+    const limit = Math.min(2, slot.candidates.length - 1);
+    assert(slot.held_limit === limit, "ゲストの上限が登録者と違う");
+    await asRole(db, asGuest(g), (c) =>
+      c.query(`select public.hold_card($1, $2, 0, true)
+                 from (select public.reveal_card($1, $2, 0)) as r`,
+        [st.session_id, slot.card_slot_key]));
   });
 }
 

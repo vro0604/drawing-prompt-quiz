@@ -119,6 +119,62 @@ export async function callRevealCard(
   return data as DraftState;
 }
 
+/**
+ * めくったカードに決める（D170）。
+ *
+ * **めくることと決めることは別の操作。**めくっただけでは枠は進まない。
+ * ここを呼んで初めて確定し、次の枠へ進む。二度呼んでも壊れない。
+ */
+export async function callChooseCard(
+  sessionId: string,
+  cardSlotKey: string,
+  candidateIndex: number,
+): Promise<DraftState> {
+  const supabase = await createSupabaseServerClient();
+  const { data, error } = await supabase.rpc("choose_card", {
+    p_session_id: sessionId,
+    p_card_slot_key: cardSlotKey,
+    p_candidate_index: candidateIndex,
+  });
+
+  if (error) throw new Error(readableRpcError(error.message));
+  return data as DraftState;
+}
+
+/** 枠の中で候補を残す／外す（D170）。上限は min(2, 候補数 - 1) */
+export async function callHoldCard(
+  sessionId: string,
+  cardSlotKey: string,
+  candidateIndex: number,
+  hold: boolean,
+): Promise<DraftState> {
+  const supabase = await createSupabaseServerClient();
+  const { data, error } = await supabase.rpc("hold_card", {
+    p_session_id: sessionId,
+    p_card_slot_key: cardSlotKey,
+    p_candidate_index: candidateIndex,
+    p_hold: hold,
+  });
+
+  if (error) throw new Error(readableRpcError(error.message));
+  return data as DraftState;
+}
+
+/** その枠の残り候補を開示する（D170）。残した候補があるときだけ通る */
+export async function callRevealSlotPool(
+  sessionId: string,
+  cardSlotKey: string,
+): Promise<DraftState> {
+  const supabase = await createSupabaseServerClient();
+  const { data, error } = await supabase.rpc("reveal_slot_pool", {
+    p_session_id: sessionId,
+    p_card_slot_key: cardSlotKey,
+  });
+
+  if (error) throw new Error(readableRpcError(error.message));
+  return data as DraftState;
+}
+
 export async function callRerollDraft(sessionId: string): Promise<DraftState> {
   const supabase = await createSupabaseServerClient();
   const { data, error } = await supabase.rpc("reroll_draft", { p_session_id: sessionId });
@@ -212,4 +268,43 @@ export async function callRenewPromptDeadline(promptId: string): Promise<PromptT
 
   if (error) throw new Error(readableRpcError(error.message));
   return data as PromptTimer;
+}
+
+/**
+ * お題を放棄する（spec 4-4 の `abandoned` / D171）。
+ *
+ * 【「ドラフトを捨てる」とは別物】
+ *   callAbandonDraft はお題が決まる前、カードをめくっている最中に捨てる操作。
+ *   こちらは**お題が確定したあと**に「これは描かない」と決める操作。
+ *   捨てるほうはお題が1件も残らないが、こちらはお題が記録に残り、
+ *   引かなかったカードが開く。
+ *
+ * 投稿済みのお題は放棄できない（判定は DB 側）。
+ */
+export async function callAbandonPrompt(promptId: string): Promise<PromptDetail> {
+  const supabase = await createSupabaseServerClient();
+  const { data, error } = await supabase.rpc("abandon_prompt", {
+    p_prompt_id: promptId,
+  });
+
+  if (error) throw new Error(readableRpcError(error.message));
+  return data as PromptDetail;
+}
+
+/**
+ * 引かなかったカードを、自分の意思で開く（spec 4-4 の `manual` / D171）。
+ *
+ * **開いても投稿は続けられる**（spec 仮定A9）。放棄と違い、お題の状態は動かない。
+ * 開いたことは取り消せない。二度呼んでも最初の記録が残る（判定は DB 側）。
+ */
+export async function callRevealPromptCandidates(
+  promptId: string,
+): Promise<PromptDetail> {
+  const supabase = await createSupabaseServerClient();
+  const { data, error } = await supabase.rpc("reveal_prompt_candidates", {
+    p_prompt_id: promptId,
+  });
+
+  if (error) throw new Error(readableRpcError(error.message));
+  return data as PromptDetail;
 }

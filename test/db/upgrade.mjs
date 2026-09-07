@@ -84,6 +84,8 @@ async function main() {
   }
 
   // 旧方式のドラフト（standard は枠が固定。この時点ではまだ有効）
+  // **ここは当てる前のDBなので、めくると同時に決まる旧い reveal_card を使う。**
+  // choose_card はまだ存在しない（D170 の migration で入る）。
   const drafted = await asRole(db, { role: "authenticated", uid: author }, async (c) => {
     const start = await c.query(`select public.start_draft('standard', 3600) as s`);
     let state = start.rows[0].s;
@@ -651,7 +653,8 @@ async function main() {
       const start = await c.query(`select public.start_draft('normal', 3600, null) as s`);
       let s = start.rows[0].s;
       for (const slot of s.slots) {
-        const r = await c.query(`select public.reveal_card($1, $2, 0) as s`, [
+        const r = await c.query(`select public.choose_card($1, $2, 0) as s
+           from (select public.reveal_card($1, $2, 0)) as r`, [
           s.session_id,
           slot.card_slot_key,
         ]);
@@ -661,6 +664,124 @@ async function main() {
       return done.rows[0].s;
     });
     assert(state.card_count >= 3 && state.card_count <= 4, "新方式の語数が範囲外");
+  });
+
+  /* =====================================================================
+   * 本番へ出す順番そのものを試す（2026-09-07）
+   *
+   * 出所: ユーザー指示「旧フロント＋新DBの不整合時間をどう避けるか決めて
+   * から作業してください」。
+   *
+   * 【何を確かめるか】
+   *   本番は「DBを当てる」と「画面を入れ替える」を同時にできない。
+   *   あいだに必ず、片方だけ新しい時間ができる。そこで壊れないことを、
+   *   理屈ではなく実際に動かして確かめる。
+   *
+   *   当てる順番はこうする。
+   *     1. 090000 / 093000 / 094000 を当てる … 画面はまだ古い
+   *     2. 新しい画面を出す                   … DBはまだ 110000 を当てていない
+   *     3. 110000 を当てる                    … ここで2段になる
+   *
+   *   1 のあとと 2 のあとで、それぞれ何が動くかを下で測る。
+   * ===================================================================== */
+
+  const { createTestDb } = await import("./harness.mjs");
+  const mid = await createTestDb({ before: "20260907110000" });
+
+  /** そのDBで、ドラフトを1つ始める */
+  async function startOn(pg, handle) {
+    const u = await createUser(pg, { handle });
+    const state = await asRole(pg, { role: "authenticated", uid: u }, async (c) => {
+      const r = await c.query(`select public.start_draft('normal', 3600, null) as s`);
+      return r.rows[0].s;
+    });
+    return { uid: u, state };
+  }
+
+  await test("順番1: 3本を当てた時点では、いまの画面のやり方（めくる＝決まる）が動く", async () => {
+    const { uid, state } = await startOn(mid, "stage-old-ui");
+    const slot = state.slots[0];
+
+    const after = await asRole(mid, { role: "authenticated", uid }, async (c) => {
+      const r = await c.query(`select public.reveal_card($1, $2, 0) as s`, [
+        state.session_id,
+        slot.card_slot_key,
+      ]);
+      return r.rows[0].s;
+    });
+
+    const row = after.slots.find((x) => x.card_slot_key === slot.card_slot_key);
+    assert(
+      row.candidates.some((c) => c.is_chosen),
+      "めくっただけでは決まらない（いまの画面はここで止まる）",
+    );
+    assert(
+      after.chosen_count === 1,
+      `めくったのに確定数が ${after.chosen_count}（1のはず）`,
+    );
+  });
+
+  await test("順番2: 新しい画面が呼ぶ関数は、3本を当てた時点でもう全部ある", async () => {
+    const { uid, state } = await startOn(mid, "stage-new-ui");
+
+    // 「関数が無い」で落ちないことを見る。中身の正しさは run.mjs が見ている
+    const missing = [];
+    for (const sig of [
+      `public.choose_card($1, $2, 0)`,
+      `public.hold_card($1, $2, 0, true)`,
+      `public.reveal_slot_pool($1, $2)`,
+    ]) {
+      try {
+        await asRole(mid, { role: "authenticated", uid }, async (c) => {
+          await c.query(`select ${sig}`, [state.session_id, state.slots[0].card_slot_key]);
+        });
+      } catch (e) {
+        if (/does not exist|存在しません/.test(e.message)) missing.push(sig);
+      }
+    }
+    for (const sig of [
+      `public.abandon_prompt('00000000-0000-0000-0000-000000000000')`,
+      `public.reveal_prompt_candidates('00000000-0000-0000-0000-000000000000')`,
+    ]) {
+      try {
+        await asRole(mid, { role: "authenticated", uid }, async (c) => {
+          await c.query(`select ${sig}`);
+        });
+      } catch (e) {
+        if (/does not exist/.test(e.message)) missing.push(sig);
+      }
+    }
+
+    assert(missing.length === 0, `新しい画面が呼ぶ関数が足りない: ${missing.join(", ")}`);
+  });
+
+  await test("順番3: 最後の1本を当てると、めくっても決まらなくなる", async () => {
+    await applyMigrations(mid, { from: "20260907110000" });
+
+    const { uid, state } = await startOn(mid, "stage-after-split");
+    const slot = state.slots[0];
+
+    const after = await asRole(mid, { role: "authenticated", uid }, async (c) => {
+      const r = await c.query(`select public.reveal_card($1, $2, 0) as s`, [
+        state.session_id,
+        slot.card_slot_key,
+      ]);
+      return r.rows[0].s;
+    });
+
+    const row = after.slots.find((x) => x.card_slot_key === slot.card_slot_key);
+    assert(
+      !row.candidates.some((c) => c.is_chosen),
+      "最後の1本を当てても、めくった時点で決まってしまう",
+    );
+    assert(
+      after.chosen_count === 0,
+      `めくっただけなのに確定数が ${after.chosen_count}（0のはず）`,
+    );
+    assert(
+      row.candidates.some((c) => c.revealed_at !== null),
+      "めくった印が残っていない",
+    );
   });
 }
 

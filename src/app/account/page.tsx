@@ -19,6 +19,7 @@ import {
   noticeSuccess,
   surface,
 } from "@/app/_surface";
+import { AuthConfirmedBeacon } from "@/app/_auth-sync";
 
 /**
  * /account ／ アカウントの最小画面。
@@ -82,9 +83,9 @@ function Credentials({ idPrefix }: { idPrefix: string }) {
 export default async function AccountPage({
   searchParams,
 }: {
-  searchParams: Promise<{ error?: string; notice?: string }>;
+  searchParams: Promise<{ error?: string; notice?: string; confirmed?: string }>;
 }) {
-  const { error, notice } = await searchParams;
+  const { error, notice, confirmed } = await searchParams;
   const user = await getCurrentUser();
 
   const isGuest = user?.is_anonymous === true;
@@ -109,6 +110,32 @@ export default async function AccountPage({
         <p className={noticeError}>
           {error}
         </p>
+      ) : null}
+
+      {/*
+        メールの確認から戻ってきた面（D171）。
+        **同じブラウザの他のタブへ合図を送る。**受け取ったタブは
+        サーバーへ聞き直すだけで、合図そのものを認証の証拠にしない。
+
+        別の端末で開いた人には合図が届かない。だからここには
+        「元のタブに戻る」だけでなく、このまま続けられることも書く。
+      */}
+      {confirmed === "1" ? (
+        <>
+          <AuthConfirmedBeacon />
+          <section className={`${surface} space-y-2`}>
+            <h2 className="text-sm font-bold">登録が完了しました</h2>
+            <p className="text-sm text-muted">
+              同じブラウザで登録を始めたタブを開いたままなら、そちらの表示が
+              自動で切り替わります。元のタブに戻って続けてください。
+            </p>
+            <p className="text-xs text-faint">
+              別の端末やブラウザでこのリンクを開いた場合、元の画面は自動では
+              切り替わりません。元の画面を読み込み直すか、このままこの画面で
+              続けてください。どちらでも同じアカウントです。
+            </p>
+          </section>
+        </>
       ) : null}
 
       {notice ? (

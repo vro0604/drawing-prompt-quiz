@@ -327,18 +327,61 @@ async function drawThroughUi(page, base, { timeLimit = "1800" } = {}) {
 }
 
 /**
- * 伏せカードを、決まるまで1枚ずつめくる。
+ * 伏せカードを、決まるまで「めくる → これに決める」で1枠ずつ進める。
+ *
+ * 【2026-09-07 に2段になった（D170）】
+ *   めくっただけでは確定しない。中身を見てから「これに決める」を押して
+ *   初めて枠が進む。**めくるだけを繰り返すと、いつまでも先へ進まない。**
  *
  * 押した直後のボタンは塞がる（disabled）ので、
  * **押せる状態のものだけ**を選ぶ。塞がったものを押そうとすると待ち続ける。
  */
 async function revealAll(page) {
-  act("伏せカードをめくる");
-  for (let i = 0; i < 12; i += 1) {
+  act("伏せカードをめくって決める");
+  for (let i = 0; i < 24; i += 1) {
+    const decide = page.locator("button:not([disabled])", { hasText: "これに決める" });
+    if ((await decide.count()) > 0) {
+      await submitAndSettle(page, decide.first());
+      continue;
+    }
     const buttons = page.locator("button[data-card=hidden]:not([disabled])");
     if ((await buttons.count()) === 0) break;
     await submitAndSettle(page, buttons.first());
   }
+}
+
+/** その人がサインインする（登録者の種データは全部この合言葉） */
+async function signInAs(page, base, email) {
+  await page.goto(`${base}/account`);
+  const form = "form:has(button:has-text('サインインする'))";
+  await page.locator(`${form} input[name=email]`).fill(email);
+  await page.locator(`${form} input[name=password]`).fill("dummy-password");
+  await page.getByRole("button", { name: "サインインする" }).click();
+  await page.waitForLoadState("networkidle");
+  await settledBody(page);
+}
+
+/**
+ * その人の名前で、お題を1件だけ新しく確定させ、そのお題のIDを返す。
+ *
+ * 先に、進行中のドラフトを片づける。/play は進行中のものがあれば
+ * その続きを出すので、片づけないと「新しく引く」にならない。
+ */
+async function drawFreshPrompt(page, base, db, userId) {
+  await db.query(
+    `update public.draft_sessions set status = 'abandoned', abandoned_at = now()
+      where user_id = $1 and status = 'in_progress'`,
+    [userId],
+  );
+
+  await drawThroughUi(page, base, { timeLimit: "3600" });
+  await revealAll(page);
+  await clickSafely(page.getByRole("button", { name: "このお題で確定する" }));
+  await page.waitForURL("**/prompt/**");
+
+  const id = /\/prompt\/([0-9a-fA-F-]{36})/.exec(page.url());
+  if (!id) throw new Error(`お題のIDが読めない: ${page.url()}`);
+  return id[1];
 }
 
 /**
@@ -1964,6 +2007,379 @@ async function main() {
       );
       assert(overflowOn <= 1, `ON のとき横に ${overflowOn}px はみ出している`);
     } finally {
+      await ctx.close();
+    }
+  });
+
+  /* =====================================================================
+   * P. 引かなかったカードの開示と、お題の放棄（spec 4-4 / D171）
+   *
+   * 【この2つは、ボタンが無いと存在しないのと同じ】
+   *   DB の関数だけ作っても、利用者は押せない。ここで見るのは
+   *   **画面から押せて、押した結果が DB に残り、読み直しても残っているか。**
+   * ===================================================================== */
+
+  await test("P", "本人には「他の候補を見る」が出て、押すと引かなかったカードが開く", async (t) => {
+    t.stage("新しいお題を1件だけ確定する");
+    const promptId = await drawFreshPrompt(m, base, db, seeded.viewer);
+
+    t.stage("開く前の状態を見る");
+    assert(
+      (await m.locator('[data-unchosen="closed"]').count()) === 1,
+      "開く前なのに、引かなかったカードの欄が閉じていない",
+    );
+    assert(
+      (await m.locator("[data-reveal-candidates]").count()) === 1,
+      "本人の画面に「他の候補を見る」が出ていない",
+    );
+    assert(
+      (await m.locator('[data-unchosen-card]').count()) === 0,
+      "押す前から引かなかったカードが見えている",
+    );
+
+    // **押す前にもう1枚開いておく。**あとで「古い画面から二度押されたとき」を
+    // 試すため。押したあとに開いたのでは、古い画面が作れない。
+    const stale = await m.context().newPage();
+    await stale.goto(`${base}/prompt/${promptId}`);
+    await stale.waitForSelector("[data-reveal-candidates]", { timeout: 15000 });
+
+    t.stage("押す");
+    await submitAndSettle(m, m.locator("[data-reveal-candidates]"));
+    await m.waitForSelector('[data-unchosen="open"]', { timeout: 15000 });
+
+    const shown = await m.locator("[data-unchosen-card]").count();
+    assert(shown >= 1, `開いたのに引かなかったカードが ${shown} 枚`);
+    assert(
+      (await m.locator("[data-reveal-candidates]").count()) === 0,
+      "開いたあとも「他の候補を見る」が残っている（同じ操作が二度出ている）",
+    );
+
+    const first = await db.query(
+      `select reveal_reason as r, candidates_revealed_at as at, status as s
+         from public.prompts where id = $1`,
+      [promptId],
+    );
+    assert(first.rows[0].r === "manual", `開示の理由が ${first.rows[0].r}（manual のはず）`);
+    assert(
+      first.rows[0].s === "active",
+      `開いただけで状態が ${first.rows[0].s} になっている（active のままのはず）`,
+    );
+
+    t.stage("読み直しても開いたまま");
+    await m.reload();
+    await m.waitForSelector('[data-unchosen="open"]', { timeout: 15000 });
+    assert(
+      (await m.locator("[data-unchosen-card]").count()) === shown,
+      "読み直したら、開いたカードの枚数が変わった",
+    );
+    await assertBody(m, /このお題で描いた作品を投稿する/, "開いたら投稿の入口が消えた（仮定A9 に反する）");
+
+    t.stage("古い画面からもう一度押しても壊れない");
+    await submitAndSettle(stale, stale.locator("[data-reveal-candidates]"));
+    await settledBody(stale);
+    await stale.waitForSelector('[data-unchosen="open"]', { timeout: 15000 });
+    assert(
+      (await stale.locator("[data-unchosen-card]").count()) === shown,
+      "二度目の開示でカードの枚数が変わった",
+    );
+
+    const again = await db.query(
+      `select reveal_reason as r, candidates_revealed_at as at from public.prompts where id = $1`,
+      [promptId],
+    );
+    assert(
+      String(again.rows[0].at) === String(first.rows[0].at),
+      `二度目の開示で時刻が ${first.rows[0].at} → ${again.rows[0].at} へ書き換わった`,
+    );
+    assert(again.rows[0].r === "manual", `二度目で理由が ${again.rows[0].r} になった`);
+    await stale.close();
+  });
+
+  await test("P", "他人のお題では、開く操作そのものが出ない（画面ごと 404）", async (t) => {
+    t.stage("本人がお題を1件持っている状態にする");
+    const promptId = await drawFreshPrompt(m, base, db, seeded.viewer);
+
+    t.stage("別の登録者としてサインインする");
+    const otherCtx = await browser.newContext();
+    const o = await otherCtx.newPage();
+    try {
+      await signInAs(o, base, seeded.hintReaderEmail);
+
+      t.stage("他人のお題の URL を開く");
+      await o.goto(`${base}/prompt/${promptId}`);
+      const body = await settledBody(o);
+
+      assert(
+        (await o.locator("[data-reveal-candidates]").count()) === 0,
+        "他人の画面に「他の候補を見る」が出ている",
+      );
+      assert(
+        (await o.locator("[data-abandon-prompt]").count()) === 0,
+        "他人の画面に「このお題は描かない」が出ている",
+      );
+      assert(
+        (await o.locator("[data-unchosen-card]").count()) === 0,
+        "他人に引かなかったカードが見えている",
+      );
+      assert(
+        /ページが見つかりません/.test(body),
+        `他人のお題が 404 になっていない: ${body.replace(/\s+/g, " ").slice(0, 200)}`,
+      );
+      assert(
+        !/権限/.test(body),
+        "「権限がありません」と答えている（お題の実在を教えてしまう。D40）",
+      );
+    } finally {
+      await otherCtx.close();
+    }
+  });
+
+  await test("P", "「このお題は描かない」を押すと、投稿できなくなり候補が開く", async (t) => {
+    t.stage("新しいお題を1件だけ確定する");
+    const promptId = await drawFreshPrompt(m, base, db, seeded.viewer);
+
+    assert(
+      (await m.locator("[data-abandon-prompt]").count()) === 1,
+      "本人の画面に「このお題は描かない」が出ていない",
+    );
+
+    t.stage("押す");
+    await submitAndSettle(m, m.locator("[data-abandon-prompt]"));
+    await m.waitForSelector('[data-unchosen="open"]', { timeout: 15000 });
+
+    const { rows } = await db.query(
+      `select status as s, reveal_reason as r, abandoned_at as a
+         from public.prompts where id = $1`,
+      [promptId],
+    );
+    assert(rows[0].s === "abandoned", `状態が ${rows[0].s}（abandoned のはず）`);
+    assert(rows[0].r === "abandoned", `開示の理由が ${rows[0].r}（abandoned のはず）`);
+    assert(rows[0].a !== null, "放棄の時刻が入っていない");
+
+    const shown = await m.locator("[data-unchosen-card]").count();
+    assert(shown >= 1, `やめたのに引かなかったカードが ${shown} 枚`);
+
+    const afterBody = await settledBody(m);
+    assert(
+      !/このお題で描いた作品を投稿する/.test(afterBody),
+      "やめたのに投稿の入口が残っている",
+    );
+    assert(
+      (await m.locator("[data-abandon-prompt]").count()) === 0,
+      "やめたあとも「このお題は描かない」が残っている",
+    );
+    assert(/新しいお題を引く/.test(afterBody), "やめたあとに次への行き先が無い");
+
+    t.stage("読み直しても状態が残る");
+    await m.reload();
+    await m.waitForSelector('[data-unchosen="open"]', { timeout: 15000 });
+    const reloaded = await settledBody(m);
+    assert(
+      (await m.locator("[data-unchosen-card]").count()) === shown,
+      "読み直したら、開いたカードの枚数が変わった",
+    );
+    assert(
+      !/このお題で描いた作品を投稿する/.test(reloaded),
+      "読み直したら投稿の入口が戻ってきた",
+    );
+
+    t.stage("URL を直に叩いても投稿できない");
+    await m.goto(`${base}/works/new?promptId=${promptId}`);
+    const newBody = await settledBody(m);
+    assert(
+      /描かない/.test(newBody),
+      `やめたお題の投稿画面が断っていない: ${newBody.replace(/\s+/g, " ").slice(0, 200)}`,
+    );
+    assert(
+      (await m.locator("input[type=file]").count()) === 0,
+      "やめたお題なのに投稿の欄が出ている",
+    );
+
+    t.stage("ドラフトが続いていない");
+    await m.goto(`${base}/play`);
+    await settledBody(m);
+    assert(
+      (await m.locator("button[data-card=hidden]").count()) === 0,
+      "やめたのに、めくりかけの盤面が残っている",
+    );
+    const live = await db.query(
+      `select count(*)::int as n from public.draft_sessions
+        where user_id = $1 and status = 'in_progress'`,
+      [seeded.viewer],
+    );
+    assert(live.rows[0].n === 0, `進行中のドラフトが ${live.rows[0].n} 件残っている`);
+  });
+
+  /* =====================================================================
+   * Q. メールの確認を、別のタブで開いたとき（D171）
+   *
+   * 【受信箱は持てない。だから印だけ借りる】
+   *   本物では確認リンクは利用者の受信箱に届く。試験は受信箱を持てないので、
+   *   検証用の Supabase が作った印を1つ借りてリンクを組み立てる。
+   *   **開いたあとに通る道は本物と同じ**（/auth/confirm → verifyOtp → Cookie）。
+   *
+   * 【何を見ているか】
+   *   合図が届いたかどうかではなく、**元のタブの表示がサーバーの答えに
+   *   合わせて変わったか。**合図は「聞き直せ」と言うだけの役目しか持たない。
+   * ===================================================================== */
+
+  /** ゲストとして登録を始め、確認の印を1つ受け取るところまで進める */
+  async function startGuestRegistration(page, base, email) {
+    // ゲストのIDは、遊び始めて初めて作られる。/account を開くだけでは
+    // 「まだサインインしていません」のままで、昇格の入口が出ない
+    await drawThroughUi(page, base, { timeLimit: "3600" });
+
+    await page.goto(`${base}/account`);
+    await settledBody(page);
+    await assertBody(page, /ゲストとして遊んでいます/, "ゲストになっていない");
+
+    const form = "form:has(button:has-text('このゲストのまま登録する'))";
+    await page.locator(`${form} input[name=email]`).fill(email);
+    await page.locator(`${form} input[name=password]`).fill("dummy-password-1");
+    await submitAndSettle(
+      page,
+      page.getByRole("button", { name: "このゲストのまま登録する" }),
+    );
+
+    await assertBody(page, /確認メールを送りました/, "確認メールの案内が出ていない");
+    // **リンクを開く前に登録済みにしない。**ここが崩れると、以降の試験に意味が無い
+    await assertBody(
+      page,
+      /ゲストとして遊んでいます/,
+      "リンクを開く前なのに登録済みの表示になっている",
+    );
+
+    const token = app.mock.lastConfirmToken();
+    assert(token, "確認の印が1つも作られていない（メールが送られていない）");
+    return token;
+  }
+
+  await test("Q", "同じブラウザの別タブで確認すると、元のタブが自分で切り替わる", async (t) => {
+    const ctx = await browser.newContext();
+    const t1 = await ctx.newPage();
+    try {
+      t.stage("元のタブで登録を始める");
+      const email = `e2e-two-tab-${Date.now()}@example.test`;
+      const token = await startGuestRegistration(t1, base, email);
+
+      t.stage("別のタブで確認リンクを開く");
+      const t2 = await ctx.newPage();
+      await t2.goto(`${base}/auth/confirm?token_hash=${token}&type=email`);
+      await t2.waitForURL(/\/account/, { timeout: 25000 });
+      await settledBody(t2);
+      await assertBody(t2, /登録が完了しました/, "確認したタブに完了の面が出ていない");
+
+      t.stage("元のタブを、触らないまま見張る");
+      // **読み込み直さない。**ここで reload すると、合図が効いたのか
+      // ただ読み直しただけなのかが区別できなくなる。
+      await t1
+        .getByText("登録ユーザーとしてサインインしています")
+        .first()
+        .waitFor({ state: "visible", timeout: 30000 });
+
+      const afterSignal = await settledBody(t1);
+      assert(
+        afterSignal.includes(email),
+        `元のタブに登録したメール（${email}）が出ていない`,
+      );
+      assert(
+        !/ゲストとして遊んでいます/.test(afterSignal),
+        "元のタブにゲストの表示が残っている",
+      );
+
+      t.stage("元のタブを前面に戻す");
+      await t1.bringToFront();
+      await settledBody(t1);
+      assert(
+        (await t1.getByText("登録ユーザーとしてサインインしています").count()) >= 1,
+        "前面に戻したら登録済みの表示が消えた",
+      );
+
+      t.stage("確認したタブを閉じても、元のタブは使える");
+      await t2.close();
+      const profileForm = "form:has(button:has-text('プロフィールを保存する'))";
+      await t1.locator(`${profileForm} input[name=displayName]`).fill("二枚のタブ");
+      await submitAndSettle(
+        t1,
+        t1.getByRole("button", { name: "プロフィールを保存する" }),
+      );
+      await assertBody(t1, /プロフィールを更新しました/, "元のタブで編集を続けられない");
+
+      const { rows } = await db.query(
+        `select p.display_name as n
+           from public.profiles p
+           join auth.users u on u.id = p.id
+          where u.email = $1`,
+        [email],
+      );
+      assert(
+        rows[0]?.n === "二枚のタブ",
+        `元のタブでの編集が保存されていない（${JSON.stringify(rows)}）`,
+      );
+    } finally {
+      await ctx.close();
+    }
+  });
+
+  await test("Q", "合図だけでは登録済みにならない（別の端末で開いた場合を含む）", async (t) => {
+    const ctx = await browser.newContext();
+    const t1 = await ctx.newPage();
+    let otherDevice = null;
+    try {
+      t.stage("元のタブで登録を始める");
+      const email = `e2e-other-device-${Date.now()}@example.test`;
+      const token = await startGuestRegistration(t1, base, email);
+
+      t.stage("嘘の合図を投げる");
+      // 本物の確認は一切していない状態で、合図だけを流す。
+      // 受け取ったタブがすることは「サーバーへ聞き直す」だけなので、
+      // **答えが変わらない以上、表示も変わってはいけない。**
+      await t1.evaluate(() => {
+        const bc = new BroadcastChannel("dpq-auth");
+        bc.postMessage("confirmed");
+        bc.close();
+      });
+      await t1.waitForTimeout(3000);
+      await settledBody(t1);
+      assert(
+        (await t1.getByText("登録ユーザーとしてサインインしています").count()) === 0,
+        "嘘の合図だけで登録済みの表示になった（合図を証拠に使っている）",
+      );
+      await assertBody(t1, /ゲストとして遊んでいます/, "嘘の合図でゲストの表示が消えた");
+
+      t.stage("別の端末に当たるところで確認リンクを開く");
+      // 別の context は Cookie も合図の道も共有しない。
+      // 実機の「PCで登録してスマホでメールを開く」に当たる。
+      otherDevice = await browser.newContext();
+      const d = await otherDevice.newPage();
+      await d.goto(`${base}/auth/confirm?token_hash=${token}&type=email`);
+      await d.waitForURL(/\/account/, { timeout: 25000 });
+      await settledBody(d);
+      await assertBody(d, /登録が完了しました/, "別の端末で確認が通っていない");
+      // 別の端末には「元の画面は自動では切り替わらない」と書いてあること
+      await assertBody(
+        d,
+        /自動では\s*切り替わりません|自動では切り替わりません/,
+        "別の端末で開いた人に、元の画面が切り替わらないことを伝えていない",
+      );
+
+      t.stage("元のタブは、触らないかぎり切り替わらない");
+      await t1.waitForTimeout(4000);
+      const still = await settledBody(t1);
+      assert(
+        !/登録ユーザーとしてサインインしています/.test(still),
+        "合図が届かないはずの別端末なのに、元のタブが勝手に切り替わった",
+      );
+
+      t.stage("読み込み直せば、元のタブでも登録済みになる");
+      await t1.reload();
+      await settledBody(t1);
+      assert(
+        (await t1.getByText("登録ユーザーとしてサインインしています").count()) >= 1,
+        "読み込み直しても元のタブが登録済みにならない",
+      );
+    } finally {
+      if (otherDevice) await otherDevice.close();
       await ctx.close();
     }
   });

@@ -16,6 +16,9 @@ import {
 import { SubmitButton } from "@/app/_pending";
 import {
   abandonDraftAction,
+  chooseCardAction,
+  holdCardAction,
+  revealSlotPoolAction,
   completeDraftAction,
   deleteSavedCarrySlotAction,
   promoteSessionCarryAction,
@@ -291,16 +294,20 @@ function CandidateButton({
   candidateIndex,
   revealed,
   isChosen,
+  isHeld,
   label,
   selectable,
+  canHold,
 }: {
   sessionId: string;
   slot: DraftSlot;
   candidateIndex: number;
   revealed: boolean;
   isChosen: boolean;
+  isHeld: boolean;
   label: string | null;
   selectable: boolean;
+  canHold: boolean;
 }) {
   const base =
     "flex h-24 w-full items-center justify-center rounded-xl border text-center text-sm font-bold transition";
@@ -311,6 +318,43 @@ function CandidateButton({
         className={`${base} border-success-tint/50 bg-success-tint/10 text-success`}
       >
         {label}
+      </div>
+    );
+  }
+
+  // めくってあるが、まだ決めていない（D170）。
+  // **ここで確定しない。**決めるのは下のボタンを押したときだけ。
+  if (revealed && selectable) {
+    return (
+      <div className="space-y-2">
+        <div className={`${base} border-line-firm bg-surface`} data-card="revealed">
+          {label}
+        </div>
+        <form action={chooseCardAction}>
+          <input type="hidden" name="sessionId" value={sessionId} />
+          <input type="hidden" name="cardSlotKey" value={slot.card_slot_key} />
+          <input type="hidden" name="candidateIndex" value={candidateIndex} />
+          <SubmitButton
+            pendingLabel="決めています…"
+            className={`${btnPrimary} w-full`}
+          >
+            これに決める
+          </SubmitButton>
+        </form>
+        {canHold || isHeld ? (
+          <form action={holdCardAction}>
+            <input type="hidden" name="sessionId" value={sessionId} />
+            <input type="hidden" name="cardSlotKey" value={slot.card_slot_key} />
+            <input type="hidden" name="candidateIndex" value={candidateIndex} />
+            <input type="hidden" name="hold" value={isHeld ? "off" : "on"} />
+            <SubmitButton
+              pendingLabel="…"
+              className={`${btnSecondary} w-full`}
+            >
+              {isHeld ? "残すのをやめる" : "残しておく"}
+            </SubmitButton>
+          </form>
+        ) : null}
       </div>
     );
   }
@@ -353,6 +397,7 @@ function CandidateButton({
 /** 1つの枠と、その伏せカード一式 */
 function SlotRow({ state, slot }: { state: DraftState; slot: DraftSlot }) {
   const decided = slot.candidates.some((c) => c.is_chosen);
+  const heldCount = slot.candidates.filter((c) => c.is_held).length;
 
   return (
     <section className="space-y-3">
@@ -367,7 +412,9 @@ function SlotRow({ state, slot }: { state: DraftState; slot: DraftSlot }) {
         ) : decided ? (
           <span className="text-xs text-success">決定</span>
         ) : slot.is_current ? (
-          <span className="text-xs font-bold">← いまここ。1枚めくると確定します</span>
+          <span className="text-xs font-bold">
+            ← いまここ。めくって中身を見てから決めます
+          </span>
         ) : (
           <span className="text-xs text-faint">順番待ち</span>
         )}
@@ -385,11 +432,41 @@ function SlotRow({ state, slot }: { state: DraftState; slot: DraftSlot }) {
             candidateIndex={c.candidate_index}
             revealed={c.revealed}
             isChosen={c.is_chosen}
+            isHeld={c.is_held}
             label={c.label}
             selectable={slot.is_current && !decided}
+            canHold={heldCount < slot.held_limit && !slot.pool_revealed}
           />
         ))}
       </div>
+
+      {/*
+        残した候補があるときだけ、その枠の残りを開ける（D170）。
+        **開いても候補は増えない。**総ドラフト基数は動かない。
+        開いた枠は、そこで抽選が終わる。
+      */}
+      {slot.is_current && !decided && heldCount > 0 && !slot.pool_revealed ? (
+        <form action={revealSlotPoolAction}>
+          <input type="hidden" name="sessionId" value={state.session_id} />
+          <input type="hidden" name="cardSlotKey" value={slot.card_slot_key} />
+          <SubmitButton pendingLabel="開いています…" className={btnSecondary}>
+            残した{heldCount}枚はそのままに、この枠の残りを見る
+          </SubmitButton>
+        </form>
+      ) : null}
+
+      {slot.is_current && !decided && !slot.pool_revealed ? (
+        <p className="text-xs text-faint">
+          この枠の候補は {slot.candidate_count} 枚。残しておけるのは {slot.held_limit} 枚までです
+          （全部は残せません）。
+        </p>
+      ) : null}
+
+      {slot.pool_revealed ? (
+        <p className="text-xs text-faint">
+          この枠は残りを開きました。ここから1枚選んでください。新しい候補は増えません。
+        </p>
+      ) : null}
     </section>
   );
 }
@@ -424,7 +501,7 @@ export function DraftBoard({ state }: { state: DraftState }) {
           ) : null}
         </div>
         <p className="text-xs text-faint">
-          めくったカードがそのまま答えになります。順番に1枚ずつ選んでください。
+          カードをめくっても、まだ決まりません。中身を見てから「これに決める」を押すと確定します。気に入ったものを残したまま、その枠の残りを開くこともできます。
           {state.carried_count > 0
             ? "持ち出した枠は最初から決まっているので、その次から始まります。"
             : ""}

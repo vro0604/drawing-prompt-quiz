@@ -192,6 +192,31 @@ export default async function NewWorkPage({
     );
   }
 
+  // 「このお題は描かない」を押したお題（D171）。**状態の英字をそのまま出さない。**
+  // 自分で押した操作なので、何をしたからこうなったのかを書けば意味が通る。
+  if (prompt.status === "abandoned") {
+    return (
+      <Shell>
+        <Notice title="このお題は「描かない」を選んでいます">
+          <p>
+            このお題では投稿できません。引かなかったカードは、お題の画面で
+            見られます。
+          </p>
+          <p>
+            <Link href={`/prompt/${prompt.id}`} className="underline">
+              お題の画面へ
+            </Link>
+          </p>
+          <p>
+            <Link href="/play" className="underline">
+              新しいお題を引く
+            </Link>
+          </p>
+        </Notice>
+      </Shell>
+    );
+  }
+
   if (prompt.status !== "active") {
     return (
       <Shell>

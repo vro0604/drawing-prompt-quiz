@@ -38,6 +38,8 @@ export type DraftCandidate = {
   is_chosen: boolean;
   tag_id: number | null;
   label: string | null;
+  /** 枠の中で「残す」と印を付けてあるか（D170）。持ち出しとは別物 */
+  is_held: boolean;
 };
 
 /**
@@ -55,6 +57,12 @@ export type DraftSlot = {
   card_slot_label: string;
   category_label: string;
   is_carried: boolean;
+  /** その枠に配られた候補の枚数（D170）。抽選の枠は2〜5、持ち出しの枠は1 */
+  candidate_count: number;
+  /** その枠の残り候補を開示済みか（D170）。開示すると、その枠の抽選は終わり */
+  pool_revealed: boolean;
+  /** その枠で残せる上限。min(2, 候補数 - 1)。全部は残せない（D170） */
+  held_limit: number;
   slot_order: number;
   /** いまめくれる枠かどうか。枠は slot_order の順に1つずつ進む */
   is_current: boolean;
@@ -72,6 +80,8 @@ export type DraftState = {
   reroll_count: number;
   rerolls_left: number;
   time_limit_seconds: number | null;
+  /** そのセッションで配り切る候補の総数（D170）。旧方式のセッションは null */
+  draft_base: number | null;
   generation: number;
   current_slot_order: number;
   slot_count: number;
@@ -240,7 +250,7 @@ export function modeSummary(mode: DraftMode): string {
     }
   }
 
-  parts.push(`候補 ${mode.candidate_count} 枚／枠`);
+  parts.push(`候補は枠ごとに2〜5枚`);
   parts.push(`引き直し ${mode.max_rerolls} 回`);
   // クイズの問数はお題の語数と同じになるので、別の数として書かない（D165）。
   // 語数を上に出しているモードでは、その行がそのまま問数の説明になる。
