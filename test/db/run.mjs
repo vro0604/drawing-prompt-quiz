@@ -4424,6 +4424,492 @@ async function main() {
     assert(detail.same_work_open_count === 2, `未処理の件数が ${detail.same_work_open_count}`);
   });
 
+  /* ---------------------------------------------------------------------
+   * Y. プロフィールの拡張（D176）。アイコンと、自己申告の得意分野
+   *
+   * 【ここで見ないもの】
+   *   得意分野は自己申告であって成績ではない。**正答率も、次の作品の
+   *   配られ方（D169）も変わらない**ことは、下の2件で確かめる。
+   * ------------------------------------------------------------------- */
+
+  /** その利用者のフォルダを指す、形の正しいアイコンの置き場所を1つ作る */
+  function avatarPath(uid) {
+    return `${uid}/avatar/${crypto.randomUUID()}.png`;
+  }
+
+  /** 分類ごとに語をn件ずつ取り、IDだけを1本の配列にする */
+  async function specialtyIds(spec) {
+    const ids = [];
+    for (const [category, n] of spec) {
+      for (const t of await pickTags(db, category, n)) ids.push(t.id);
+    }
+    return ids;
+  }
+
+  await test("Y", "アイコンを設定できて、公開プロフィールに出る", async () => {
+    const u = await makeMember(db, "av-set");
+    const path = avatarPath(u);
+
+    const result = await value(db, asMember(u), `select public.set_my_avatar($1::text)`, [path]);
+    assert(result.avatar_path === path, `設定した置き場所が ${result.avatar_path}`);
+    assert(result.previous_path === null, "前の置き場所が空でない");
+
+    const pub = await value(db, ANON, `select public.get_public_profile($1::text)`, ["av-set"]);
+    assert(pub.avatar_path === path, `公開プロフィールの置き場所が ${pub.avatar_path}`);
+  });
+
+  await test("Y", "差し替えると、前の置き場所が返る（消す相手が分かる）", async () => {
+    const u = await makeMember(db, "av-swap");
+    const first = avatarPath(u);
+    const second = avatarPath(u);
+
+    await value(db, asMember(u), `select public.set_my_avatar($1::text)`, [first]);
+    const result = await value(db, asMember(u), `select public.set_my_avatar($1::text)`, [second]);
+
+    assert(result.avatar_path === second, "新しい置き場所が入っていない");
+    assert(
+      result.previous_path === first,
+      `前の置き場所が ${result.previous_path}（${first} のはず）`,
+    );
+  });
+
+  await test("Y", "アイコンを外せる。外すと既定の表示になる", async () => {
+    const u = await makeMember(db, "av-clear");
+    const path = avatarPath(u);
+    await value(db, asMember(u), `select public.set_my_avatar($1::text)`, [path]);
+
+    const result = await value(db, asMember(u), `select public.set_my_avatar(null::text)`);
+    assert(result.avatar_path === null, "外したのに置き場所が残っている");
+    assert(result.previous_path === path, "外すときに前の置き場所が返らない");
+
+    const pub = await value(db, ANON, `select public.get_public_profile($1::text)`, ["av-clear"]);
+    assert(pub.avatar_path === null, "公開プロフィールに置き場所が残っている");
+  });
+
+  await test("Y", "他人のフォルダを指すアイコンは受け付けない", async () => {
+    const owner = await makeMember(db, "av-owner");
+    const other = await makeMember(db, "av-other");
+
+    await expectFailure(
+      () =>
+        value(db, asMember(other), `select public.set_my_avatar($1::text)`, [avatarPath(owner)]),
+      "AVATAR_PATH_FOREIGN",
+    );
+
+    const pub = await value(db, ANON, `select public.get_public_profile($1::text)`, ["av-other"]);
+    assert(pub.avatar_path === null, "断ったのに置き場所が入っている");
+  });
+
+  await test("Y", "アイコンの列は、利用者から直接更新できない", async () => {
+    const u = await makeMember(db, "av-direct");
+    await expectFailure(
+      () =>
+        value(db, asMember(u), `update public.profiles set avatar_path = $1::text where id = $2::uuid`, [
+          avatarPath(u),
+          u,
+        ]),
+      "permission denied",
+    );
+  });
+
+  await test("Y", "ゲストはアイコンも得意分野も設定できない", async () => {
+    const g = await makeGuest(db);
+    await expectFailure(
+      () => value(db, asGuest(g), `select public.set_my_avatar($1::text)`, [avatarPath(g)]),
+      "ANONYMOUS_NOT_ALLOWED",
+    );
+    // 語のIDは先に用意する。**expectFailure へ渡す関数の中で await しない**
+    // （非 async の関数の中では書けない）。
+    const ids = await specialtyIds([["morph", 1]]);
+    await expectFailure(
+      () =>
+        value(db, asGuest(g), `select public.set_my_specialties($1::bigint[], null::bigint[])`, [
+          ids,
+        ]),
+      "ANONYMOUS_NOT_ALLOWED",
+    );
+  });
+
+  await test("Y", "得意分野を、描く側5件・見る側5件まで保存できる", async () => {
+    const u = await makeMember(db, "sp-five");
+    const drawing = await specialtyIds([["morph", 3], ["emotion", 2]]);
+    const viewing = await specialtyIds([["action", 3], ["environment", 2]]);
+
+    const saved = await value(
+      db,
+      asMember(u),
+      `select public.set_my_specialties($1::bigint[], $2::bigint[])`,
+      [drawing, viewing],
+    );
+    assert(saved.drawing.length === 5, `描く側が ${saved.drawing.length} 件`);
+    assert(saved.viewing.length === 5, `見る側が ${saved.viewing.length} 件`);
+
+    // 語と分類の表示名が添えて返ること（画面がタグの名前を組み立て直さない）
+    assert(
+      typeof saved.drawing[0].label === "string" && saved.drawing[0].label.length > 0,
+      "語の表示名が入っていない",
+    );
+    assert(
+      typeof saved.drawing[0].category_label === "string",
+      "分類の表示名が入っていない",
+    );
+
+    const read = await value(db, asMember(u), `select public.get_my_specialties()`);
+    assert(read.drawing.length === 5 && read.viewing.length === 5, "読み直すと件数が違う");
+  });
+
+  await test("Y", "0件でも保存できる。0件は0件として返る", async () => {
+    const u = await makeMember(db, "sp-zero");
+    await value(
+      db,
+      asMember(u),
+      `select public.set_my_specialties($1::bigint[], null::bigint[])`,
+      [await specialtyIds([["morph", 2]])],
+    );
+
+    const cleared = await value(
+      db,
+      asMember(u),
+      `select public.set_my_specialties(null::bigint[], null::bigint[])`,
+    );
+    assert(cleared.drawing.length === 0 && cleared.viewing.length === 0, "0件にできない");
+
+    const pub = await value(db, ANON, `select public.get_public_profile($1::text)`, ["sp-zero"]);
+    assert(
+      pub.specialties.drawing.length === 0 && pub.specialties.viewing.length === 0,
+      "公開プロフィールに残っている",
+    );
+  });
+
+  await test("Y", "6件目は受け付けない", async () => {
+    const u = await makeMember(db, "sp-six");
+    const six = await specialtyIds([["morph", 3], ["emotion", 3]]);
+    assert(six.length === 6, `語が ${six.length} 件（6件のはず）`);
+
+    await expectFailure(
+      () =>
+        value(db, asMember(u), `select public.set_my_specialties($1::bigint[], null::bigint[])`, [
+          six,
+        ]),
+      "SPECIALTY_LIMIT",
+    );
+
+    const read = await value(db, asMember(u), `select public.get_my_specialties()`);
+    assert(read.drawing.length === 0, "断ったのに入っている");
+  });
+
+  await test("Y", "同じ種類の中で同じ語を2回は登録できない", async () => {
+    const u = await makeMember(db, "sp-dup");
+    const [tag] = await pickTags(db, "morph", 1);
+
+    await expectFailure(
+      () =>
+        value(
+          db,
+          asMember(u),
+          `select public.set_my_specialties(array[$1::bigint, $1::bigint], null::bigint[])`,
+          [tag.id],
+        ),
+      "SPECIALTY_DUPLICATE",
+    );
+  });
+
+  await test("Y", "描く側と見る側に同じ語を入れられる（独立している）", async () => {
+    const u = await makeMember(db, "sp-both");
+    const [tag] = await pickTags(db, "morph", 1);
+
+    const saved = await value(
+      db,
+      asMember(u),
+      `select public.set_my_specialties(array[$1::bigint], array[$1::bigint])`,
+      [tag.id],
+    );
+    assert(saved.drawing.length === 1 && saved.viewing.length === 1, "両方に入らない");
+    assert(
+      saved.drawing[0].tag_id === saved.viewing[0].tag_id,
+      "両方に入ったが別の語になっている",
+    );
+  });
+
+  await test("Y", "いま選べない語（旧語彙・存在しない語）は受け付けない", async () => {
+    const u = await makeMember(db, "sp-bad");
+    // pickLegacyTag は語のIDそのもの（数）を返す。オブジェクトではない
+    const legacy = await pickLegacyTag(db);
+
+    await expectFailure(
+      () =>
+        value(db, asMember(u), `select public.set_my_specialties(array[$1::bigint], null::bigint[])`, [
+          legacy,
+        ]),
+      "SPECIALTY_TAG_INVALID",
+    );
+
+    await expectFailure(
+      () =>
+        value(
+          db,
+          asMember(u),
+          `select public.set_my_specialties(array[999999999::bigint], null::bigint[])`,
+        ),
+      "SPECIALTY_TAG_INVALID",
+    );
+  });
+
+  await test("Y", "得意分野の表は、利用者から直接読み書きできない", async () => {
+    const u = await makeMember(db, "sp-seal");
+    await expectFailure(
+      () => value(db, asMember(u), `select count(*) from public.profile_specialties`),
+      "permission denied",
+    );
+    await expectFailure(
+      () =>
+        value(
+          db,
+          asMember(u),
+          `insert into public.profile_specialties (user_id, specialty_type, tag_id)
+             values ($1::uuid, 'drawing', 1)`,
+          [u],
+        ),
+      "permission denied",
+    );
+  });
+
+  await test("Y", "他人の得意分野は変えられない（引数に利用者を取らない）", async () => {
+    const victim = await makeMember(db, "sp-victim");
+    const attacker = await makeMember(db, "sp-attacker");
+
+    const ids = await specialtyIds([["morph", 1]]);
+    await value(db, asMember(victim), `select public.set_my_specialties($1::bigint[], null::bigint[])`, [ids]);
+
+    // 攻撃側が自分の設定を変えても、相手のものは動かない
+    await value(
+      db,
+      asMember(attacker),
+      `select public.set_my_specialties($1::bigint[], null::bigint[])`,
+      [await specialtyIds([["emotion", 2]])],
+    );
+
+    const pub = await value(db, ANON, `select public.get_public_profile($1::text)`, ["sp-victim"]);
+    assert(pub.specialties.drawing.length === 1, "他人の設定が変わった");
+    assert(
+      Number(pub.specialties.drawing[0].tag_id) === Number(ids[0]),
+      "他人の設定の中身が変わった",
+    );
+  });
+
+  await test("Y", "得意分野は公開プロフィールに出る。既存の項目も残っている", async () => {
+    const u = await makeMember(db, "sp-public");
+    await value(db, asMember(u), `select public.update_my_profile(null, $1, $2, $3::jsonb)`, [
+      "得意な人",
+      "自己紹介の文",
+      JSON.stringify({ x: "https://example.com/x" }),
+    ]);
+    await value(
+      db,
+      asMember(u),
+      `select public.set_my_specialties($1::bigint[], $2::bigint[])`,
+      [await specialtyIds([["morph", 2]]), await specialtyIds([["emotion", 1]])],
+    );
+
+    const pub = await value(db, ANON, `select public.get_public_profile($1::text)`, ["sp-public"]);
+    assert(pub.specialties.drawing.length === 2, "描く側が出ていない");
+    assert(pub.specialties.viewing.length === 1, "見る側が出ていない");
+    // 既存の欄が消えていないこと
+    assert(pub.display_name === "得意な人", "表示名が消えた");
+    assert(pub.bio === "自己紹介の文", "自己紹介が消えた");
+    assert(pub.links.x === "https://example.com/x", "外部リンクが消えた");
+    assert(pub.show_saved_works === false, "公開設定の既定が変わった");
+    assert(typeof pub.creator === "object", "描き手の記録が消えた");
+  });
+
+  await test("Y", "次の作品の配り方（D169）が、得意分野を1文字も見ていない", async () => {
+    // 出所: ユーザー指示（2026-09-08）「『見るのが得意』をD169の次作品配給へ
+    // 使用しない」。使うと「一般の回答者にどう伝わったか」ではなく
+    // 「その表現を得意とする回答者にどう伝わったか」へ回答が偏る。
+    //
+    // **2回呼んで同じ作品が返ることでは確かめられない。**配る相手は
+    // 回答の有無や帯で変わるので、同じ結果になる保証がそもそも無い。
+    // 定義文そのものに、得意分野の表も関数も出てこないことを見る。
+    const rows = (
+      await db.query(
+        `select p.proname, pg_get_functiondef(p.oid) as def
+           from pg_proc p join pg_namespace n on n.oid = p.pronamespace
+          where n.nspname = 'public'
+            and p.proname in ('get_next_work', 'get_public_works')`,
+      )
+    ).rows;
+    // 引数違いの同名関数（オーバーロード）があるので、本数は決め打ちにしない。
+    // **1本も見つからないことだけを失格にする**（名前を変えられたら気づく）。
+    assert(rows.length >= 2, `見るべき関数が ${rows.length} 本（2本以上のはず）`);
+
+    for (const r of rows) {
+      assert(
+        !r.def.includes("profile_specialties"),
+        `${r.proname} が得意分野の表を見ている`,
+      );
+      assert(
+        !r.def.includes("app_specialty_rows"),
+        `${r.proname} が得意分野の読み出しを呼んでいる`,
+      );
+    }
+  });
+
+  await test("Y", "得意分野を入れた人にも、これまでどおり次の作品が配られる", async () => {
+    const author = await makeMember(db, "sp-feed-a");
+    const drawn = await drawPrompt(db, author);
+    const workId = await postWork(db, author, drawn.prompt_id);
+
+    const viewer = await makeMember(db, "sp-feed-v");
+    await value(
+      db,
+      asMember(viewer),
+      `select public.set_my_specialties(null::bigint[], $1::bigint[])`,
+      [await specialtyIds([["morph", 2]])],
+    );
+
+    const next = await value(db, asMember(viewer), `select public.get_next_work($1)`, [null]);
+    assert(next !== null, "得意分野を入れたら、作品が1件も配られなくなった");
+    assert(workId !== null, "作品が作れていない");
+  });
+
+  await test("Y", "失敗した更新は、いまの得意分野を壊さない", async () => {
+    // 出所: ユーザー指示（2026-09-09）「失敗した更新が旧設定を壊さないこと」。
+    // set_my_specialties は「全部消してから入れ直す」ので、途中で落ちたときに
+    // 0件や半端な件数が残らないことを確かめる。
+    const u = await makeMember(db, "sp-atomic");
+    const five = await specialtyIds([["morph", 3], ["emotion", 2]]);
+    await value(db, asMember(u), `select public.set_my_specialties($1::bigint[], null::bigint[])`, [
+      five,
+    ]);
+
+    const six = await specialtyIds([["morph", 3], ["emotion", 3]]);
+    const [dup] = await pickTags(db, "action", 1);
+    const legacy = await pickLegacyTag(db);
+
+    // 断られる送り方を3通り。**どれもいまの5件を壊してはいけない。**
+    await expectFailure(
+      () =>
+        value(db, asMember(u), `select public.set_my_specialties($1::bigint[], null::bigint[])`, [
+          six,
+        ]),
+      "SPECIALTY_LIMIT",
+    );
+    await expectFailure(
+      () =>
+        value(
+          db,
+          asMember(u),
+          `select public.set_my_specialties(array[$1::bigint, $1::bigint], null::bigint[])`,
+          [dup.id],
+        ),
+      "SPECIALTY_DUPLICATE",
+    );
+    await expectFailure(
+      () =>
+        value(db, asMember(u), `select public.set_my_specialties(array[$1::bigint], null::bigint[])`, [
+          legacy,
+        ]),
+      "SPECIALTY_TAG_INVALID",
+    );
+
+    const now = await value(db, asMember(u), `select public.get_my_specialties()`);
+    assert(now.drawing.length === 5, `失敗のあとで ${now.drawing.length} 件になっている`);
+    assert(
+      now.drawing.map((x) => Number(x.tag_id)).join(",") === five.map(Number).join(","),
+      "中身か並びが変わっている",
+    );
+  });
+
+  await test("Y", "5件→3件・3件→0件と減らせる（減らす途中で消えない）", async () => {
+    const u = await makeMember(db, "sp-shrink");
+    const five = await specialtyIds([["morph", 3], ["emotion", 2]]);
+    await value(db, asMember(u), `select public.set_my_specialties($1::bigint[], null::bigint[])`, [
+      five,
+    ]);
+
+    const three = await value(
+      db,
+      asMember(u),
+      `select public.set_my_specialties($1::bigint[], null::bigint[])`,
+      [five.slice(0, 3)],
+    );
+    assert(three.drawing.length === 3, `5件→3件で ${three.drawing.length} 件`);
+
+    const zero = await value(
+      db,
+      asMember(u),
+      `select public.set_my_specialties(null::bigint[], null::bigint[])`,
+    );
+    assert(zero.drawing.length === 0, `3件→0件で ${zero.drawing.length} 件`);
+  });
+
+  await test("Y", "消せなかったアイコンを、掃除の待ち行列へ渡せる", async () => {
+    // Storage と DB はまとめて巻き戻せない。DB は書けたのに古いファイルだけ
+    // 消せなかったとき、そのファイルを増えっぱなしにしないための出口。
+    const u = await makeMember(db, "av-orphan");
+    const path = avatarPath(u);
+
+    await value(db, asMember(u), `select public.enqueue_my_avatar_cleanup($1::text)`, [path]);
+
+    const { rows } = await db.query(
+      `select bucket, path, deleted_at from public.storage_cleanup_queue where path = $1`,
+      [path],
+    );
+    assert(rows.length === 1, `待ち行列に ${rows.length} 件（1件のはず）`);
+    assert(rows[0].bucket === "works", `バケットが ${rows[0].bucket}`);
+    assert(rows[0].deleted_at === null, "入れた直後なのに片づけ済みになっている");
+
+    // 二度渡しても増えない（同じ操作を繰り返しても壊れない）
+    await value(db, asMember(u), `select public.enqueue_my_avatar_cleanup($1::text)`, [path]);
+    const again = (
+      await db.query(`select count(*)::int as n from public.storage_cleanup_queue where path = $1`, [
+        path,
+      ])
+    ).rows[0].n;
+    assert(again === 1, `二度渡すと ${again} 件になった`);
+  });
+
+  await test("Y", "他人のアイコンを掃除の対象にはできない", async () => {
+    const owner = await makeMember(db, "av-orphan-o");
+    const other = await makeMember(db, "av-orphan-x");
+    await expectFailure(
+      () =>
+        value(db, asMember(other), `select public.enqueue_my_avatar_cleanup($1::text)`, [
+          avatarPath(owner),
+        ]),
+      "AVATAR_PATH_FOREIGN",
+    );
+  });
+
+  await test("Y", "退会すると、アイコンは消す対象に入り、得意分野の行は消える", async () => {
+    const u = await makeMember(db, "sp-leave");
+    const path = avatarPath(u);
+    await value(db, asMember(u), `select public.set_my_avatar($1::text)`, [path]);
+    await value(
+      db,
+      asMember(u),
+      `select public.set_my_specialties($1::bigint[], null::bigint[])`,
+      [await specialtyIds([["morph", 2]])],
+    );
+
+    const result = await value(db, asMember(u), `select public.start_account_deletion($1::text)`, [
+      "sp-leave",
+    ]);
+
+    const paths = (result.objects ?? []).map((o) => o.path);
+    assert(paths.includes(path), `消す対象にアイコンが入っていない（${paths.join(", ")}）`);
+
+    const left = (
+      await db.query(
+        `select (select count(*)::int from public.profile_specialties s where s.user_id = $1) as rows,
+                (select p.avatar_path from public.profiles p where p.id = $1) as avatar`,
+        [u],
+      )
+    ).rows[0];
+    assert(left.rows === 0, `得意分野が ${left.rows} 行残っている`);
+    assert(left.avatar === null, "プロフィールに置き場所が残っている");
+  });
+
 }
 
 // ===========================================================================

@@ -1,8 +1,16 @@
 import Link from "next/link";
 import { getCurrentUser, getMyProfile } from "@/features/auth/session";
 import { SubmitButton } from "@/app/_pending";
-import { LINK_FIELDS } from "@/features/profile/rpc";
+import {
+  fetchMySpecialties,
+  fetchPickableVocabulary,
+} from "@/features/profile/rpc";
 import { VISIBILITY_FIELDS } from "@/features/profile/types";
+import { avatarInitial, avatarUrl } from "@/features/profile/avatar";
+import { EMPTY_VOCABULARY, type Vocabulary } from "@/features/vocab/types";
+import type { PickedTag } from "@/features/vocab/picker";
+import { EMPTY_SPECIALTIES, type Specialties } from "@/features/profile/types";
+import { ProfileForm } from "./_profile-form";
 import type { Profile } from "@/types/database";
 import {
   registerAction,
@@ -94,7 +102,38 @@ export default async function AccountPage({
   // 登録ユーザーのときだけ、いまの設定値をフォームの初期値として読む。
   // 自分の行は RLS で必ず見えるので、ここは直接読んでよい（001 の SELECT ポリシー）。
   let profile: Profile | null = null;
-  if (isRegistered) profile = await getMyProfile();
+  let vocabulary: Vocabulary = EMPTY_VOCABULARY;
+  let specialties: Specialties = EMPTY_SPECIALTIES;
+  if (isRegistered) {
+    profile = await getMyProfile();
+    // 語の一覧と、いま選んである得意分野。**持ち込みと同じ語彙**を使う。
+    [vocabulary, specialties] = await Promise.all([
+      fetchPickableVocabulary(),
+      fetchMySpecialties(),
+    ]);
+  }
+
+  /**
+   * 保存してある得意分野を、選択部品が扱える形へ直す。
+   *
+   * DB は語と分類の「名前」を返すが、部品は分類の中身（語の一覧・上限）ごと
+   * 必要とする。**語彙側に見つからないものは落とす。**
+   * 分類が使われなくなった場合に、選べない語だけが残るのを防ぐ。
+   */
+  function toPicked(list: Specialties["drawing"]): PickedTag[] {
+    const out: PickedTag[] = [];
+    for (const s of list) {
+      const cat = vocabulary.categories.find(
+        (c) => c.category_key === s.category_key,
+      );
+      const tag = cat?.tags.find((t) => t.id === s.tag_id);
+      if (cat && tag) out.push({ tag, category: cat });
+    }
+    return out;
+  }
+
+  const initialDrawing = toPicked(specialties.drawing);
+  const initialViewing = toPicked(specialties.viewing);
 
   return (
     <main className="mx-auto w-full max-w-lg space-y-8 p-6 sm:p-10">
@@ -175,77 +214,18 @@ export default async function AccountPage({
             </p>
           </div>
 
-          <form action={updateProfileAction} className="space-y-4">
-            <label className="block space-y-1">
-              <span className="block text-xs text-faint">
-                ID（3〜20字・小文字の英数字とハイフン）
-              </span>
-              <input
-                type="text"
-                name="handle"
-                defaultValue={profile?.handle ?? ""}
-                maxLength={20}
-                pattern="[a-z0-9][a-z0-9\-]{1,18}[a-z0-9]"
-                placeholder="my-handle"
-                className={field}
-              />
-              <span className="block text-xs text-faint">
-                {profile?.handle
-                  ? "早い者勝ちです。変えると、いまの ID は他の人が取れるようになります。"
-                  : "早い者勝ちです。ほかの人が使っている ID は取れません。"}
-              </span>
-            </label>
-
-            <label className="block space-y-1">
-              <span className="block text-xs text-faint">
-                表示名（30字まで）
-              </span>
-              <input
-                type="text"
-                name="displayName"
-                defaultValue={profile?.display_name ?? ""}
-                maxLength={30}
-                className={field}
-              />
-            </label>
-
-            <label className="block space-y-1">
-              <span className="block text-xs text-faint">
-                自己紹介（500字まで）
-              </span>
-              <textarea
-                name="bio"
-                defaultValue={profile?.bio ?? ""}
-                maxLength={500}
-                rows={3}
-                className={field}
-              />
-            </label>
-
-            <div className="space-y-3">
-              <span className="block text-xs text-faint">
-                外部リンク（http:// または https:// で始まる URL）
-              </span>
-              {LINK_FIELDS.map((f) => (
-                <label key={f.key} className="block space-y-1">
-                  <span className="block text-xs text-faint">
-                    {f.label}
-                  </span>
-                  <input
-                    type="url"
-                    name={`link_${f.key}`}
-                    defaultValue={profile?.links?.[f.key] ?? ""}
-                    placeholder={f.placeholder}
-                    className={field}
-                  />
-                </label>
-              ))}
-            </div>
-
-            <SubmitButton pendingLabel="保存しています…" className={primary}>
-              プロフィールを保存する
-            </SubmitButton>
-          </form>
+          <ProfileForm
+            action={updateProfileAction}
+            handle={profile?.handle ?? ""}
+            displayName={profile?.display_name ?? ""}
+            bio={profile?.bio ?? ""}
+            links={profile?.links ?? {}}
+            avatarUrl={profile?.avatar_path ? avatarUrl(profile.avatar_path) : null}
+            avatarInitial={avatarInitial(profile?.display_name ?? "")}
+            categories={vocabulary.categories}
+            initialDrawing={initialDrawing}
+            initialViewing={initialViewing}
+          />
 
           {profile?.handle ? (
             <p className="border-t border-ink/10 pt-4 text-sm">
@@ -351,43 +331,56 @@ export default async function AccountPage({
         </>
       ) : null}
 
-      {/* --- サインアウト ------------------------------------------------------ */}
+      {/* --- アカウント（サインアウト・退会）------------------------------------
+
+          出所: ユーザー指示（2026-09-08）「プロフィール設定と危険な
+          アカウント操作を同じ情報密度で連続させない」。
+          機能は1つも減らしていない。**1つのまとまりにして、
+          プロフィールの設定欄とのあいだに区切りを置いた。** */}
       {user !== null ? (
-        <section className={`${surface} space-y-3`}>
+        <section className={`${surface} space-y-4`} data-testid="account-group">
+          <div className="space-y-1">
+            <h2 className="text-sm font-bold">アカウント</h2>
+            <p className="text-xs text-faint">
+              ここから下は、プロフィールの設定ではなくアカウントそのものの操作です。
+            </p>
+          </div>
+
           <form action={signOutAction}>
             <SubmitButton pendingLabel="サインアウト中…" className={secondary}>
               サインアウトする
             </SubmitButton>
           </form>
+
           {isGuest ? (
             <p className="text-xs text-danger">
               ゲストのままサインアウトすると、そのIDには二度と戻れません。
               引いたお題も見られなくなります。
             </p>
           ) : null}
+
+          {/*
+            退会はゲストに出さない。メールもプロフィールも持たないので
+            消すものが無く、使われなくなれば自動で消えるため。
+            いちばん下に置き、確認画面を挟む。ここでは実行しない。
+          */}
+          {!isGuest ? (
+            <div className="space-y-2 border-t border-ink/10 pt-4">
+              <h3 className="text-sm font-bold">退会</h3>
+              <p className="text-xs text-faint">
+                アカウントと投稿した作品を削除します。取り消せません。
+                次の画面で、何が消えて何が残るかを確認できます。
+              </p>
+              <p className="pt-1 text-sm">
+                <Link href="/account/delete" className="underline">
+                  退会の手続きへ進む
+                </Link>
+              </p>
+            </div>
+          ) : null}
         </section>
       ) : null}
 
-      {/* --- 退会 -------------------------------------------------------------- */}
-      {/*
-        ゲストには出さない。メールもプロフィールも持たないので消すものが無く、
-        使われなくなれば自動で消えるため。
-        いちばん下に置き、確認画面を挟む。ここでは実行しない。
-      */}
-      {user !== null && !isGuest ? (
-        <section className={`${surface} space-y-2`}>
-          <h2 className="text-sm font-bold">退会</h2>
-          <p className="text-xs text-faint">
-            アカウントと投稿した作品を削除します。取り消せません。
-            次の画面で、何が消えて何が残るかを確認できます。
-          </p>
-          <p className="pt-1 text-sm">
-            <Link href="/account/delete" className="underline">
-              退会の手続きへ進む
-            </Link>
-          </p>
-        </section>
-      ) : null}
     </main>
   );
 }

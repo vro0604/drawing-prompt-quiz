@@ -12,10 +12,20 @@ import {
 } from "@/features/auth/errors";
 import {
   LINK_FIELDS,
+  callEnqueueMyAvatarCleanup,
+  callSetMyAvatar,
+  callSetMySpecialties,
   callUpdateMyProfile,
   callUpdateMyVisibility,
 } from "@/features/profile/rpc";
 import { VISIBILITY_FIELDS } from "@/features/profile/types";
+import {
+  AVATAR_MAX_BYTES,
+  avatarStoragePath,
+} from "@/features/profile/avatar";
+import { readImageInfo } from "@/features/work/image";
+import { removeWorkImage, uploadWorkImage } from "@/features/work/rpc";
+import { getCurrentUser } from "@/features/auth/session";
 
 /**
  * /account のボタンから呼ばれる Server Action。
@@ -375,6 +385,127 @@ async function createNewAccount(
  *   キーは LINK_FIELDS で固定してある。入力があったものだけを集める。
  *   値が http(s) で始まるかは DB 側が見る（javascript: を弾くため）。
  */
+/**
+ * 「語のIDをカンマでつないだ欄」を数の並びに直す。
+ *
+ * **画面から来た値を信じない。**数でないもの・重複・多すぎる件数は
+ * ここで落とすが、同じ判定は set_my_specialties も持っている。
+ */
+function parseTagIds(raw: string): number[] {
+  const out: number[] = [];
+  for (const part of raw.split(",")) {
+    const n = Number.parseInt(part.trim(), 10);
+    if (Number.isSafeInteger(n) && n > 0 && !out.includes(n)) out.push(n);
+  }
+  return out;
+}
+
+/**
+ * 消せなかったファイルを、掃除の待ち行列へ渡す。
+ *
+ * **ここで失敗しても、呼び出し側は止めない。**渡せなかったこと自体は
+ * 保存の成否と関係が無く、止めると「保存できたのに失敗と出る」ことになる。
+ */
+async function handOverToCleanup(path: string): Promise<void> {
+  try {
+    await callEnqueueMyAvatarCleanup(path);
+  } catch {
+    /* 掃除へ渡せなかった。保存そのものは終わっている */
+  }
+}
+
+/**
+ * プロフィールのアイコンを、選ばれていれば置き換える。
+ *
+ * 【Storage と DB は、まとめて巻き戻せない】
+ *   画像の置き場（Storage）と DB は別の仕組みなので、片方だけ成功する。
+ *   4つの失敗を、それぞれどう扱うかを決めてある。
+ *
+ *   1. 置くのに失敗した
+ *      → DB は触っていない。いまのアイコンはそのまま。保存を失敗にする
+ *   2. 置けたが、DB に書けなかった
+ *      → **置いたファイルをその場で消す。**消せなければ掃除へ渡す。
+ *        誰からも辿れないファイルを残さない。保存は失敗にする
+ *   3. DB に書けたが、前のファイルを消せなかった
+ *      → 新しいアイコンは正しく使える。**保存は失敗にしない。**
+ *        前のファイルは掃除へ渡す
+ *   4. アイコンを外したが、ファイルを消せなかった
+ *      → プロフィールは既定の表示に戻る（DB は空になっている）。
+ *        ただし**古いURLを知っている人には、消えるまで画像が見える。**
+ *        これも掃除へ渡す
+ *
+ * 【順番】
+ *   中身を読んで形式と大きさを確かめる → 新しい名前で置く → DB に書く →
+ *   前のファイルを消す。**先に消してから置かない。**
+ */
+async function applyAvatar(form: FormData): Promise<void> {
+  const remove = str(form, "avatarRemove") === "1";
+  const file = form.get("avatar");
+  const picked = file instanceof File && file.size > 0 ? file : null;
+
+  if (!picked && !remove) return;
+
+  // --- 外す（4） -------------------------------------------------------
+  if (remove && !picked) {
+    const { previous_path } = await callSetMyAvatar(null);
+    if (previous_path && !(await removeWorkImage(previous_path))) {
+      await handOverToCleanup(previous_path);
+    }
+    return;
+  }
+
+  if (!picked) return;
+
+  // --- 受け取ってよい中身か --------------------------------------------
+  //
+  // 大きさは**中身のバイト数**で見る。画面でも止めているが、
+  // 受け口が見ないと、画面を通さずに送られたときに素通りする。
+  if (picked.size > AVATAR_MAX_BYTES) {
+    throw new Error(
+      `アイコンは ${Math.floor(AVATAR_MAX_BYTES / 1024 / 1024)}MB までです。`,
+    );
+  }
+
+  const bytes = new Uint8Array(await picked.arrayBuffer());
+  const info = readImageInfo(bytes);
+  if (!info) {
+    throw new Error("アイコンは JPEG / PNG / WebP のみです。");
+  }
+
+  const user = await getCurrentUser();
+  if (!user) throw new Error("サインインし直してください。");
+
+  // --- 置く（1） -------------------------------------------------------
+  const path = avatarStoragePath(user.id, info.ext);
+  await uploadWorkImage(path, bytes, info);
+
+  // --- DB に書く（2・3） -----------------------------------------------
+  let previous: string | null = null;
+  try {
+    previous = (await callSetMyAvatar(path)).previous_path;
+  } catch (e) {
+    if (!(await removeWorkImage(path))) await handOverToCleanup(path);
+    throw e;
+  }
+
+  if (previous && previous !== path && !(await removeWorkImage(previous))) {
+    await handOverToCleanup(previous);
+  }
+}
+
+/**
+ * プロフィールを保存する。
+ *
+ * 【3つを順に保存する。途中で失敗したら、そこまでは保存されている】
+ *   1. プロフィール（ID・表示名・自己紹介・外部リンク）
+ *   2. 得意分野（描く側・見る側）
+ *   3. アイコン
+ *
+ *   3つは別々の受け口なので、まとめて巻き戻せない。**巻き戻せないものを
+ *   「全部失敗しました」と書かない。**どこまで保存できたかを画面に出す。
+ *   出所: ユーザー指示（2026-09-09）「実際には部分成功しているのに
+ *   『全部rollbackされた』ように表示しないこと」。
+ */
 export async function updateProfileAction(form: FormData): Promise<void> {
   const handle = str(form, "handle");
   const displayName = str(form, "displayName");
@@ -386,22 +517,55 @@ export async function updateProfileAction(form: FormData): Promise<void> {
     if (value !== "") links[field.key] = value;
   }
 
-  try {
-    await callUpdateMyProfile({
-      handle: handle === "" ? null : handle,
-      displayName: displayName === "" ? null : displayName,
-      bio: bio === "" ? null : bio,
-      // リンクは「1つも入力が無い」と「全部消したい」を区別できないため、
-      // 何か入力があるときだけ送る。
-      links: Object.keys(links).length > 0 ? links : null,
-    });
-  } catch (e) {
-    back(e instanceof Error ? e.message : String(e));
+  const drawing = parseTagIds(str(form, "drawingTagIds"));
+  const viewing = parseTagIds(str(form, "viewingTagIds"));
+
+  const steps: { label: string; run: () => Promise<unknown> }[] = [
+    {
+      label: "プロフィール",
+      run: () =>
+        callUpdateMyProfile({
+          handle: handle === "" ? null : handle,
+          displayName: displayName === "" ? null : displayName,
+          bio: bio === "" ? null : bio,
+          // リンクは「1つも入力が無い」と「全部消したい」を区別できないため、
+          // 何か入力があるときだけ送る。
+          links: Object.keys(links).length > 0 ? links : null,
+        }),
+    },
+    {
+      // 得意分野は**毎回まとめて置き換える。**0件で送れば0件になる
+      // （リンクと違い、「全部外したい」を表せる必要がある）。
+      label: "得意分野",
+      run: () => callSetMySpecialties(drawing, viewing),
+    },
+    { label: "アイコン", run: () => applyAvatar(form) },
+  ];
+
+  const saved: string[] = [];
+  let failure: { label: string; reason: string } | null = null;
+
+  for (const step of steps) {
+    try {
+      await step.run();
+      saved.push(step.label);
+    } catch (e) {
+      failure = { label: step.label, reason: e instanceof Error ? e.message : String(e) };
+      break;
+    }
   }
 
+  // 途中まで保存できていれば、その分は画面へ反映させる
   revalidatePath(PAGE);
   // 一覧や作品ページの投稿者名も変わるので、まとめて描き直させる
   revalidatePath("/works");
+
+  if (failure) {
+    const done =
+      saved.length > 0 ? `${saved.join("と")}は保存しました。` : "";
+    back(`${done}${failure.label}を保存できませんでした: ${failure.reason}`);
+  }
+
   back(undefined, "プロフィールを更新しました。");
 }
 

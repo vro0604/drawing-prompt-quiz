@@ -5,7 +5,10 @@ import type {
   PublicAnswer,
   PublicProfile,
   SavedWork,
+  Specialties,
 } from "@/features/profile/types";
+import type { Vocabulary } from "@/features/vocab/types";
+import { EMPTY_VOCABULARY } from "@/features/vocab/types";
 
 /**
  * プロフィールの更新。サーバー専用。
@@ -79,6 +82,93 @@ export async function callUpdateMyVisibility(
 
   if (error) throw new Error(readableRpcError(error.message));
   return data as Required<VisibilityUpdate>;
+}
+
+/**
+ * 自己申告の得意分野を読む（本人だけ）。
+ *
+ * アカウント画面の初期値に使う。**他人のものは返らない**ので、
+ * 引数に利用者を渡す口そのものが無い。
+ */
+export async function fetchMySpecialties(): Promise<Specialties> {
+  const supabase = await createSupabaseServerClient();
+  const { data, error } = await supabase.rpc("get_my_specialties");
+
+  if (error) throw new Error(readableRpcError(error.message));
+  const v = data as Specialties | null;
+  return { drawing: v?.drawing ?? [], viewing: v?.viewing ?? [] };
+}
+
+/**
+ * 得意分野を、描く側・見る側まとめて置き換える。
+ *
+ * 1件ずつ足し引きしない。**画面のフォームが1つ**なので、
+ * 途中で失敗して片方だけ変わる状態を作らない（update_my_profile と同じ）。
+ * 上限5件・同じ種類の中での重複・選べない語は、すべて DB 側も見る。
+ */
+export async function callSetMySpecialties(
+  drawing: number[],
+  viewing: number[],
+): Promise<Specialties> {
+  const supabase = await createSupabaseServerClient();
+  const { data, error } = await supabase.rpc("set_my_specialties", {
+    p_drawing: drawing,
+    p_viewing: viewing,
+  });
+
+  if (error) throw new Error(readableRpcError(error.message));
+  const v = data as Specialties | null;
+  return { drawing: v?.drawing ?? [], viewing: v?.viewing ?? [] };
+}
+
+/**
+ * プロフィールアイコンの置き場所を設定する。null で外す。
+ *
+ * **戻り値に前の置き場所が入る。** 呼び出し側はそれを Storage から消す。
+ * ここで消さないのは、DB の更新と Storage の削除を同じ処理にすると、
+ * 片方だけ成功したときにどちらが正しいか分からなくなるため。
+ */
+export async function callSetMyAvatar(
+  path: string | null,
+): Promise<{ avatar_path: string | null; previous_path: string | null }> {
+  const supabase = await createSupabaseServerClient();
+  const { data, error } = await supabase.rpc("set_my_avatar", { p_path: path });
+
+  if (error) throw new Error(readableRpcError(error.message));
+  return data as { avatar_path: string | null; previous_path: string | null };
+}
+
+/**
+ * 消せなかった自分のアイコンを、掃除の待ち行列へ入れる。
+ *
+ * Storage と DB は別の仕組みなので、まとめて巻き戻せない。
+ * 「DB は書けたが古いファイルだけ消せなかった」ときに、そのファイルを
+ * ここへ渡す。**渡さないと、失敗のたびに誰からも辿れないファイルが増える。**
+ *
+ * ここで失敗しても、呼び出し側は保存そのものを失敗にしない
+ * （新しいアイコンは正しく使えているため）。
+ */
+export async function callEnqueueMyAvatarCleanup(path: string): Promise<void> {
+  const supabase = await createSupabaseServerClient();
+  const { error } = await supabase.rpc("enqueue_my_avatar_cleanup", { p_path: path });
+  if (error) throw new Error(readableRpcError(error.message));
+}
+
+/**
+ * 得意分野で選べる語の一覧。
+ *
+ * **持ち込み（art_first）と同じ関数を使う。**選べる語の範囲を1か所に
+ * まとめておくため（出所: ユーザー指示 2026-09-08「art_firstで今回実装した
+ * 語彙選択UI・get_art_first_vocabulary() の構造を調査し、再利用可能なら
+ * 共通化または流用する」）。返ってくる min_words / max_words は
+ * お題を作るときの数なので、得意分野では使わない（上限は5件）。
+ */
+export async function fetchPickableVocabulary(): Promise<Vocabulary> {
+  const supabase = await createSupabaseServerClient();
+  const { data, error } = await supabase.rpc("get_art_first_vocabulary");
+
+  if (error) return EMPTY_VOCABULARY;
+  return (data as Vocabulary | null) ?? EMPTY_VOCABULARY;
 }
 
 /**
@@ -181,11 +271,9 @@ export async function fetchPublicAnswers(params: {
 /**
  * 外部リンクの入力欄。
  *
- * キーは固定にする。自由に増やせるようにすると、
- * 4096バイトの上限に当たるまで何個でも足せてしまう。
+ * **定義は features/profile/types.ts にある。**このファイルはサーバー専用の
+ * 取り決め（Supabase のクライアント）を取り込むので、画面側の部品から
+ * 直接読むとサーバー用のコードが混ざる（2026-09-08 に build が落ちた）。
+ * これまでの取り込み文を壊さないよう、名前だけここからも出しておく。
  */
-export const LINK_FIELDS: { key: string; label: string; placeholder: string }[] = [
-  { key: "x", label: "X（旧Twitter）", placeholder: "https://x.com/..." },
-  { key: "pixiv", label: "pixiv", placeholder: "https://www.pixiv.net/users/..." },
-  { key: "site", label: "サイト", placeholder: "https://..." },
-];
+export { LINK_FIELDS } from "@/features/profile/types";

@@ -453,11 +453,19 @@ function watchContext(ctx) {
   });
   ctx.on("request", (req) => {
     let host;
+    let protocol;
     try {
-      host = new URL(req.url()).hostname;
+      const u = new URL(req.url());
+      host = u.hostname;
+      protocol = u.protocol;
     } catch {
       return;
     }
+    // ブラウザの中だけで完結する参照は、外への通信ではない。
+    // blob: と data: はホスト名が空になるので、素通しにしないと
+    // **「空のホストへ1件出た」という形で失格になる**
+    // （2026-09-08。プロフィールのアイコンを選んだ直後の見本で実際に起きた）。
+    if (protocol === "blob:" || protocol === "data:" || protocol === "about:") return;
     if (ALLOWED_HOSTS.has(host)) return;
     externalRequests.set(host, (externalRequests.get(host) ?? 0) + 1);
   });
@@ -2578,6 +2586,298 @@ async function main() {
     const normal = await settledBody(m);
     assert(/お題の制作時間/.test(normal), "通常の作品から制作時間が消えた");
   });
+
+
+
+  /* =====================================================================
+   * V. プロフィールの拡張（D176）。アイコンと、自己申告の得意分野
+   *
+   * 【DB の試験と分けている理由】
+   *   上限・重複・他人の設定を触れないことは、DB の試験（test/db/run.mjs の
+   *   Y 群）が見ている。ここで見るのは画面だけ。**まとまりが分かれているか・
+   *   選んだ数が動くか・押せなくなるか・公開プロフィールに出るか。**
+   * ===================================================================== */
+
+  /** 1×1 の PNG。アイコンの受け取りを確かめるためだけに使う */
+  const TINY_PNG_BYTES = Buffer.from(
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==",
+    "base64",
+  );
+
+  {
+    const profileCtx = await browser.newContext();
+    const pp = await profileCtx.newPage();
+    await signInAs(pp, base, seeded.memberEmail);
+
+    /** その人の公開プロフィールのURL。ID が無ければここで決める */
+    async function ensureHandle() {
+      const { rows } = await db.query(
+        `select handle from public.profiles where id = $1`,
+        [seeded.member ?? seeded.viewer],
+      );
+      return rows[0]?.handle ?? null;
+    }
+
+    await test("V", "アカウント画面が3つのまとまりに分かれている", async (t) => {
+      t.stage("アカウント画面を開く");
+      await pp.goto(`${base}/account`);
+      const body = await settledBody(pp);
+
+      assert(/プロフィール/.test(body), "プロフィールの見出しが無い");
+      assert(/公開設定/.test(body), "公開設定の見出しが無い");
+      assert(
+        (await pp.locator('[data-testid="account-group"]').count()) === 1,
+        "アカウント操作のまとまりが無い",
+      );
+
+      t.stage("危険な操作が、プロフィールの設定欄と同じ流れに並んでいない");
+      const group = pp.locator('[data-testid="account-group"]');
+      assert(
+        (await group.getByText("サインアウトする").count()) > 0,
+        "サインアウトがアカウントのまとまりに入っていない",
+      );
+      assert(
+        (await group.getByText("退会の手続きへ進む").count()) > 0,
+        "退会がアカウントのまとまりに入っていない",
+      );
+
+      t.stage("プロフィールの欄に、アイコンと得意分野が出ている");
+      assert(
+        (await pp.locator('[data-testid="avatar-field"]').count()) === 1,
+        "アイコンの欄が無い",
+      );
+      assert(
+        (await pp.locator('[data-testid="drawing-picker"]').count()) === 1,
+        "「描くのが得意」の欄が無い",
+      );
+      assert(
+        (await pp.locator('[data-testid="viewing-picker"]').count()) === 1,
+        "「見るのが得意」の欄が無い",
+      );
+    });
+
+    await test("V", "得意分野は5件で打ち止め。6件目は押せない", async (t) => {
+      await pp.goto(`${base}/account`);
+      await pp.locator('[data-testid="drawing-words"]').waitFor({ state: "visible", timeout: 15000 });
+
+      t.stage("5件選ぶ");
+      const words = pp.locator('[data-testid="drawing-words"] button');
+      for (let i = 0; i < 5; i += 1) await words.nth(i).click();
+
+      const count = await pp.locator('[data-testid="drawing-picked-count"]').innerText();
+      assert(/選択中 5 \/ 5/.test(count), `件数の表示が「${count}」`);
+
+      t.stage("6件目が押せない");
+      assert(await words.nth(5).isDisabled(), "6件目が押せてしまう");
+
+      t.stage("外すと、また押せるようになる");
+      await pp.locator('[data-testid="drawing-picked"] button').first().click();
+      const after = await pp.locator('[data-testid="drawing-picked-count"]').innerText();
+      assert(/選択中 4 \/ 5/.test(after), `外したあとの件数が「${after}」`);
+      assert(!(await words.nth(5).isDisabled()), "外したのに押せないまま");
+    });
+
+    await test("V", "保存すると公開プロフィールに出る。0件の側は節ごと出ない", async (t) => {
+      t.stage("描く側だけ2件選んで保存する");
+      await pp.goto(`${base}/account`);
+      await pp.locator('[data-testid="drawing-words"]').waitFor({ state: "visible", timeout: 15000 });
+
+      const handleInput = pp.locator("input[name=handle]");
+      if ((await handleInput.inputValue()) === "") await handleInput.fill("e2e-profile");
+
+      const words = pp.locator('[data-testid="drawing-words"] button');
+      await words.nth(0).click();
+      await words.nth(1).click();
+
+      await submitAndSettle(pp, pp.getByRole("button", { name: "プロフィールを保存する" }));
+      const saved = await settledBody(pp);
+      assert(/プロフィールを更新しました/.test(saved), "保存の知らせが出ていない");
+
+      t.stage("公開プロフィールを開く");
+      const handle = await ensureHandle();
+      assert(handle !== null, "ID が決まっていない");
+      await pp.goto(`${base}/u/${handle}`);
+      const body = await settledBody(pp);
+
+      assert(
+        (await pp.locator('[data-testid="specialty-drawing"]').count()) === 1,
+        "「描くのが得意」が公開プロフィールに出ていない",
+      );
+      assert(
+        (await pp.locator('[data-testid="specialty-viewing"]').count()) === 0,
+        "0件の「見るのが得意」が節ごと出てしまっている",
+      );
+      assert(/描くのが得意/.test(body), "見出しが出ていない");
+
+      t.stage("選んだ語が実際に出ている");
+      const chips = await pp
+        .locator('[data-testid="specialty-drawing"] li')
+        .allInnerTexts();
+      assert(chips.length === 2, `語が ${chips.length} 件（2件のはず）`);
+
+      t.stage("これまでの中身（作品のタブ）も残っている");
+      assert(/オリジナル/.test(body), "作品のタブが消えた");
+      assert(/ファンアート/.test(body), "ファンアートのタブが消えた");
+    });
+
+    await test("V", "アイコンを設定すると、公開プロフィールに出る", async (t) => {
+      t.stage("設定する前は、既定の表示になっている");
+      const handle = await ensureHandle();
+      await pp.goto(`${base}/u/${handle}`);
+      assert(
+        (await pp.locator('[data-testid="profile-avatar-default"]').count()) === 1,
+        "アイコン未設定なのに既定の表示が出ていない",
+      );
+
+      t.stage("画像を選んで保存する");
+      await pp.goto(`${base}/account`);
+      await pp.locator("input[name=avatar]").setInputFiles({
+        name: "icon.png",
+        mimeType: "image/png",
+        buffer: TINY_PNG_BYTES,
+      });
+      await submitAndSettle(pp, pp.getByRole("button", { name: "プロフィールを保存する" }));
+
+      t.stage("置き場所が本人のフォルダになっている");
+      const { rows } = await db.query(
+        `select avatar_path from public.profiles where handle = $1`,
+        [handle],
+      );
+      const path = rows[0]?.avatar_path ?? null;
+      assert(path !== null, "アイコンの置き場所が保存されていない");
+      assert(/\/avatar\//.test(path), `置き場所が ${path}`);
+
+      t.stage("公開プロフィールに出る");
+      await pp.goto(`${base}/u/${handle}`);
+      assert(
+        (await pp.locator('[data-testid="profile-avatar"]').count()) === 1,
+        "アイコンが公開プロフィールに出ていない",
+      );
+      assert(
+        (await pp.locator('[data-testid="profile-avatar-default"]').count()) === 0,
+        "既定の表示が残っている",
+      );
+    });
+
+    await test("V", "画像でないファイルは、アイコンとして受け取らない", async (t) => {
+      t.stage("拡張子だけ png にした文字ファイルを送る");
+      await pp.goto(`${base}/account`);
+      const handle = await ensureHandle();
+      const before = (
+        await db.query(`select avatar_path from public.profiles where handle = $1`, [handle])
+      ).rows[0]?.avatar_path;
+
+      await pp.locator("input[name=avatar]").setInputFiles({
+        name: "not-an-image.png",
+        mimeType: "image/png",
+        buffer: Buffer.from("これは画像ではありません", "utf8"),
+      });
+      await submitAndSettle(pp, pp.getByRole("button", { name: "プロフィールを保存する" }));
+
+      const body = await settledBody(pp);
+      assert(
+        /JPEG \/ PNG \/ WebP のみです/.test(body),
+        "画像でないものを受け取ってしまった（断りの文が出ていない）",
+      );
+
+      // **どこまで保存できたかを書く。**アイコンだけ失敗したのに
+      // 「全部やり直し」と読める文を出さない（ユーザー指示 2026-09-09）。
+      assert(
+        /プロフィールと得意分野は保存しました/.test(body),
+        `途中まで保存できたことが画面に出ていない。画面: ${body.slice(0, 300)}`,
+      );
+
+      t.stage("いまのアイコンは変わっていない");
+      const after = (
+        await db.query(`select avatar_path from public.profiles where handle = $1`, [handle])
+      ).rows[0]?.avatar_path;
+      assert(after === before, `置き場所が ${before} から ${after} に変わった`);
+    });
+
+    await test("V", "2MiB を超える画像は、画面を通さずに送っても断られる", async (t) => {
+      // 出所: ユーザー指示（2026-09-09）「正式なavatar更新経路では2MiBを必ず
+      // 拒否できること。UIだけの制限にしない」。
+      //
+      // 画面の入力欄は大きさを見て断りを出すが、ここでは**その表示を待たずに
+      // そのまま送る。**受け口（Server Action）が中身の大きさを見ているかを確かめる。
+      t.stage("2MiB を超える PNG を作って送る");
+      await pp.goto(`${base}/account`);
+      const handle = await ensureHandle();
+      const before = (
+        await db.query(`select avatar_path from public.profiles where handle = $1`, [handle])
+      ).rows[0]?.avatar_path;
+
+      // 先頭は本物の PNG の並び。**形式では断られない**ようにしておく。
+      // 断る理由が大きさだけになるので、どちらで断ったのかが分かる。
+      const big = Buffer.concat([
+        TINY_PNG_BYTES,
+        Buffer.alloc(2 * 1024 * 1024 + 1024, 0x41),
+      ]);
+      await pp.locator("input[name=avatar]").setInputFiles({
+        name: "too-big.png",
+        mimeType: "image/png",
+        buffer: big,
+      });
+
+      t.stage("まず画面が止める（押せなくなる）");
+      const saveButton = pp.getByRole("button", { name: "プロフィールを保存する" });
+      await saveButton.waitFor({ state: "visible", timeout: 15000 });
+      assert(await saveButton.isDisabled(), "大きすぎるのに、保存ボタンが押せる");
+
+      t.stage("画面の止めを外して、そのまま送る");
+      // **押せなくするのは親切であって守りではない。**画面を通さずに
+      // 送られたときに受け口が断るかどうかを、ここで確かめる。
+      // ボタンの disabled を外して、フォームをそのまま送信する。
+      await pp.evaluate(() => {
+        const button = document.querySelector(
+          'form button[type="submit"]',
+        );
+        if (!button) throw new Error("送信ボタンが見つからない");
+        button.removeAttribute("disabled");
+        button.click();
+      });
+      await pp.waitForLoadState("networkidle");
+
+      const body = await settledBody(pp);
+      assert(/2MB までです/.test(body), `大きさで断っていない。画面: ${body.slice(0, 300)}`);
+
+      t.stage("いまのアイコンは変わっていない");
+      const after = (
+        await db.query(`select avatar_path from public.profiles where handle = $1`, [handle])
+      ).rows[0]?.avatar_path;
+      assert(after === before, `置き場所が ${before} から ${after} に変わった`);
+    });
+
+    await test("V", "これまでの自己紹介・外部リンク・公開設定が壊れていない", async (t) => {
+      t.stage("自己紹介と外部リンクを保存する");
+      await pp.goto(`${base}/account`);
+      await pp.locator("textarea[name=bio]").fill("E2E：自己紹介の文");
+      await pp.locator("input[name=link_x]").fill("https://example.com/e2e");
+      await submitAndSettle(pp, pp.getByRole("button", { name: "プロフィールを保存する" }));
+
+      const handle = await ensureHandle();
+      await pp.goto(`${base}/u/${handle}`);
+      const body = await settledBody(pp);
+      assert(/E2E：自己紹介の文/.test(body), "自己紹介が出ていない");
+      assert(
+        (await pp.locator('a[href="https://example.com/e2e"]').count()) > 0,
+        "外部リンクが出ていない",
+      );
+
+      t.stage("公開設定は別のまとまりのまま保存できる");
+      await pp.goto(`${base}/account`);
+      await pp.locator('input[name="show_saved_works"]').check();
+      await submitAndSettle(pp, pp.getByRole("button", { name: "公開設定を保存する" }));
+
+      const { rows } = await db.query(
+        `select show_saved_works from public.profiles where handle = $1`,
+        [handle],
+      );
+      assert(rows[0]?.show_saved_works === true, "公開設定が保存できなくなっている");
+    });
+
+    await profileCtx.close();
+  }
 
   /* =====================================================================
    * X. 管理画面（管理 v0）

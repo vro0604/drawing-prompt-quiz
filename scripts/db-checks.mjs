@@ -26,6 +26,9 @@ export const SEALED_TABLES = [
   // Step 15。手放した ID の控え。「誰が昔どの ID だったか」は
   // 本人が明かすまで見せる必要が無い（P5 / D62）
   "handle_history",
+  // D176。自己申告の得意分野。読み書きは set_my_specialties /
+  // get_my_specialties / get_public_profile だけ（2026-09-08）
+  "profile_specialties",
 ];
 
 /** anon / authenticated が列権限を持つ10表 */
@@ -67,6 +70,8 @@ export const OWNER_RPCS = [
   "get_my_likes",
   "get_my_saves",
   "get_my_reaction",
+  // D176。自分の得意分野。引数に利用者を取らないので、他人のものは返らない
+  "get_my_specialties",
 ];
 
 /** ドラフトRPC（authenticated のみ） */
@@ -119,6 +124,13 @@ export const ANSWER_RPCS = ["submit_answer"];
 export const MEMBER_RPCS = [
   "update_my_profile",
   "update_my_visibility",
+  // D176（2026-09-08）。プロフィールのアイコンと自己申告の得意分野。
+  // ゲストのプロフィールは他人から見えないので、登録ユーザーだけが呼べる
+  "set_my_avatar",
+  "set_my_specialties",
+  // 消せなかった自分のアイコンを掃除へ渡す口（D176）。
+  // 他人のファイルを掃除の対象にできないよう、置き場所の先頭を見る
+  "enqueue_my_avatar_cleanup",
   "toggle_like",
   "toggle_save",
 ];
@@ -523,16 +535,20 @@ export const checks = [
     // 内訳は docs/decisions.md の D158〜D164 の実装。
     // 2026-09-05 にさらに2表増えた（保存枠 saved_carry_slots と、
     // 保存枠を使った派生お題 prompt_carry_slots）。
-    // 2026-09-08 に1表増えた（admin_audit_log。管理 v0 / D177）。
-    name: "public スキーマの表が51個",
-    expected: 51,
+    // 2026-09-08 に2表増えた。admin_audit_log（管理 v0 / D177）と
+    // profile_specialties（プロフィール拡張 / D176）。
+    // **どちらか一方の数え直しだけを残すと、もう一方が偽の不合格になる。**
+    // 期待値の出どころ: 2026-09-09 に、この2本を含む47本を
+    // まっさらな検査用DBへ当てて数えた実測（52表 / RLS有効52表 / 門番9つ）。
+    name: "public スキーマの表が52個",
+    expected: 52,
     sql: `select count(*)::int from pg_tables where schemaname = 'public'`,
     detailSql: `select tablename from pg_tables
                  where schemaname = 'public' order by tablename`,
   },
   {
     group: "構造",
-    name: "遮断12表がすべて存在する",
+    name: "遮断13表がすべて存在する",
     expected: SEALED_TABLES.length,
     sql: `select count(*)::int from pg_tables
            where schemaname = 'public' and tablename = any($1)`,
@@ -540,8 +556,8 @@ export const checks = [
   },
   {
     group: "構造",
-    name: "51表すべてで RLS が有効",
-    expected: 51,
+    name: "52表すべてで RLS が有効",
+    expected: 52,
     sql: `select count(*)::int from pg_class c
             join pg_namespace n on n.oid = c.relnamespace
            where n.nspname = 'public' and c.relkind = 'r' and c.relrowsecurity`,
@@ -583,7 +599,7 @@ export const checks = [
   // ───────────────────────────── 権限 ─────────────────────────────
   {
     group: "権限",
-    name: "遮断12表に anon/authenticated の権限が0件",
+    name: "遮断13表に anon/authenticated の権限が0件",
     expected: 0,
     sql: `select count(*)::int from information_schema.column_privileges
            where table_schema = 'public'
@@ -593,7 +609,7 @@ export const checks = [
   },
   {
     group: "権限",
-    name: "遮断12表に PUBLIC / anon / authenticated の権限が0件（種類を漏らさず）",
+    name: "遮断13表に PUBLIC / anon / authenticated の権限が0件（種類を漏らさず）",
     // 上の information_schema による検査は SELECT / INSERT / UPDATE /
     // REFERENCES の4種しか見えない。**DELETE や TRUNCATE だけを
     // 配られていても気づけない。** relacl / attacl を展開して、
@@ -608,7 +624,7 @@ export const checks = [
   },
   {
     group: "権限",
-    name: "遮断12表に RLS ポリシーが0本",
+    name: "遮断13表に RLS ポリシーが0本",
     expected: 0,
     sql: `select count(*)::int from pg_policies
            where schemaname = 'public' and tablename = any($1)`,
@@ -836,8 +852,8 @@ export const checks = [
 
   {
     group: "関数",
-    name: "登録ユーザー限定RPC 4本が存在する",
-    expected: 4,
+    name: "登録ユーザー限定RPC 7本が存在する",
+    expected: MEMBER_RPCS.length,
     sql: `select count(*)::int from pg_proc p
             join pg_namespace n on n.oid = p.pronamespace
            where n.nspname='public' and p.proname = any($1)`,
@@ -845,7 +861,7 @@ export const checks = [
   },
   {
     group: "関数",
-    name: "登録ユーザー限定RPC 4本は anon から実行できない",
+    name: "登録ユーザー限定RPC 7本は anon から実行できない",
     expected: 0,
     sql: `select count(*)::int from pg_proc p
             join pg_namespace n on n.oid = p.pronamespace
@@ -1212,8 +1228,9 @@ export const checks = [
   },
   {
     group: "退会",
-    name: "書き込みの門番が8つ付いている",
-    expected: 8,
+    // 2026-09-08 に profile_specialties へ1つ足して9になった（D176）。
+    name: "書き込みの門番が9つ付いている",
+    expected: 9,
     sql: `select count(*)::int
             from pg_trigger t
             join pg_class c on c.oid = t.tgrelid
@@ -1724,13 +1741,13 @@ export const checks = [
     //   privilege_type を取り違えようがない。
     expected: 0,
     sql: `select count(*)::int
-            from unnest(array['id','handle','handle_updated_at',
+            from unnest(array['id','handle','handle_updated_at','avatar_path',
                               'is_anonymous','created_at']) as col,
                  unnest(array['anon','authenticated']) as role
            where has_column_privilege(role, 'public.profiles', col, 'UPDATE')`,
     detailSql: `select col, role,
                        has_column_privilege(role, 'public.profiles', col, 'UPDATE') as can_update
-                  from unnest(array['id','handle','handle_updated_at',
+                  from unnest(array['id','handle','handle_updated_at','avatar_path',
                                     'is_anonymous','created_at']) as col,
                        unnest(array['anon','authenticated']) as role
                  order by col, role`,
@@ -1998,13 +2015,16 @@ export const checks = [
   },
   {
     group: "登録必須",
-    name: "登録ユーザー限定RPC 4本が JWT の is_anonymous を見ている",
+    name: "登録ユーザー限定RPC 7本が JWT の is_anonymous を見ている",
     // update_my_profile … ID の先取りを防ぐ（001 が handle を列権限から外した意図）
     // toggle_like / toggle_save … 人気ランキングを成立させる（D7）
     //
     // Postgres のロールでは匿名ゲストと登録ユーザーを区別できないので、
+    // set_my_avatar / set_my_specialties / enqueue_my_avatar_cleanup …
+    //   ゲストのプロフィールは他人から見えないので、設定できても出ない（D176）
+    //
     // この防御は関数の中の1行だけで成り立っている。消えても表面上は動く。
-    expected: 4,
+    expected: MEMBER_RPCS.length,
     sql: `select count(*)::int from pg_proc p
             join pg_namespace n on n.oid = p.pronamespace
            where n.nspname='public' and p.proname = any($1)
@@ -2731,6 +2751,41 @@ export const diagnostics = [
     label: "クイズの版が 1 未満のお題がある",
     sql: `select p.id::text from public.prompts p where p.quiz_version < 1`,
   },
+  {
+    // 【2026-09-08 に足した3件。プロフィールの自己申告（D176）】
+    //   受け口（set_my_specialties）とトリガーの両方が上限を見ているが、
+    //   **数えている場所が壊れていないことを、外からも数える。**
+    id: "A37",
+    label: "得意分野が1種類で6件以上ある利用者",
+    sql: `select (s.user_id::text || ' / ' || s.specialty_type) as id
+            from public.profile_specialties s
+           group by s.user_id, s.specialty_type
+          having count(*) > 5`,
+  },
+  {
+    // いま選べる語は「有効な語」かつ「いまお題に出る分類のもの」。
+    // 語を無効にしたときに、古い自己申告だけが残ると、
+    // 画面には出るのに選び直せない状態になる。
+    id: "A38",
+    label: "得意分野に、いま選べない語が入っている",
+    sql: `select (s.user_id::text || ' / ' || s.tag_id::text) as id
+            from public.profile_specialties s
+           where not exists (
+             select 1 from public.tags t
+               join public.draw_categories dc
+                 on dc.pool_key = t.pool_key and dc.is_active
+              where t.id = s.tag_id and t.is_active
+           )`,
+  },
+  {
+    // アイコンの置き場所は、必ず本人のフォルダで始まる。
+    // ここが崩れると、他人のファイルを自分のアイコンとして出せてしまう。
+    id: "A39",
+    label: "アイコンの置き場所が本人のフォルダを指していないプロフィール",
+    sql: `select p.id::text from public.profiles p
+           where p.avatar_path is not null
+             and p.avatar_path not like p.id::text || '/avatar/%'`,
+  },
 ];
 
 /**
@@ -3043,10 +3098,14 @@ export const roleProbes = [
     role: "anon",
     mode: "denied",
     label: `anon → ${fn}`,
+    // 呼び方は関数ごとに違う。**引数の形を間違えると「存在しない」で
+    // 落ちて、拒否されたのか呼べたのかが分からなくなる**（2026-09-08 に実際に起きた）。
     sql:
-      fn.endsWith("s") && fn !== "get_my_reaction"
-        ? `select * from public.${fn}(5,0)`
-        : `select public.${fn}('00000000-0000-0000-0000-000000000000')`,
+      fn === "get_my_specialties"
+        ? `select public.get_my_specialties()`
+        : fn.endsWith("s") && fn !== "get_my_reaction"
+          ? `select * from public.${fn}(5,0)`
+          : `select public.${fn}('00000000-0000-0000-0000-000000000000')`,
   })),
   ...DRAFT_RPCS.map((fn) => ({
     role: "anon",

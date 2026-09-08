@@ -80,6 +80,49 @@ export type AnswerStats = {
   slot_stats: SlotStatSummary[];
 };
 
+/**
+ * 自己申告の得意分野1件（D176）。
+ *
+ * **成績ではない。**本人が「これを描くのが得意」「これを見分けるのが得意」と
+ * 思って選んだ語で、実際の正答率・投稿数・よく使うタグとは無関係。
+ * 次の作品の配り方（D169）にも使わない。
+ */
+export type Specialty = {
+  tag_id: number;
+  label: string;
+  category_key: string | null;
+  category_label: string | null;
+};
+
+/** 描く側と見る側。互いに独立で、同じ語が両方に入ってよい */
+export type Specialties = {
+  drawing: Specialty[];
+  viewing: Specialty[];
+};
+
+export const EMPTY_SPECIALTIES: Specialties = { drawing: [], viewing: [] };
+
+/** 得意分野の見出し。画面2か所（アカウントと公開プロフィール）で同じ言葉を使う */
+export const SPECIALTY_SECTIONS: {
+  key: "drawing" | "viewing";
+  label: string;
+  hint: string;
+}[] = [
+  {
+    key: "drawing",
+    label: "描くのが得意",
+    hint: "自分がこれを描く・表現するのが得意だと思うものを選びます。0〜5件。",
+  },
+  {
+    key: "viewing",
+    label: "見るのが得意",
+    hint: "自分がこれを絵から読み取る・見分けるのが得意だと思うものを選びます。0〜5件。",
+  },
+];
+
+/** 得意分野に選べる数の上限。**DB 側（set_my_specialties とトリガー）と同じ数** */
+export const SPECIALTY_MAX = 5;
+
 /** get_public_profile の戻り値。見つからなければ null */
 export type PublicProfile = {
   id: string;
@@ -88,6 +131,10 @@ export type PublicProfile = {
   bio: string | null;
   links: Record<string, string>;
   created_at: string;
+  /** プロフィールアイコンの置き場所。未設定なら null */
+  avatar_path: string | null;
+  /** 自己申告の得意分野。0件なら空の配列 */
+  specialties: Specialties;
   is_self: boolean;
   show_answer_stats: boolean;
   show_answer_history: boolean;
@@ -228,3 +275,15 @@ export function formatTotalTime(seconds: number): string {
   if (minutes === 0) return `${hours}時間`;
   return `${hours}時間${minutes}分`;
 }
+
+/**
+ * 外部リンクの入力欄。
+ *
+ * キーは固定にする。自由に増やせるようにすると、
+ * 4096バイトの上限に当たるまで何個でも足せてしまう。
+ */
+export const LINK_FIELDS: { key: string; label: string; placeholder: string }[] = [
+  { key: "x", label: "X（旧Twitter）", placeholder: "https://x.com/..." },
+  { key: "pixiv", label: "pixiv", placeholder: "https://www.pixiv.net/users/..." },
+  { key: "site", label: "サイト", placeholder: "https://..." },
+];

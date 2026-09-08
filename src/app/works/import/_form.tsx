@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useState } from "react";
 import { SubmitButton } from "@/app/_pending";
 import {
   COMPLETENESS_CHOICES,
@@ -9,23 +9,11 @@ import {
   MAX_IMAGE_BYTES,
   type Division,
 } from "@/features/work/types";
-import {
-  kindLabel,
-  type ArtFirstVocabulary,
-  type VocabCategory,
-  type VocabTag,
-} from "@/features/artfirst/types";
+import type { ArtFirstVocabulary } from "@/features/artfirst/types";
+import { VocabPicker, type PickedTag } from "@/features/vocab/picker";
 import type { AgreementProps } from "@/app/works/new/_form";
 import { createArtFirstWorkAction } from "./actions";
-import {
-  btnPrimary,
-  btnSecondary,
-  btnToggle,
-  btnToggleOff,
-  btnToggleOn,
-  field,
-  surface,
-} from "@/app/_surface";
+import { btnPrimary, btnSecondary, field, surface } from "@/app/_surface";
 
 /**
  * 持ち込みの投稿フォーム。
@@ -48,8 +36,6 @@ import {
  *   create_art_first_work が持っていて、直接叩いても断られる。
  */
 
-type Selected = { tag: VocabTag; category: VocabCategory };
-
 function Label({ children, hint }: { children: React.ReactNode; hint?: string }) {
   return (
     <span className="block space-y-1">
@@ -71,48 +57,13 @@ export function ImportForm({
   const [previewUrl, setPreviewUrl] = useState<string | null>(null);
   const [sizeError, setSizeError] = useState<string | null>(null);
 
-  const [openCategory, setOpenCategory] = useState<string>(
-    vocabulary.categories[0]?.category_key ?? "",
-  );
-  const [keyword, setKeyword] = useState("");
-  const [selected, setSelected] = useState<Selected[]>([]);
+  // 選んだ語そのものは VocabPicker が持つ。ここで要るのは件数だけ
+  // （3件に届くまで送信ボタンを押せなくするため）。
+  const [pickedCount, setPickedCount] = useState(0);
 
   const max = vocabulary.max_words;
   const min = vocabulary.min_words;
-  const full = selected.length >= max;
-  const enough = selected.length >= min;
-
-  const category = useMemo(
-    () => vocabulary.categories.find((c) => c.category_key === openCategory) ?? null,
-    [vocabulary, openCategory],
-  );
-
-  /** その分類ですでに何件選んでいるか */
-  function pickedIn(categoryKey: string) {
-    return selected.filter((s) => s.category.category_key === categoryKey).length;
-  }
-
-  const visibleTags = useMemo(() => {
-    if (!category) return [];
-    const word = keyword.trim();
-    if (word === "") return category.tags;
-    return category.tags.filter(
-      (t) => t.label.includes(word) || (t.reading ?? "").includes(word),
-    );
-  }, [category, keyword]);
-
-  function toggle(tag: VocabTag, cat: VocabCategory) {
-    setSelected((now) => {
-      if (now.some((s) => s.tag.id === tag.id)) {
-        return now.filter((s) => s.tag.id !== tag.id);
-      }
-      if (now.length >= max) return now;
-      if (now.filter((s) => s.category.category_key === cat.category_key).length >= cat.capacity) {
-        return now;
-      }
-      return [...now, { tag, category: cat }];
-    });
-  }
+  const enough = pickedCount >= min;
 
   function onPickFile(e: React.ChangeEvent<HTMLInputElement>) {
     const file = e.target.files?.[0] ?? null;
@@ -132,13 +83,6 @@ export function ImportForm({
 
   return (
     <form action={createArtFirstWorkAction} className={`${surface} space-y-8`}>
-      {/* 選んだ語は、この1つの欄でサーバーへ渡る。並びがそのままお題の並びになる */}
-      <input
-        type="hidden"
-        name="tagIds"
-        value={selected.map((s) => s.tag.id).join(",")}
-      />
-
       {/* --- 画像 ------------------------------------------------------------ */}
       <div className="space-y-3">
         <Label hint="JPEG / PNG / WebP・5MBまで。1投稿1画像です（仮定A5）">画像</Label>
@@ -166,123 +110,23 @@ export function ImportForm({
         ) : null}
       </div>
 
-      {/* --- 試したいこと（＝クイズの正解）------------------------------------ */}
-      <div className="space-y-4" data-testid="picker">
-        <Label
-          hint={`${min}〜${max}件。選んだ項目は、作品を見る人への問題になります`}
-        >
-          この絵で、どう見えるか試したいもの
-        </Label>
+      {/* --- 試したいこと（＝クイズの正解）------------------------------------
 
-        <div className="rounded-xl bg-sunken p-4 space-y-3">
-          <p className="text-sm font-bold" data-testid="picked-count">
-            選択中 {selected.length} / {max}
-          </p>
-
-          {selected.length === 0 ? (
-            <p className="text-xs text-faint">
-              まだ選んでいません。下の分類から {min} 件以上選んでください。
-            </p>
-          ) : (
-            <ul className="flex flex-wrap gap-2" data-testid="picked">
-              {selected.map((s) => (
-                <li key={s.tag.id}>
-                  <button
-                    type="button"
-                    onClick={() => toggle(s.tag, s.category)}
-                    className="rounded-lg border border-line-firm bg-surface px-3 py-1.5 text-xs hover:bg-hover"
-                    aria-label={`${s.category.label}の${s.tag.label}をやめる`}
-                  >
-                    <span className="text-faint">{s.category.label}</span>{" "}
-                    <span className="font-bold">{s.tag.label}</span>
-                    <span className="pl-2 text-faint">×</span>
-                  </button>
-                </li>
-              ))}
-            </ul>
-          )}
-
-          {!enough ? (
-            <p className="text-xs text-faint">
-              あと {min - selected.length} 件で投稿できます。
-            </p>
-          ) : null}
-        </div>
-
-        {vocabulary.categories.length === 0 ? (
-          <p className="text-xs text-danger">
-            いま選べる語を読み込めませんでした。時間をおいて開き直してください。
-          </p>
-        ) : (
-          <>
-            {/* 分類。337語を一度に並べない。まず分類、その中で探す */}
-            <div className="flex flex-wrap gap-2" data-testid="categories">
-              {vocabulary.categories.map((c) => {
-                const picked = pickedIn(c.category_key);
-                const on = c.category_key === openCategory;
-                return (
-                  <button
-                    key={c.category_key}
-                    type="button"
-                    onClick={() => {
-                      setOpenCategory(c.category_key);
-                      setKeyword("");
-                    }}
-                    className={`${btnToggle} ${on ? btnToggleOn : btnToggleOff} text-xs`}
-                  >
-                    <span className="text-faint">{kindLabel(c.kind)}</span> {c.label}
-                    {picked > 0 ? ` ${picked}/${c.capacity}` : ""}
-                  </button>
-                );
-              })}
-            </div>
-
-            {category ? (
-              <div className="space-y-3">
-                <input
-                  type="search"
-                  value={keyword}
-                  onChange={(e) => setKeyword(e.target.value)}
-                  placeholder={`${category.label}の中を探す（かなでも探せます）`}
-                  className={field}
-                  aria-label={`${category.label}の中を探す`}
-                />
-
-                <p className="text-xs text-faint">
-                  {category.label}は {category.capacity} 件まで選べます（いま{" "}
-                  {pickedIn(category.category_key)} 件）。
-                </p>
-
-                <ul className="flex flex-wrap gap-2" data-testid="words">
-                  {visibleTags.map((t) => {
-                    const picked = selected.some((s) => s.tag.id === t.id);
-                    const capacityFull =
-                      pickedIn(category.category_key) >= category.capacity;
-                    const disabled = !picked && (full || capacityFull);
-
-                    return (
-                      <li key={t.id}>
-                        <button
-                          type="button"
-                          disabled={disabled}
-                          onClick={() => toggle(t, category)}
-                          className={`${btnToggle} ${picked ? btnToggleOn : btnToggleOff} text-xs disabled:cursor-not-allowed disabled:opacity-40`}
-                        >
-                          {t.label}
-                        </button>
-                      </li>
-                    );
-                  })}
-                </ul>
-
-                {visibleTags.length === 0 ? (
-                  <p className="text-xs text-faint">見つかりませんでした。</p>
-                ) : null}
-              </div>
-            ) : null}
-          </>
-        )}
-      </div>
+          語を選ぶ操作そのものは、プロフィールの得意分野と同じ部品を使う
+          （features/vocab/picker.tsx）。**分類ごとの上限を見るのはこちらだけ。**
+          お題の枠に入れられる数が決まっているため。 */}
+      <VocabPicker
+        categories={vocabulary.categories}
+        max={max}
+        min={min}
+        name="tagIds"
+        useCategoryCapacity
+        onPickedChange={(picked: PickedTag[]) => setPickedCount(picked.length)}
+        heading="この絵で、どう見えるか試したいもの"
+        hint={`${min}〜${max}件。選んだ項目は、作品を見る人への問題になります`}
+        emptyHint={`まだ選んでいません。下の分類から ${min} 件以上選んでください。`}
+        shortfallHint={(remaining) => `あと ${remaining} 件で投稿できます。`}
+      />
 
       {/* --- タイトル -------------------------------------------------------- */}
       <div className="space-y-3">

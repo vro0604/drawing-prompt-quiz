@@ -10,6 +10,12 @@ import {
   fetchSavedWorks,
   fetchUserWorks,
 } from "@/features/profile/rpc";
+import { SPECIALTY_SECTIONS } from "@/features/profile/types";
+import {
+  AVATAR_DISPLAY_SIZE,
+  avatarInitial,
+  avatarUrl,
+} from "@/features/profile/avatar";
 import {
   PORTFOLIO_TABS,
   formatTotalTime,
@@ -360,9 +366,31 @@ export default async function ProfilePage({
     <main className="mx-auto w-full max-w-5xl space-y-8 p-6 sm:p-10">
       {/* --- 見出し ------------------------------------------------------------ */}
       <header className="space-y-3">
-        <div className="space-y-1">
-          <h1 className="text-2xl font-bold break-words">{profile.display_name}</h1>
-          <p className="text-sm text-faint">@{profile.handle}</p>
+        {/* アイコンと名前。**アイコンは原寸を出さない。**
+            next/image に大きさを渡し、縮めたものを配る（D176）。 */}
+        <div className="flex items-center gap-4">
+          {profile.avatar_path ? (
+            <Image
+              src={avatarUrl(profile.avatar_path)}
+              alt={`${profile.display_name} さんのプロフィールアイコン`}
+              width={AVATAR_DISPLAY_SIZE}
+              height={AVATAR_DISPLAY_SIZE}
+              className="size-20 shrink-0 rounded-full border border-line object-cover"
+              data-testid="profile-avatar"
+            />
+          ) : (
+            <span
+              aria-hidden="true"
+              className="flex size-20 shrink-0 items-center justify-center rounded-full border border-line bg-sunken text-2xl font-bold text-faint"
+              data-testid="profile-avatar-default"
+            >
+              {avatarInitial(profile.display_name)}
+            </span>
+          )}
+          <div className="space-y-1">
+            <h1 className="text-2xl font-bold break-words">{profile.display_name}</h1>
+            <p className="text-sm text-faint">@{profile.handle}</p>
+          </div>
         </div>
 
         {profile.bio ? (
@@ -370,6 +398,34 @@ export default async function ProfilePage({
             {profile.bio}
           </p>
         ) : null}
+
+        {/* 自己申告の得意分野（D176）。0件の側は見出しごと出さない
+            （出所: ユーザー指示 2026-09-08「得意分野が0件なら、そのセクションは
+            公開プロフィール上で非表示にしてよい」）。
+            **成績ではない。**実際の正答率とは別のものなので、
+            成績の欄（下の「描き手としての記録」）とは離して置く。 */}
+        {SPECIALTY_SECTIONS.map((section) => {
+          const items = profile.specialties[section.key];
+          if (items.length === 0) return null;
+          return (
+            <div key={section.key} className="space-y-1" data-testid={`specialty-${section.key}`}>
+              <p className="text-xs font-bold text-faint">{section.label}</p>
+              <ul className="flex flex-wrap gap-2">
+                {items.map((item) => (
+                  <li
+                    key={item.tag_id}
+                    className="rounded-lg border border-line bg-sunken px-3 py-1 text-xs"
+                  >
+                    {item.category_label ? (
+                      <span className="text-faint">{item.category_label} </span>
+                    ) : null}
+                    <span className="font-bold">{item.label}</span>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          );
+        })}
 
         {Object.keys(profile.links).length > 0 ? (
           <ul className="flex flex-wrap gap-4 text-sm">
