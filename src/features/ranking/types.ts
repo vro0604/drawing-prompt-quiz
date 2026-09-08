@@ -83,7 +83,14 @@ export type RankingItem = {
   source_character: string | null;
   fanart_note: string | null;
   actual_time_seconds: number | null;
-  time_limit_bucket: TimeBucket;
+  /**
+   * 制限時間の区分。
+   *
+   * **null がある。**既に描いてあった絵を持ち込んだ作品（art_first）は
+   * 制作時間という測定値を持たないので、区分を持たない
+   * （2026-09-08 のユーザー確定7・8）。「無制限」の枠には入れない。
+   */
+  time_limit_bucket: TimeBucket | null;
   /** 表示用の総数。作者本人のいいねも含む */
   likes_count: number;
   /** 順位に使う票数。作者本人のいいねを除いた数 */

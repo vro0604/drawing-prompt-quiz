@@ -19,6 +19,7 @@ import {
   type MyWork,
   type MyWorkResult,
   type WorkDetail,
+  type WorkOrigin,
 } from "@/features/work/types";
 import { AnswerResult, AuthorNotice, MyResult, QuizForm, SlotStats } from "./_quiz";
 import {
@@ -161,7 +162,17 @@ function WorkImage({
   );
 }
 
-/** 部門・時間・投稿日など、公開・非公開に関わらず同じ並びで出す */
+/**
+ * 部門・時間・投稿日など、公開・非公開に関わらず同じ並びで出す。
+ *
+ * 【持ち込みの作品に「お題の制作時間」を出さない】
+ *   既に描いてあった絵を持ち込んだ作品（origin が art_first）は、
+ *   制限時間を持たない。そのまま formatDuration に渡すと「無制限」と出るが、
+ *   **それは測った値ではない。**無制限の枠で描いた作品と区別がつかなくなる。
+ *   行そのものを出さない（2026-09-08 のユーザー確定7）。
+ *
+ *   出どころを画面に書くわけではない。書かないのは時間の行だけ。
+ */
 function MetaList({
   division,
   sourceTitle,
@@ -170,6 +181,7 @@ function MetaList({
   timeLimitSeconds,
   actualTimeSeconds,
   createdAt,
+  origin,
 }: {
   division: string;
   sourceTitle: string | null;
@@ -178,10 +190,13 @@ function MetaList({
   timeLimitSeconds: number | null;
   actualTimeSeconds: number | null;
   createdAt: string;
+  origin: WorkOrigin;
 }) {
   const rows: { label: string; value: string }[] = [
     { label: "部門", value: divisionLabel(division) },
-    { label: "お題の制作時間", value: formatDuration(timeLimitSeconds) },
+    ...(origin === "art_first"
+      ? []
+      : [{ label: "お題の制作時間", value: formatDuration(timeLimitSeconds) }]),
     { label: "実制作時間（自己申告）", value: formatActualTime(actualTimeSeconds) },
     { label: "投稿日", value: formatDateTime(createdAt) },
   ];
@@ -334,6 +349,7 @@ function PublicView({
         timeLimitSeconds={work.time_limit_seconds}
         actualTimeSeconds={work.actual_time_seconds}
         createdAt={work.created_at}
+        origin={work.origin}
       />
 
       <Reactions work={work} canReact={canReact} />
@@ -495,6 +511,7 @@ function OwnerOnlyView({ work }: { work: MyWork }) {
         timeLimitSeconds={work.time_limit_seconds}
         actualTimeSeconds={work.actual_time_seconds}
         createdAt={work.created_at}
+        origin={work.origin}
       />
 
       {/* 下書きでも、過去に公開していれば回答が付いている可能性がある */}

@@ -78,7 +78,12 @@ export default async function PromptPage({
         </p>
       </header>
 
-      {timer ? <TimerBox promptId={prompt.id} timer={timer} /> : null}
+      {/* 時計は「引いてから描く」挑戦のためのもの。
+          持ち込み（art_first）は投稿と同時に作られるお題なので、
+          出すと「かかった時間 0秒」になる。**測っていない値を出さない。** */}
+      {timer && prompt.origin !== "art_first" ? (
+        <TimerBox promptId={prompt.id} timer={timer} />
+      ) : null}
 
       {/* **番号付きの並びにしない。**D158 は「複数のモーフに主対象・副対象の
           区別を設けない」「モーフ同士の関係もサービス側では固定しない」と

@@ -120,9 +120,13 @@ function RankingRow({ item }: { item: RankingItem }) {
             {item.author_display_name}
             {item.author_handle ? `（@${item.author_handle}）` : ""}
           </p>
+          {/* 制限時間の区分は、持っている作品にだけ出す。
+              持ち込みの作品は測っていないので、ここに何も書かない
+              （「無制限」と書くと、測った値のように読める）。 */}
           <p className="text-xs text-faint">
-            {divisionLabel(item.division)}・{timeBucketLabel(item.time_limit_bucket)}・回答{" "}
-            {item.answers_count}・<LikeCounts item={item} />
+            {divisionLabel(item.division)}
+            {item.time_limit_bucket ? `・${timeBucketLabel(item.time_limit_bucket)}` : ""}
+            ・回答 {item.answers_count}・<LikeCounts item={item} />
           </p>
         </div>
       </Link>

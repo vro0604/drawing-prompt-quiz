@@ -77,7 +77,14 @@ export default function Home() {
         </p>
       </header>
 
-      {/* --- 次の一手。ゲストのままできることを先に置く --------------------- */}
+      {/* --- 次の一手。ゲストのままできることを先に置く ---------------------
+
+          【入口は2つある】
+            「お題を引く」… 引いたお題を、これから描く
+            「描いた絵で試す」… もう描いてある絵が、どう見えるかを試す
+          どちらも同じサービスの中の作成経路で、投稿してからの流れは同じ。
+          持ち込みは投稿にアカウントが要るので、ゲストのまま始められる
+          「お題を引く」を先に置いている。 */}
       <div className="flex flex-col gap-3 sm:flex-row">
         {/* この2つは行き先が動的ページで、開くまでに間がある。
             押した反応が出ないと「効いていない」と読まれて二度押しになるので、
@@ -90,6 +97,13 @@ export default function Home() {
           お題を引く
         </NavButton>
         <NavButton
+          href="/works/import"
+          pendingLabel="読み込み中…"
+          className={`${btnSecondary} flex-1`}
+        >
+          描いた絵で試す
+        </NavButton>
+        <NavButton
           href="/works"
           pendingLabel="読み込み中…"
           className={`${btnSecondary} flex-1`}
@@ -97,6 +111,11 @@ export default function Home() {
           みんなの作品を見る
         </NavButton>
       </div>
+
+      <p className="text-xs text-faint">
+        「描いた絵で試す」は、お題を引かずに手元の絵を出す入口です。
+        絵で伝えたかったことを自分で選ぶと、見た人がそれを絵から当てます。
+      </p>
 
       {/* --- 遊びかた --------------------------------------------------------- */}
       <section className="space-y-4">

@@ -207,6 +207,87 @@ export async function answerWork(
   });
 }
 
+/**
+ * いま生成に使われている分類から、語を n 件取り出す（試験の準備）。
+ *
+ * 旧語彙（生成用カテゴリを持たない motif / species / genre）は返さない。
+ * 持ち込みの投稿で選べるのと同じ範囲になる。
+ */
+export async function pickTags(db, categoryKey, n) {
+  const { rows } = await db.query(
+    `select t.id, t.label, t.pool_key
+       from public.tags t
+       join public.draw_categories dc on dc.pool_key = t.pool_key and dc.is_active
+      where t.is_active and dc.category_key = $1
+      order by t.id
+      limit $2`,
+    [categoryKey, n],
+  );
+
+  if (rows.length !== n) {
+    throw new Error(
+      `準備に使う語が足りません: 分類 ${categoryKey} に ${rows.length} 件（${n} 件必要）`,
+    );
+  }
+
+  return rows.map((r) => ({ ...r, id: Number(r.id) }));
+}
+
+/** 旧語彙（生成用カテゴリを持たない語）を1件取り出す（断られることの確認用） */
+export async function pickLegacyTag(db) {
+  const { rows } = await db.query(
+    `select t.id from public.tags t
+      where t.is_active
+        and not exists (select 1 from public.draw_categories dc
+                         where dc.pool_key = t.pool_key and dc.is_active)
+      order by t.id limit 1`,
+  );
+  if (rows.length === 0) throw new Error("旧語彙が1件も見つかりません（準備の失敗）");
+  return Number(rows[0].id);
+}
+
+/**
+ * 持ち込み（art_first）の作品を1件投稿する。
+ *
+ * お題を引かない。作者が選んだ語を渡すと、DB 側が お題相当の行・答えのカード・
+ * 出題・作品までを1回で作る。画像の実体は無いので、規約どおりのパスだけ渡す。
+ */
+export async function postArtFirstWork(
+  db,
+  uid,
+  tagIds,
+  {
+    division = "original",
+    title = "持ち込みの作品",
+    published = true,
+    workId = null,
+    imagePath = null,
+    guest = false,
+  } = {},
+) {
+  const who = guest ? asGuest(uid) : asMember(uid);
+  const id = workId ?? (await value(db, who, `select gen_random_uuid()`));
+  const sourceTitle = division === "fanart" ? "検査用の原作" : null;
+
+  const result = await value(
+    db,
+    who,
+    `select public.create_art_first_work(
+       $1, $2, $3, $4, 800, 600, $5, $6, null, null, null, $7)`,
+    [
+      id,
+      tagIds,
+      title,
+      imagePath ?? `${uid}/${id}.png`,
+      division,
+      sourceTitle,
+      published,
+    ],
+  );
+
+  return { workId: id, ...result };
+}
+
 /** その作品のお題の語を、正解ごと直接読む（試験の準備。アプリの経路ではない） */
 export async function promptTags(db, promptId) {
   const { rows } = await db.query(

@@ -152,6 +152,19 @@ export type PublicWorkListItem = {
 };
 
 /**
+ * お題の出どころ（prompts.origin）。
+ *
+ *   draft     … ランダムに引いたお題
+ *   saved     … 持ち出した要素を含むお題
+ *   daily     … 毎日のお題（値は許してあるが、作る経路はまだ無い）
+ *   art_first … 既にある絵を持ち込み、作者が正式なクイズ項目を選んだもの
+ *
+ * **画面にこの値を出さない。**持ち込みであることを一覧や作品ページに
+ * 明示するかどうかは未確定なので、いまは時間の表示を分けるためだけに使う。
+ */
+export type WorkOrigin = "draft" | "saved" | "daily" | "art_first";
+
+/**
  * 枠ごとの伝達率（get_work_detail / get_my_work の slot_stats）。
  *
  * **ビタ当てと2択当てを1つの割合にまとめない**（D165 の 4 / 11-2）。
@@ -195,6 +208,12 @@ export type WorkDetail = {
   actual_time_seconds: number | null;
   time_limit_seconds: number | null;
   mode_key: string;
+  /**
+   * お題の出どころ。'art_first' は既に描いてあった絵を持ち込んだ作品で、
+   * **制作時間という測定値を持たない**（2026-09-08 のユーザー確定7）。
+   * 画面はこの値で時間の表示を出し分ける。値そのものは表示しない。
+   */
+  origin: WorkOrigin;
   was_rerolled: boolean;
   likes_count: number;
   saves_count: number;
@@ -227,6 +246,8 @@ export type MyWork = {
   actual_time_seconds: number | null;
   time_limit_seconds: number | null;
   mode_key: string;
+  /** お題の出どころ。WorkDetail の同名と同じ意味 */
+  origin: WorkOrigin;
   is_published: boolean;
   review_status: "ok" | "flagged" | "hidden";
   deleted_at: string | null;

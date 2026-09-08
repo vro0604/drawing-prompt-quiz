@@ -173,6 +173,14 @@ export type PromptDetail = {
   id: string;
   mode_key: string;
   mode_label: string;
+  /**
+   * お題の出どころ（prompts.origin）。
+   *
+   * 'art_first' は、既に描いてあった絵を持ち込んだときに作られたお題。
+   * **制作時間を測っていない**ので、この画面は時計を出さない
+   * （2026-09-08 のユーザー確定7）。
+   */
+  origin: "draft" | "saved" | "daily" | "art_first";
   time_limit_seconds: number | null;
   was_rerolled: boolean;
   reroll_count: number;

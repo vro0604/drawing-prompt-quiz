@@ -550,11 +550,13 @@ export const checks = [
   },
   {
     group: "構造",
-    // 2 → 4。normal / hard を足す。easy / standard は**行を消さず**
-    // is_active=false にするだけなので、合計は4になる。
-    // 期待値の出どころ: 40本を当てた手元のDBの実測と docs/prod-audit-2026-09-06.md 3-1。
-    name: "マスタ行数 draft_modes=4",
-    expected: 4,
+    // 2 → 4 → 5。normal / hard を足し、2026-09-08 に art_first を足した。
+    // easy / standard は**行を消さず** is_active=false にするだけ。
+    // art_first も is_active=false（お題を引く画面には出さない）ので、
+    // 画面に出るモードは normal / hard の2つのままで、行数だけが5になる。
+    // 期待値の出どころ: 41本を当てた手元のDBの実測。
+    name: "マスタ行数 draft_modes=5",
+    expected: 5,
     sql: `select count(*)::int from public.draft_modes`,
   },
   {
@@ -2049,10 +2051,11 @@ export const checks = [
   },
   {
     group: "漏洩",
-    name: "お題に触れて外から呼べる関数が、想定した8本だけ",
+    name: "お題に触れて外から呼べる関数が、想定した9本だけ",
     // 上の検査と対で見る。上は「呼び出した人を見ているか」、
     // こちらは「顔ぶれが勝手に増えていないか」。
     //   complete_draft        書く（本人のドラフトから）
+    //   create_art_first_work 書く（本人が選んだ語から。2026-09-08 に追加）
     //   get_my_prompt         本人のお題
     //   get_my_answer         回答済み本人へ正解を返す
     //   get_saved_works       回答済みの作品にだけお題を添える
@@ -2060,7 +2063,10 @@ export const checks = [
     //   save_prompt_elements  回答済み本人が要素を持ち出す（D161）
     //   get_flavor_vocab      作者が自作の文章に使える語を絞る（D162）
     //   post_flavor_reply     返歌に置ける語がそのお題のものか見る（D162）
-    expected: 8,
+    //
+    // **9本目は「答えを外へ出す」側ではない。**書き込みで、返り値に
+    // prompt_cards の中身も prompt_id も含めない（上の2つの漏洩検査が見ている）。
+    expected: 9,
     sql: `select count(*)::int from pg_proc p
             join pg_namespace n on n.oid = p.pronamespace
            where n.nspname = 'public'
@@ -2215,7 +2221,7 @@ export const diagnostics = [
     label: "答えの枚数がモードの枠数と合わないお題（枠が固定のモード）",
     sql: `select p.id from public.prompts p
             join public.draft_modes dm on dm.mode_key = p.mode_key
-           where dm.uses_two_stage = false
+           where dm.word_source = 'fixed_slots'
              and (select count(*) from public.prompt_cards pc where pc.prompt_id = p.id)
               <> (select count(*) from public.draft_mode_slots dms
                    where dms.mode_key = p.mode_key)`,
@@ -2227,10 +2233,58 @@ export const diagnostics = [
     label: "答えの枚数がモードの範囲から外れたお題（2段抽選のモード）",
     sql: `select p.id from public.prompts p
             join public.draft_modes dm on dm.mode_key = p.mode_key
-           where dm.uses_two_stage
+           where dm.word_source = 'two_stage_draw'
              and (select count(*) from public.prompt_cards pc where pc.prompt_id = p.id)
                  not between coalesce(dm.word_count_min, 1)
                          and coalesce(dm.word_count_max, 99)`,
+  },
+  {
+    // 【2026-09-08 に足した。**3本目の経路を明示する。**】
+    //   art_first は抽選をしない。作者が現行語彙から直接選ぶ。
+    //   uses_two_stage を true にして A4b へ潜り込ませる形は採らない
+    //   （出所: ユーザー確定3「検査を通すためだけにデータへ事実と異なる
+    //   意味を記録してはならない」）。経路は draft_modes.word_source が持つ。
+    //
+    //   ここで見るのは語数の幅だけ（3〜6）。**上の2本と条件が重ならない**ので、
+    //   既存モードの検査は1文字も弱まっていない。
+    id: "A4c",
+    label: "答えの枚数がモードの範囲から外れたお題（作者が選ぶモード）",
+    sql: `select p.id from public.prompts p
+            join public.draft_modes dm on dm.mode_key = p.mode_key
+           where dm.word_source = 'author_pick'
+             and (select count(*) from public.prompt_cards pc where pc.prompt_id = p.id)
+                 not between coalesce(dm.word_count_min, 1)
+                         and coalesce(dm.word_count_max, 99)`,
+  },
+  {
+    // 出どころ（origin）とモード（word_source）は別の列なので、
+    // 片方だけ書き換えると食い違う。**両方向を見る。**
+    //   ・art_first なのに作者選択のモードでない
+    //   ・作者選択のモードなのに art_first でない
+    id: "A4d",
+    label: "出どころとモードが食い違うお題",
+    sql: `select p.id from public.prompts p
+            join public.draft_modes dm on dm.mode_key = p.mode_key
+           where (p.origin = 'art_first') <> (dm.word_source = 'author_pick')`,
+  },
+  {
+    // 持ち込みはドラフトを通らない。draft_session_id が入っていたら、
+    // どこかで別の経路と混ざっている。
+    id: "A4e",
+    label: "持ち込みなのにドラフトに紐づいているお題",
+    sql: `select p.id from public.prompts p
+           where p.origin = 'art_first'
+             and p.draft_session_id is not null`,
+  },
+  {
+    // 全語出題（D165）。持ち込みでも、選んだ項目は全部クイズになる。
+    // 出所: ユーザー確定15「全選択項目にクイズが生成されている」。
+    id: "A4f",
+    label: "問数が語数と合わない持ち込みのお題",
+    sql: `select p.id from public.prompts p
+           where p.origin = 'art_first'
+             and (select count(*) from public.quiz_questions q where q.prompt_id = p.id)
+              <> (select count(*) from public.prompt_cards pc where pc.prompt_id = p.id)`,
   },
   {
     id: "A5",
@@ -2538,9 +2592,10 @@ export const diagnostics = [
     id: "A34",
     // origin は CHECK で固定してあるので、知らない値は入らないはず。
     // **CHECK が外れたことに気づくための検査**であって、値の検査ではない。
-    label: "お題の出どころに、決めた3つ以外の値が入っている",
+    // 2026-09-08 に art_first を足したので4つになった。
+    label: "お題の出どころに、決めた4つ以外の値が入っている",
     sql: `select p.id::text from public.prompts p
-           where p.origin not in ('draft', 'saved', 'daily')`,
+           where p.origin not in ('draft', 'saved', 'daily', 'art_first')`,
   },
   {
     id: "A35",

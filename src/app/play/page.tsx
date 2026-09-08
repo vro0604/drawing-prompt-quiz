@@ -5,6 +5,7 @@ import { fetchSavedElements } from "@/features/carry/rpc";
 import { EMPTY_SAVED, type SavedElements } from "@/features/carry/types";
 import type { DraftState } from "@/features/draft/types";
 import { DraftBoard, ErrorBox, StartForm } from "./_components";
+import { surface } from "@/app/_surface";
 
 /**
  * /play ／ お題を引く画面。
@@ -80,6 +81,22 @@ export default async function PlayPage({
       ) : (
         <StartForm modes={modes} saved={savedElements} signedIn={user !== null} />
       )}
+
+      {/* もう描いてある絵を出したい人の行き先。**お題を引く操作の下に置く。**
+          この画面はお題を引くための画面なので、入口を上に置くと
+          引く操作より先に目に入る。 */}
+      <section className={`${surface} space-y-2`}>
+        <h2 className="text-sm font-bold">もう描いてある絵で試すこともできます</h2>
+        <p className="text-sm text-muted">
+          お題を引かずに、手元の絵を出せます。その絵で伝えたかったことを自分で選ぶと、
+          見た人が絵だけを見てそれを当てます。
+        </p>
+        <p className="text-sm">
+          <Link href="/works/import" className="underline">
+            描いた絵で試す
+          </Link>
+        </p>
+      </section>
 
       <footer className="border-t border-ink/10 pt-6 text-xs text-faint">
         {user ? (

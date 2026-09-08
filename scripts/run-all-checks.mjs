@@ -110,9 +110,9 @@ const STEPS = [
   { key: "typescript", name: "TypeScript", cmd: "npm", args: ["run", "typecheck"] },
   { key: "eslint", name: "ESLint", cmd: "npx", args: ["eslint"] },
   { key: "contrast", name: "配色（contrast）", cmd: "npm", args: ["run", "check:contrast"] },
-  // build だけは、この一括の側で札を取る。
-  // `npm run build` は Vercel でも走るので、npm scripts には包みを付けない
-  // （あちらに同時に走る相手が居ないため）。
+  // build はこの一括の側で札を取り、**子には「取ってある」と伝える**
+  // （2026-09-08）。npm scripts の build も自分で札を取るようになったので、
+  // 伝えないと自分が持っている札を自分で待つことになる。
   { key: "build", name: "build", cmd: "npm", args: ["run", "build"], holdLock: true },
   // **記録の自己試験を、本番のブラウザ試験より先に置く。**
   // わざと1件落とす回なので、あとに置くと .test-logs の「最新」が
@@ -156,7 +156,10 @@ function run(step) {
   return new Promise((resolve) => {
     const child = spawn(step.cmd, step.args, {
       stdio: ["ignore", "pipe", "pipe"],
-      env: CHILD_ENV,
+      // 札を持ったまま起動する工程では、子に「もう取ってある」と伝える。
+      // 伝えないと、子（npm run build → scripts/heavy.mjs）が
+      // 同じ札を取りに行き、親が持っている札を待ち続ける。
+      env: step.holdLock ? { ...CHILD_ENV, DPQ_HEAVY_LOCK: "held" } : CHILD_ENV,
     });
     const out = [];
     child.stdout.on("data", (d) => out.push(d.toString()));

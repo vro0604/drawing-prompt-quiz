@@ -56,6 +56,7 @@ export function SubmitButton({
   value,
   title,
   data,
+  disabled = false,
 }: {
   children: React.ReactNode;
   pendingLabel: string;
@@ -63,6 +64,14 @@ export function SubmitButton({
   name?: string;
   value?: string;
   title?: string;
+  /**
+   * 押せない理由が送信中以外にもあるとき（入力が足りない等）に立てる。
+   *
+   * **押せなくすることは守りではない。**同じ判定は必ず受け口（RPC）が持つ。
+   * ここで止めるのは、送っても断られると分かっている操作を
+   * 押させないため。
+   */
+  disabled?: boolean;
   /**
    * 検査の手がかり。`{ "data-card": "hidden" }` のように渡す。
    *
@@ -87,7 +96,8 @@ export function SubmitButton({
       {...data}
       // 送信中は押せない。失敗して画面が戻れば、部品が作り直されるので
       // pending は false に戻り、もう一度押せるようになる。
-      disabled={pending}
+      // disabled は呼び出し側の理由（入力が足りない等）。どちらでも押せない。
+      disabled={pending || disabled}
       aria-busy={pending}
       className={[
         className,

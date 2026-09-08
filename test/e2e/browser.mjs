@@ -25,7 +25,7 @@ import { startApp, warmupRoutes } from "./server.mjs";
 import { acquireHeavyLock } from "./exclusive.mjs";
 import { createRecorder } from "./record.mjs";
 import { recordCount } from "../counts.mjs";
-import { answerWork, makeMember, rewindChallenge } from "../db/helpers.mjs";
+import { answerWork, makeMember, pickTags, rewindChallenge } from "../db/helpers.mjs";
 
 // **最初のネットワーク要求より前に柵を立てる。**
 // 本番のURL・project ref・ホスト名・鍵が環境にあれば、ここで異常終了する。
@@ -80,8 +80,36 @@ function seeNow() {
   return { stage: currentAction, urls };
 }
 
+/**
+ * 一部の試験だけを流す仕掛け（切り分け用。2026-09-08）。
+ *
+ * 【何のためにあるか】
+ *   全部を一度に流すと、落ちた試験が「その試験の問題」なのか
+ *   「前の試験が作った状態の問題」なのか区別できない。
+ *   E2E_ONLY に群の記号（C など）や試験名の一部を渡すと、
+ *   合うものだけを流す。**既定（未設定）ではこれまでどおり全部流す。**
+ *
+ * 【流さなかったものは、合格にも不合格にも数えない】
+ *   飛ばした数だけを最後に出す。飛ばしたものを「通った」と読ませないため。
+ */
+const ONLY = (process.env.E2E_ONLY ?? "")
+  .split(",")
+  .map((x) => x.trim())
+  .filter(Boolean);
+
+const skippedTests = [];
+
+function shouldRun(group, name) {
+  if (ONLY.length === 0) return true;
+  return ONLY.some((token) => token === group || `${group}/${name}`.includes(token));
+}
+
 /** 記録係を通す。呼び方は今までと同じ */
 async function test(group, name, fn) {
+  if (!shouldRun(group, name)) {
+    skippedTests.push(`${group}/${name}`);
+    return;
+  }
   currentAction = `${group} / ${name}: 開始`;
   return recorder.test(group, name, fn);
 }
@@ -2431,6 +2459,118 @@ async function main() {
   });
 
   /* =====================================================================
+   * S. 持ち込み（art_first）。描いた絵を出して、どう見えるか試す入口
+   *
+   * 【DB の試験と分けている理由】
+   *   語の検査も出題も、DB の試験（test/db/run.mjs の R 群）が見ている。
+   *   ここで見るのは画面だけ。**選べるか・数が動くか・押せなくなるか・
+   *   測っていない時間が出ていないか。**
+   * ===================================================================== */
+
+  /** 持ち込みの作品を1件、受け口から直に作る（画面では画像が要るため） */
+  async function createArtFirstWork(uid, categories) {
+    const { asRole } = await import("../db/harness.mjs");
+    const ids = [];
+    for (const [category, n] of categories) {
+      for (const t of await pickTags(db, category, n)) ids.push(t.id);
+    }
+
+    const workId = (await db.query(`select gen_random_uuid() as id`)).rows[0].id;
+    await asRole(db, { role: "authenticated", uid, isAnonymous: false }, async (c) => {
+      await c.query(
+        `select public.create_art_first_work(
+           $1, $2, '持ち込みの検証用', $3, 800, 600, 'original')`,
+        [workId, ids, `${uid}/${workId}.png`],
+      );
+    });
+    return workId;
+  }
+
+  await test("S", "持ち込みの入口が出ていて、開ける", async (t) => {
+    t.stage("トップから入口を押す");
+    await m.goto(`${base}/`);
+    await clickSafely(m.getByRole("link", { name: "描いた絵で試す" }).first());
+    await m.waitForURL("**/works/import");
+    await assertBody(m, /この絵で、どう見えるか試したいもの/, "語を選ぶ欄が出ていない");
+  });
+
+  await test("S", "語を選ぶと数が動き、3件そろうまで投稿できない", async (t) => {
+    t.stage("投稿の画面を開く");
+    await m.goto(`${base}/works/import`);
+    await m.waitForSelector("[data-testid=picker]", { timeout: 20000 });
+
+    const count = m.locator("[data-testid=picked-count]");
+    const submit = m.getByRole("button", { name: "公開して投稿する" });
+
+    assert(
+      (await count.innerText()).includes("選択中 0"),
+      `最初から選ばれている: ${await count.innerText()}`,
+    );
+    assert(await submit.isDisabled(), "1件も選んでいないのに投稿ボタンが押せる");
+
+    t.stage("同じ分類から3語選ぶ");
+    // **語の一覧だけを見る。**選んだ語の並び（picked）も同じ ul なので、
+    // 区別せずに first() を押すと、いま選んだものをすぐ外してしまう
+    const words = m.locator("[data-testid=words] li button:not([disabled])");
+    for (let i = 0; i < 3; i += 1) {
+      await clickSafely(words.nth(i));
+    }
+
+    const text = await count.innerText();
+    assert(text.includes("選択中 3"), `選んだ数が出ていない: ${text}`);
+    assert(!(await submit.isDisabled()), "3件そろったのに投稿ボタンが押せないまま");
+
+    t.stage("選び直せる");
+    await clickSafely(m.locator("[data-testid=picked] li button").first());
+    assert(
+      (await count.innerText()).includes("選択中 2"),
+      `選び直しても数が減らない: ${await count.innerText()}`,
+    );
+    assert(await submit.isDisabled(), "2件に減ったのに投稿ボタンが押せる");
+  });
+
+  await test("S", "カラーは1件で打ち止め。2件目は押せない", async (t) => {
+    t.stage("投稿の画面を開く");
+    await m.goto(`${base}/works/import`);
+    await m.waitForSelector("[data-testid=picker]", { timeout: 20000 });
+
+    t.stage("カラーの分類へ移る");
+    await clickSafely(
+      m.locator("[data-testid=categories] button", { hasText: "カラー" }).first(),
+    );
+
+    const words = m.locator("[data-testid=words] li button");
+    await words.first().waitFor({ state: "visible", timeout: 10000 });
+    await clickSafely(words.first());
+
+    const disabled = await m.locator("[data-testid=words] li button[disabled]").count();
+    assert(disabled > 0, "カラーを1件選んでも、2件目が押せるままになっている");
+  });
+
+  await test("S", "持ち込みの作品に「お題の制作時間」を出さない", async (t) => {
+    t.stage("持ち込みの作品を1件作る");
+    const workId = await createArtFirstWork(seeded.author, [
+      ["morph", 1],
+      ["emotion", 1],
+      ["color", 1],
+    ]);
+
+    t.stage("その作品ページを開く");
+    await m.goto(`${base}/works/${workId}`);
+    const body = await settledBody(m);
+    assert(
+      !/お題の制作時間/.test(body),
+      "測っていない制作時間が出ている（持ち込みの作品）",
+    );
+    assert(!/無制限/.test(body), "持ち込みの作品が「無制限」と表示されている");
+
+    t.stage("お題から描いた作品では、これまでどおり出る");
+    await m.goto(`${base}/works/${seeded.works[0].workId}`);
+    const normal = await settledBody(m);
+    assert(/お題の制作時間/.test(normal), "通常の作品から制作時間が消えた");
+  });
+
+  /* =====================================================================
    * !. 記録の自己試験（E2E_FORCE_FAIL=1 のときだけ動く）
    *
    * **失敗したときに、試験名と原因が記録に残るか**を、本物の失敗で確かめる。
@@ -2540,10 +2680,16 @@ if (failed.length > 0) {
 }
 
 console.log(
-  `\n合計 ${payload.total} 件 / 合格 ${payload.passed} 件 / 不合格 ${payload.failed} 件`,
+  `\n合計 ${payload.total} 件 / 合格 ${payload.passed} 件 / 不合格 ${payload.failed} 件`
+    + (skippedTests.length > 0
+        ? ` / 流さなかった ${skippedTests.length} 件（E2E_ONLY=${process.env.E2E_ONLY}）`
+        : ""),
 );
 
 // 文書に書いた件数と突き合わせられるように、実測を残す。
-// **わざと落とす回（E2E_FORCE_FAIL）は数えない。**1件多くなるため
-if (process.env.E2E_FORCE_FAIL !== "1") recordCount("ブラウザ試験", payload.total);
+// **わざと落とす回（E2E_FORCE_FAIL）は数えない。**1件多くなるため。
+// **一部だけ流した回（E2E_ONLY）も数えない。**総数が本当の総数ではないため
+if (process.env.E2E_FORCE_FAIL !== "1" && skippedTests.length === 0) {
+  recordCount("ブラウザ試験", payload.total);
+}
 process.exit(failed.length === 0 ? 0 : 1);

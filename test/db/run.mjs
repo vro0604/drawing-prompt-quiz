@@ -11,6 +11,8 @@
  *   E. フレーバー       正解漏洩の防止・ヒント使用別の集計・返歌
  *   F. 漏洩             回答していない人に正解が渡らないこと
  *   G. 回帰             旧方式のお題・既存の集計・既存の取得系
+ *   R. 持ち込み         既存絵から作るお題（art_first）。語の検査・出題・回答・
+ *                       一覧・救済・ランキング・時間の扱い
  *
  * 【この試験が届かないところ】
  *   ・画面（HTML）の見た目と操作。ここは DB と RPC だけを通す
@@ -43,6 +45,9 @@ import {
   saveCarrySlot,
   shiftDeadline,
   value,
+  pickLegacyTag,
+  pickTags,
+  postArtFirstWork,
 } from "./helpers.mjs";
 
 const results = [];
@@ -1688,6 +1693,9 @@ async function main() {
     const callable = rows.filter((r) => r.callable).map((r) => r.proname).sort();
     const expected = [
       "complete_draft",
+      // 2026-09-08 に足した。持ち込みの投稿（作者が選んだ語から お題を作る）。
+      // 書き込み側で、返り値に答えも prompt_id も含めない。
+      "create_art_first_work",
       "get_answered_prompt",
       "get_flavor_vocab",
       "get_my_answer",
@@ -3631,6 +3639,328 @@ async function main() {
                  from (select public.reveal_card($1, $2, 0)) as r`,
         [st.session_id, slot.card_slot_key]));
   });
+
+  /* ---------------------------------------------------------------------
+   * R. 持ち込み（art_first）。既に描いてある絵を持ち込み、
+   *    作者が正式なクイズ項目を選ぶ経路（2026-09-08 のユーザー確定）
+   * ------------------------------------------------------------------- */
+
+  /** 分類を並べて、そのぶんの語のIDを1本の配列にする */
+  async function pickIds(spec) {
+    const ids = [];
+    for (const [category, n] of spec) {
+      for (const t of await pickTags(db, category, n)) ids.push(t.id);
+    }
+    return ids;
+  }
+
+  await test("R", "3語で作れる。出どころ・枠・問数・時間がそろう", async () => {
+    const u = await makeMember(db, "af-basic");
+    const ids = await pickIds([["morph", 1], ["emotion", 1], ["color", 1]]);
+    const { workId, question_count } = await postArtFirstWork(db, u, ids);
+
+    assert(question_count === 3, `問数が ${question_count}（3のはず）`);
+
+    const row = (await db.query(
+      `select p.origin, p.draft_session_id, p.time_limit_seconds, p.deadline_at,
+              p.status, p.mode_key,
+              (select count(*)::int from public.prompt_cards pc
+                where pc.prompt_id = p.id) as cards,
+              (select count(*)::int from public.quiz_questions q
+                where q.prompt_id = p.id) as questions
+         from public.works w join public.prompts p on p.id = w.prompt_id
+        where w.id = $1`,
+      [workId],
+    )).rows[0];
+
+    assert(row.origin === "art_first", `出どころが ${row.origin}`);
+    assert(row.mode_key === "art_first", `モードが ${row.mode_key}`);
+    assert(row.draft_session_id === null, "ドラフトに紐づいている");
+    assert(row.time_limit_seconds === null, "制限時間が入っている");
+    assert(row.deadline_at === null, "期限が入っている");
+    assert(row.status === "submitted", `状態が ${row.status}（submitted のはず）`);
+    assert(row.cards === 3, `答えのカードが ${row.cards} 枚`);
+    assert(row.questions === 3, `出題が ${row.questions} 問`);
+  });
+
+  await test("R", "選んだ語が、選んだ順にそのまま入る", async () => {
+    const u = await makeMember(db, "af-order");
+    const picked = [
+      ...(await pickTags(db, "morph", 1)),
+      ...(await pickTags(db, "action", 1)),
+      ...(await pickTags(db, "color", 1)),
+    ];
+    const { workId } = await postArtFirstWork(db, u, picked.map((t) => t.id));
+
+    const promptId = (await db.query(
+      `select prompt_id from public.works where id = $1`, [workId])).rows[0].prompt_id;
+    const cards = await promptTags(db, promptId);
+
+    assert(cards.length === picked.length, `カードが ${cards.length} 枚`);
+    for (let i = 0; i < picked.length; i += 1) {
+      assert(
+        cards[i].tag_id === picked[i].id,
+        `${i + 1}枚目が「${cards[i].label}」（「${picked[i].label}」のはず）`,
+      );
+    }
+  });
+
+  await test("R", "4語・5語・6語。語の数がそのまま問の数になる", async () => {
+    for (const n of [4, 5, 6]) {
+      const u = await makeMember(db, `af-count-${n}`);
+      const spec = [["morph", 1], ["emotion", 1], ["action", 1], ["color", 1],
+                    ["environment", 1], ["property", 1]].slice(0, n);
+      const { question_count } = await postArtFirstWork(db, u, await pickIds(spec));
+      assert(question_count === n, `${n}語で ${question_count} 問になった`);
+    }
+  });
+
+  await test("R", "モーフが0件でも作れる（抽選の必須条件を持ち込まない）", async () => {
+    const u = await makeMember(db, "af-nomorph");
+    const ids = await pickIds([["emotion", 1], ["color", 1], ["environment", 1]]);
+    const { workId, question_count } = await postArtFirstWork(db, u, ids);
+
+    assert(question_count === 3, `問数が ${question_count}`);
+
+    const morphs = (await db.query(
+      `select count(*)::int as n
+         from public.works w
+         join public.prompt_cards pc on pc.prompt_id = w.prompt_id
+         join public.tags t on t.id = pc.tag_id
+        where w.id = $1 and t.pool_key = 'morph'`,
+      [workId],
+    )).rows[0].n;
+
+    assert(morphs === 0, `モーフが ${morphs} 件入っている（0のはず）`);
+  });
+
+  await test("R", "同じ分類の2語は、1つ目と2つ目の枠へ分かれて入る", async () => {
+    const u = await makeMember(db, "af-samecat");
+    const ids = await pickIds([["morph", 2], ["color", 1]]);
+    const { workId } = await postArtFirstWork(db, u, ids);
+
+    const keys = (await db.query(
+      `select pc.card_slot_key as k
+         from public.works w join public.prompt_cards pc on pc.prompt_id = w.prompt_id
+        where w.id = $1 order by pc.slot_order`,
+      [workId],
+    )).rows.map((r) => r.k);
+
+    assert(keys.includes("morph_1") && keys.includes("morph_2"),
+      `枠が ${keys.join(" / ")}（morph_1 と morph_2 のはず）`);
+  });
+
+  await test("R", "カラーは1件まで。枠の数を超えると断る", async () => {
+    const u = await makeMember(db, "af-color2");
+    const ids = await pickIds([["morph", 1], ["color", 2]]);
+    await expectFailure(
+      () => postArtFirstWork(db, u, ids),
+      "CATEGORY_OVER_CAPACITY",
+    );
+  });
+
+  await test("R", "2語と7語は断る（3〜6語）", async () => {
+    const u = await makeMember(db, "af-range");
+    const two = await pickIds([["morph", 1], ["color", 1]]);
+    const seven = await pickIds([
+      ["morph", 2], ["emotion", 1], ["action", 1], ["color", 1],
+      ["environment", 1], ["property", 1],
+    ]);
+
+    await expectFailure(() => postArtFirstWork(db, u, two), "BAD_ELEMENT_COUNT");
+    await expectFailure(() => postArtFirstWork(db, u, seven), "BAD_ELEMENT_COUNT");
+  });
+
+  await test("R", "同じ語を2回は断る", async () => {
+    const u = await makeMember(db, "af-dup");
+    const [m] = await pickTags(db, "morph", 1);
+    const [c] = await pickTags(db, "color", 1);
+    await expectFailure(
+      () => postArtFirstWork(db, u, [m.id, m.id, c.id]),
+      "DUPLICATE_ELEMENT",
+    );
+  });
+
+  await test("R", "無い語のIDは断る", async () => {
+    const u = await makeMember(db, "af-badid");
+    const ids = await pickIds([["morph", 1], ["emotion", 1]]);
+    await expectFailure(
+      () => postArtFirstWork(db, u, [...ids, 999999999]),
+      "ELEMENT_NOT_FOUND",
+    );
+  });
+
+  await test("R", "旧語彙（生成分類を持たない語）は選べない", async () => {
+    const u = await makeMember(db, "af-legacy");
+    const ids = await pickIds([["morph", 1], ["emotion", 1]]);
+    const legacy = await pickLegacyTag(db);
+    await expectFailure(
+      () => postArtFirstWork(db, u, [...ids, legacy]),
+      "ELEMENT_NOT_FOUND",
+    );
+  });
+
+  await test("R", "ゲストは持ち込みでも投稿できない", async () => {
+    const g = await makeGuest(db);
+    const ids = await pickIds([["morph", 1], ["emotion", 1], ["color", 1]]);
+    await expectFailure(
+      () => postArtFirstWork(db, g, ids, { guest: true }),
+      "GUEST_CANNOT_POST",
+    );
+  });
+
+  await test("R", "投稿が断られたら、お題も答えのカードも残らない", async () => {
+    const u = await makeMember(db, "af-rollback");
+    const ids = await pickIds([["morph", 1], ["emotion", 1], ["color", 1]]);
+
+    const before = (await db.query(
+      `select count(*)::int as n from public.prompts`)).rows[0].n;
+
+    // 画像の置き場所が規約と違う（create_work の検査6）。
+    // **お題を作ったあとで断られる**ので、巻き戻っていなければ行が残る
+    await expectFailure(
+      () => postArtFirstWork(db, u, ids, { imagePath: "someone-else/x.png" }),
+      "BAD_IMAGE_PATH",
+    );
+
+    const after = (await db.query(
+      `select count(*)::int as n from public.prompts`)).rows[0].n;
+
+    assert(after === before, `お題が ${after - before} 件残った（0のはず）`);
+  });
+
+  await test("R", "他の人が、通常の作品と同じ経路で全語に答えられる", async () => {
+    const u = await makeMember(db, "af-answer");
+    const v = await makeMember(db, "af-answer-v");
+    const ids = await pickIds([["morph", 1], ["emotion", 1], ["action", 1], ["color", 1]]);
+    const { workId } = await postArtFirstWork(db, u, ids);
+
+    const quiz = await value(db, asMember(v), `select public.get_work_quiz($1)`, [workId]);
+    assert(quiz.questions.length === 4, `出題が ${quiz.questions.length} 問（4のはず）`);
+
+    const answer = await answerWork(db, v, workId, { correct: true });
+    assert(answer.correct_count === 4, `正解数が ${answer.correct_count}（4のはず）`);
+  });
+
+  await test("R", "2択当ても通常どおり使える", async () => {
+    const u = await makeMember(db, "af-pair");
+    const v = await makeMember(db, "af-pair-v");
+    const ids = await pickIds([["morph", 1], ["emotion", 1], ["color", 1]]);
+    const { workId } = await postArtFirstWork(db, u, ids);
+
+    await answerWork(db, v, workId, { pair: "all", pairCorrect: true });
+
+    const stats = (await db.query(
+      `select coalesce(sum(pair_attempts), 0)::int as pair,
+              coalesce(sum(exact_attempts), 0)::int as exact
+         from public.work_slot_stats where work_id = $1`,
+      [workId],
+    )).rows[0];
+
+    assert(stats.pair === 3, `2択当てが ${stats.pair} 問（3のはず）`);
+    assert(stats.exact === 0, `ビタ当てが ${stats.exact} 問（0のはず）`);
+  });
+
+  await test("R", "回答した人には、作者が設定した項目がそのまま開示される", async () => {
+    const u = await makeMember(db, "af-reveal");
+    const v = await makeMember(db, "af-reveal-v");
+    const picked = [
+      ...(await pickTags(db, "morph", 1)),
+      ...(await pickTags(db, "emotion", 1)),
+      ...(await pickTags(db, "color", 1)),
+    ];
+    const { workId } = await postArtFirstWork(db, u, picked.map((t) => t.id));
+
+    const before = await value(db, asMember(v),
+      `select public.get_answered_prompt($1)`, [workId]);
+    assert(before === null, "回答する前から開示されている");
+
+    await answerWork(db, v, workId, {});
+
+    const after = await value(db, asMember(v),
+      `select public.get_answered_prompt($1)`, [workId]);
+    assert(after !== null, "回答したのに開示されない");
+    assert(after.cards.length === 3, `開示が ${after.cards.length} 件`);
+
+    const labels = after.cards.map((c) => c.tag_label).sort();
+    const expected = picked.map((t) => t.label).sort();
+    assert(
+      labels.join(",") === expected.join(","),
+      `開示された語が ${labels.join(",")}（${expected.join(",")} のはず）`,
+    );
+  });
+
+  await test("R", "作品一覧に、通常の作品と混ざって出る", async () => {
+    const u = await makeMember(db, "af-list");
+    const ids = await pickIds([["morph", 1], ["emotion", 1], ["color", 1]]);
+    const { workId } = await postArtFirstWork(db, u, ids);
+
+    const rows = await asRole(db, ANON, async (c) =>
+      (await c.query(`select id from public.get_public_works(null, 'new', 50, 0)`)).rows);
+
+    assert(rows.some((r) => r.id === workId), "一覧に出てこない");
+  });
+
+  await test("R", "次の作品の配給に入る（回答0件の帯）", async () => {
+    const u = await makeMember(db, "af-next");
+    const v = await makeMember(db, "af-next-v");
+    const ids = await pickIds([["morph", 1], ["emotion", 1], ["color", 1]]);
+    const { workId } = await postArtFirstWork(db, u, ids);
+
+    const rows = await asRole(db, asMember(v), async (c) =>
+      (await c.query(`select work_id, band from public.next_work_candidates(null)`)).rows);
+
+    const hit = rows.find((r) => r.work_id === workId);
+    assert(hit !== undefined, "候補に入っていない");
+    assert(hit.band === 1, `救済帯が ${hit.band}（回答0件なので1のはず）`);
+  });
+
+  await test("R", "時間別ランキングには出ない。人気には出る", async () => {
+    const u = await makeMember(db, "af-rank");
+    const ids = await pickIds([["morph", 1], ["emotion", 1], ["color", 1]]);
+    const { workId } = await postArtFirstWork(db, u, ids);
+
+    const inList = async (type, bucket) =>
+      (await asRole(db, ANON, async (c) =>
+        (await c.query(
+          `select id, time_limit_bucket from public.get_rankings($1, 'normal', $2, 50, 0)`,
+          [type, bucket],
+        )).rows)).some((r) => r.id === workId);
+
+    assert(await inList("popular", null), "人気ランキングに出てこない");
+    assert(!(await inList("duration", "unlimited")), "無制限の時間別に出ている");
+    assert(!(await inList("duration", null)), "区分なしの時間別に出ている");
+  });
+
+  await test("R", "作品の詳細で、制作時間が空のまま出どころが分かる", async () => {
+    const u = await makeMember(db, "af-detail");
+    const ids = await pickIds([["morph", 1], ["emotion", 1], ["color", 1]]);
+    const { workId } = await postArtFirstWork(db, u, ids);
+
+    const detail = await value(db, ANON, `select public.get_work_detail($1)`, [workId]);
+    assert(detail.origin === "art_first", `出どころが ${detail.origin}`);
+    assert(detail.time_limit_seconds === null, "制限時間が入っている");
+    assert(detail.prompt_id === undefined, "prompt_id が漏れている（D23 違反）");
+
+    const mine = await value(db, asMember(u), `select public.get_my_work($1)`, [workId]);
+    assert(mine.origin === "art_first", `自分の作品の出どころが ${mine.origin}`);
+  });
+
+  await test("R", "お題から描いた作品は、これまでどおり時間別に出る（弱めていない）", async () => {
+    const u = await makeMember(db, "af-regress");
+    const { prompt_id: promptId } = await drawPrompt(db, u, { timeLimit: 3600 });
+    const workId = await postWork(db, u, promptId, "通常の作品");
+
+    const rows = await asRole(db, ANON, async (c) =>
+      (await c.query(
+        `select id, time_limit_bucket from public.get_rankings('duration','normal','long',50,0)`,
+      )).rows);
+
+    const hit = rows.find((r) => r.id === workId);
+    assert(hit !== undefined, "通常の作品が時間別から消えた");
+    assert(hit.time_limit_bucket === "long", `区分が ${hit.time_limit_bucket}`);
+  });
+
 }
 
 // ===========================================================================
