@@ -123,3 +123,96 @@ art_first だけを確かめるなら、当てた後に `npm run db:verify` を�
   `20260908090000` と書かれている（ファイル名と食い違う）。相手のファイルなので直していない。
 - 高負荷で試験がランダムに落ちる性質は、重い検査の札を build と型検査へ広げたことで
   当たりにくくなったが、**同時に2つの作業線が動くこと自体は止められない。**
+
+---
+
+## 9. 実施の記録（2026-09-08。ここから下は、実際に走らせて出た値）
+
+### 9-1. 当てかた
+
+`npm run db:deploy`（= `supabase db push`）は**使えなかった**。
+実測した dry-run が、書きかけまで一緒に当てると言ったため。
+
+```
+Would push these migrations:
+ • 20260907120000_single_pass_draw_and_slot_redo.sql   ← 出さないもの
+ • 20260908090000_art_first.sql                         ← 出したいもの
+```
+
+`supabase db push` にファイルを選ぶ引数は無い（`--help` を確認）。
+書きかけを動かす・消す・名前を変えるのは持ち主の作業線の判断なので、
+こちらではしない。そこで **`scripts/db-apply-one.mjs`（`npm run db:apply:one`）**
+を足した。名指しした1本だけを、1つのトランザクションの中で流す。
+途中で失敗したら何も残らない。
+
+履歴表への記録は、CLI 本来の
+`npx supabase migration repair 20260908090000 --status applied` で行った。
+**実際に当てた直後にだけ使う。**当てていないものを repair だけするのは
+履歴に嘘を書く行為なので、しない。
+
+### 9-2. 履歴の状態（実測）
+
+| | 当てる前 | 当てた後 |
+|---|---|---|
+| 手元の migration | 46本 | 46本 |
+| 本番に入っている | 44本 | **45本** |
+| `20260907120000`（書きかけ） | 未適用 | **未適用のまま** |
+| `20260908090000`（art_first） | 未適用 | 適用済み |
+
+### 9-3. 将来この順番が問題になる点（実測。先に書いておく）
+
+art_first を入れたことで、書きかけの版番号（`20260907120000`）が
+本番の最後（`20260908090000`）より**古く**なった。この状態で
+`supabase db push` を叩くと、次のように断られる。
+
+```
+Found local migration files to be inserted before the last migration on remote database.
+Rerun the command with --include-all flag to apply these migrations:
+  supabase/migrations/20260907120000_single_pass_draw_and_slot_redo.sql
+```
+
+**適用できなくなったわけではない。**道は2つある。
+
+1. 書きかけのファイル名を `20260908090000` より後の版番号に付け替える。
+   まだ一度も本番へ入っていないので、付け替えても履歴と食い違わない。**推奨。**
+2. `--include-all` を付けて押す。ただし `docs/db-workflow.md` はこの引数を
+   禁止している（`applied/` の古いSQLを巻き込むため）。
+
+どちらを採るかは一巡ドローの作業線の判断。こちらでファイル名は変えていない。
+
+### 9-4. 検査の結果（すべて実測）
+
+| いつ | 検査 | 結果 |
+|---|---|---|
+| 当てる前 | `npm run db:verify:keychain` | 合格181・不合格6。**6件はすべて「art_first がまだ無い」ためのもの**（`draft_modes=5` / 関数9本 / A4・A4b・A4c・A4d が `word_source` 列を見つけられない） |
+| 当てる前 | `npm run verify:launch -- --url https://drawing-prompt-quiz.vercel.app` | 18項目すべて合格 |
+| 当てた後（デプロイ前） | `npm run db:verify:keychain` | **187項目すべて合格** |
+| デプロイ後 | `npm run db:verify:keychain` | **187項目すべて合格**（当てた直後と同じ） |
+| デプロイ後 | `npm run verify:launch` | 18項目すべて合格 |
+
+`verify:launch` の宛先は `https://drawing-prompt-quiz.vercel.app`。
+`tsutawarukana.com` は名前解決できない（実測 NXDOMAIN。8.8.8.8 でも同じ）。
+
+### 9-5. デプロイに入れたもの・入れなかったもの
+
+作業ツリーには2つの作業線の変更が混ざっていたので、こちらのぶんだけを
+別の worktree（HEAD から切ったもの）へ組み直し、そこで型検査・lint・build・
+DB試験・ブラウザ試験を通してから、その内容だけをコミットした。
+
+入れた: art_first の画面と受け口、migration、R群20件・S群4件の試験、
+診断 A4c〜A4f、重い検査の札を build と型検査へ広げたぶん、E2E_ONLY、
+`db:apply:one`、関係する文書。
+
+入れなかった: 一巡ドローの migration と画面（`pick_card` / `redo_slot` を呼ぶもの）、
+長押し回答の画面と単体試験、`globals.css` の演出、`統合.md`（機械が組み直す生成物）。
+
+組み直した木での実測: 型検査0件、lint エラー0・警告2（既存のみ）、build 成功、
+`test:db` 165件すべて合格、`db:verify:local` 合格176・不合格0、
+`test:e2e` **61件すべて合格**（持ち込みのS群4件を含む）。
+
+### 9-6. やらなかったこと
+
+- `smoke:draft` / `smoke:play` の本番実行。理由は上の 7 節のとおり。
+- 本番での持ち込み1往復（実際に作品を作る）。**持ち込み用のスモークが無い。**
+  作るなら本番に公開作品が1件増える。消す道（`cleanup:testdata`）はあるが、
+  片づけ前提の作品を本番へ置く判断はしていないので、作らなかった。
