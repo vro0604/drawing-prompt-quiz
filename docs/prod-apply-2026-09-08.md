@@ -102,7 +102,7 @@ art_first を当てて確かめた。一巡ドローの書きかけは入れて�
 
 作業ツリーのスモークと画面は、**一巡ドローの書きかけに合わせて書き換わっている。**
 
-- `scripts/smoke-draft.mjs` は `pick_card` を9か所で呼ぶ（実測: grep で9件）
+- `scripts/smoke-draft.mjs` は `pick_card` を7か所で呼ぶ（実測 2026-09-08: grep で7行）
 - `src/features/draft/rpc.ts` は `pick_card` と `redo_slot` を呼ぶ
 
 本番のDBにはその2つの関数がまだ無い（除外した1本が作るもの）。
