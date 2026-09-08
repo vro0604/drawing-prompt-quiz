@@ -123,6 +123,9 @@ export async function startApp({ port = 3210, log = false } = {}) {
     SUPABASE_SECRET_KEY: SERVICE_KEY,
     NEXT_PUBLIC_SITE_URL: `http://127.0.0.1:${port}`,
     CRON_SECRET: "e2e-cron-secret",
+    // 管理画面に入れる1人。seed が作った運営者の id をそのまま渡す。
+    // **この値と一致しない人は /admin を開けない**ことを、browser.mjs が確かめる。
+    ADMIN_USER_ID: seeded.admin,
     // CAPTCHA は Cloudflare が公開している**検査用の鍵**を使う。
     // 常に通る値で、本番の鍵ではない（check-env.mjs が本番では弾く）。
     NEXT_PUBLIC_TURNSTILE_SITE_KEY: "1x00000000000000000000AA",

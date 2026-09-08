@@ -56,6 +56,7 @@ export function SubmitButton({
   value,
   title,
   data,
+  formAction,
   disabled = false,
 }: {
   children: React.ReactNode;
@@ -64,6 +65,14 @@ export function SubmitButton({
   name?: string;
   value?: string;
   title?: string;
+  /**
+   * 同じ form に2つ目の送り先を持たせるとき（「対応済み」と「却下」のように、
+   * 入力欄は同じで行き先だけが違う2つのボタン）に渡す。
+   *
+   * HTML の formAction と同じ意味なので、**JavaScript が動かなくても効く。**
+   * 渡さなければ form の action がそのまま使われる。
+   */
+  formAction?: (formData: FormData) => void | Promise<void>;
   /**
    * 押せない理由が送信中以外にもあるとき（入力が足りない等）に立てる。
    *
@@ -93,6 +102,10 @@ export function SubmitButton({
       name={name}
       value={value}
       title={title}
+      // 渡されたときだけ付ける。**undefined を明示的に渡さない。**
+      // 既存のボタン27個は formAction を持たないので、
+      // それらの描かれ方を1文字も変えないため。
+      {...(formAction ? { formAction } : {})}
       {...data}
       // 送信中は押せない。失敗して画面が戻れば、部品が作り直されるので
       // pending は false に戻り、もう一度押せるようになる。

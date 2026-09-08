@@ -270,6 +270,19 @@ const USER_GRANTEES = `(0, 'anon'::regrole::oid, 'authenticated'::regrole::oid)`
  * 掃除は RLS を迂回して動くので、利用者から呼べると
  * 「掃除」を装ってデータを消させられる。
  */
+/**
+ * 運営だけが呼べる管理RPC（管理 v0）。
+ *
+ * 掃除と同じく service_role 専用。**この4本のどれかが anon か
+ * authenticated から呼べたら、公開されている作品を誰でも消せる状態になっている。**
+ */
+const ADMIN_FUNCS = [
+  "admin_list_reports",
+  "admin_get_report",
+  "admin_hide_work",
+  "admin_resolve_report",
+];
+
 const CLEANUP_FUNCS = [
   "cleanup_orphan_prompts",
   "cleanup_stale_drafts",
@@ -510,8 +523,9 @@ export const checks = [
     // 内訳は docs/decisions.md の D158〜D164 の実装。
     // 2026-09-05 にさらに2表増えた（保存枠 saved_carry_slots と、
     // 保存枠を使った派生お題 prompt_carry_slots）。
-    name: "public スキーマの表が50個",
-    expected: 50,
+    // 2026-09-08 に1表増えた（admin_audit_log。管理 v0 / D177）。
+    name: "public スキーマの表が51個",
+    expected: 51,
     sql: `select count(*)::int from pg_tables where schemaname = 'public'`,
     detailSql: `select tablename from pg_tables
                  where schemaname = 'public' order by tablename`,
@@ -526,8 +540,8 @@ export const checks = [
   },
   {
     group: "構造",
-    name: "50表すべてで RLS が有効",
-    expected: 50,
+    name: "51表すべてで RLS が有効",
+    expected: 51,
     sql: `select count(*)::int from pg_class c
             join pg_namespace n on n.oid = c.relnamespace
            where n.nspname = 'public' and c.relkind = 'r' and c.relrowsecurity`,
@@ -916,6 +930,103 @@ export const checks = [
              and (has_function_privilege('anon', p.oid, 'EXECUTE')
                or has_function_privilege('authenticated', p.oid, 'EXECUTE'))`,
     params: [META_FUNCS],
+  },
+
+  // ──────────────────────────────── 管理 ────────────────────────────────
+  //
+  // 管理 v0（通報の処理と作品の非表示）。
+  //
+  // 掃除と同じ考え方で、**運営専用の入口が利用者から見えていないか**を見る。
+  // 掃除より危ないのは、こちらが「公開されている作品を消せる」ことで、
+  // 呼べる人が増えると荒らしの道具になる。
+  //
+  // 管理者が誰かは DB に無い（role の列を作っていない）。
+  // DB 側の関門は「service_role か」まで。「誰か」はアプリが決める。
+  {
+    group: "管理",
+    name: "管理RPCが4本ある",
+    expected: ADMIN_FUNCS.length,
+    sql: `select count(*)::int from pg_proc p
+            join pg_namespace n on n.oid = p.pronamespace
+           where n.nspname='public' and p.proname = any($1)`,
+    params: [ADMIN_FUNCS],
+  },
+  {
+    group: "管理",
+    name: "管理RPCを anon / authenticated が呼べない",
+    expected: 0,
+    sql: `select count(*)::int from pg_proc p
+            join pg_namespace n on n.oid = p.pronamespace
+           where n.nspname='public' and p.proname = any($1)
+             and (has_function_privilege('anon', p.oid, 'EXECUTE')
+               or has_function_privilege('authenticated', p.oid, 'EXECUTE'))`,
+    params: [ADMIN_FUNCS],
+    detailSql: `select p.proname,
+                       has_function_privilege('anon', p.oid, 'EXECUTE') as anon,
+                       has_function_privilege('authenticated', p.oid, 'EXECUTE') as auth
+                  from pg_proc p join pg_namespace n on n.oid = p.pronamespace
+                 where n.nspname='public' and p.proname = any($1)
+                 order by 1`,
+    detailParams: [ADMIN_FUNCS],
+  },
+  {
+    group: "管理",
+    name: "管理RPCを service_role が呼べる",
+    expected: ADMIN_FUNCS.length,
+    sql: `select count(*)::int from pg_proc p
+            join pg_namespace n on n.oid = p.pronamespace
+           where n.nspname='public' and p.proname = any($1)
+             and has_function_privilege('service_role', p.oid, 'EXECUTE')`,
+    params: [ADMIN_FUNCS],
+  },
+  {
+    group: "管理",
+    name: "管理RPCは security definer で search_path が固定されている",
+    expected: ADMIN_FUNCS.length,
+    sql: `select count(*)::int from pg_proc p
+            join pg_namespace n on n.oid = p.pronamespace
+           where n.nspname='public' and p.proname = any($1)
+             and p.prosecdef
+             and p.proconfig is not null
+             and exists (select 1 from unnest(p.proconfig) c
+                          where c like 'search_path=%')`,
+    params: [ADMIN_FUNCS],
+  },
+  {
+    group: "管理",
+    name: "監査記録の表に PUBLIC / anon / authenticated の権限が0件",
+    expected: 0,
+    sql: TABLE_USER_PRIV_COUNT_SQL,
+    params: [["admin_audit_log"]],
+    detailSql: TABLE_PRIV_SQL,
+    detailParams: [["admin_audit_log"]],
+  },
+  {
+    group: "管理",
+    name: "監査記録の表に RLS ポリシーが0本",
+    expected: 0,
+    sql: `select count(*)::int from pg_policies
+           where schemaname = 'public' and tablename = 'admin_audit_log'`,
+  },
+  {
+    group: "管理",
+    name: "監査記録の action が3つに固定されている",
+    expected: 1,
+    sql: `select count(*)::int from pg_constraint
+           where conrelid = 'public.admin_audit_log'::regclass
+             and contype = 'c'
+             and conname = 'admin_audit_log_action_valid'`,
+  },
+  {
+    group: "管理",
+    // 理由が空欄の記録が入ると、あとから判断を追えない。
+    // 空白だけも通らないこと（btrim を掛けた CHECK）。
+    name: "監査記録の理由に、空白だけを拒む CHECK が付いている",
+    expected: 1,
+    sql: `select count(*)::int from pg_constraint
+           where conrelid = 'public.admin_audit_log'::regclass
+             and contype = 'c'
+             and conname = 'admin_audit_log_reason_length'`,
   },
 
   // ──────────────────────────────── 掃除 ────────────────────────────────
@@ -2826,6 +2937,33 @@ export const roleProbes = [
       sql: `select 1 from public.${t} limit 1`,
     })),
   ),
+
+  // 管理 v0。**実際に呼んでみて断られること**を確かめる。
+  // 権限の表を読むだけでは、grant の取り消し漏れに気づけないことがある。
+  ...["anon", "authenticated"].flatMap((role) => [
+    {
+      role,
+      mode: "denied",
+      label: `${role} → admin_audit_log を直接SELECT`,
+      sql: `select 1 from public.admin_audit_log limit 1`,
+    },
+    ...ADMIN_FUNCS.map((fn) => ({
+      role,
+      mode: "denied",
+      label: `${role} → ${fn} を呼ぶ`,
+      sql:
+        fn === "admin_list_reports"
+          ? `select public.admin_list_reports('open', 1, 0)`
+          : fn === "admin_get_report"
+            ? `select public.admin_get_report(1)`
+            : fn === "admin_hide_work"
+              ? `select public.admin_hide_work(
+                   '00000000-0000-0000-0000-000000000000'::uuid,
+                   '00000000-0000-0000-0000-000000000000'::uuid, 'x')`
+              : `select public.admin_resolve_report(
+                   '00000000-0000-0000-0000-000000000000'::uuid, 1, 'resolved', 'x')`,
+    })),
+  ]),
   {
     role: "anon",
     mode: "allowed",

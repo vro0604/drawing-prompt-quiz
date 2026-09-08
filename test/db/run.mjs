@@ -11,6 +11,7 @@
  *   E. フレーバー       正解漏洩の防止・ヒント使用別の集計・返歌
  *   F. 漏洩             回答していない人に正解が渡らないこと
  *   G. 回帰             旧方式のお題・既存の集計・既存の取得系
+ *   W. 管理             通報の処理と作品の非表示（管理 v0）。権限・効き目・監査
  *   R. 持ち込み         既存絵から作るお題（art_first）。語の検査・出題・回答・
  *                       一覧・救済・ランキング・時間の扱い
  *
@@ -3959,6 +3960,468 @@ async function main() {
     const hit = rows.find((r) => r.id === workId);
     assert(hit !== undefined, "通常の作品が時間別から消えた");
     assert(hit.time_limit_bucket === "long", `区分が ${hit.time_limit_bucket}`);
+  });
+
+  /* =========================================================================
+   * W. 管理（通報の処理と作品の非表示）
+   * =========================================================================
+   *
+   * 【何を確かめるか】
+   *   1. 一般の役から管理の入口へ手が届かないこと
+   *   2. 非表示にすると、公開の取得経路から実際に消えること
+   *   3. 消えても、行・回答・画像の場所は残っていること
+   *   4. 危険な書き込みと監査記録が、必ず一緒に増える／一緒に増えないこと
+   *
+   * 【service_role で表を直接読まない理由】
+   *   本番の Supabase では service_role に広い表権限が付いているが、
+   *   この検査用DBの土台（harness.mjs）は migration が与えた権限しか持たない。
+   *   **結果の確認は所有者として読む**（db.query を直に呼ぶ）。
+   *   確かめたいのは「RPC が何をしたか」で、「service_role が何を読めるか」
+   *   ではない。
+   */
+
+  const SVC = { role: "service_role", uid: null };
+
+  /** 監査記録の件数。所有者として数える */
+  async function auditCount() {
+    const r = await db.query(`select count(*)::int n from public.admin_audit_log`);
+    return r.rows[0].n;
+  }
+
+  /** 通報を1件作り、作品と作者と通報IDを返す */
+  async function makeReported(label) {
+    const author = await makeMember(db, null);
+    const reporter = await makeMember(db, null);
+    const p = await drawPrompt(db, author);
+    const workId = await postWork(db, author, p.prompt_id, label);
+    const res = await value(
+      db,
+      asMember(reporter),
+      `select public.create_report($1, 'spam', null)`,
+      [workId],
+    );
+    return { author, reporter, workId, reportId: res.report_id };
+  }
+
+  const ADMIN_RPCS = [
+    ["admin_list_reports", `select public.admin_list_reports('open', 10, 0)`],
+    ["admin_get_report", `select public.admin_get_report(1)`],
+    [
+      "admin_hide_work",
+      `select public.admin_hide_work('00000000-0000-0000-0000-000000000001'::uuid,
+                                     '00000000-0000-0000-0000-000000000002'::uuid, 'x')`,
+    ],
+    [
+      "admin_resolve_report",
+      `select public.admin_resolve_report('00000000-0000-0000-0000-000000000001'::uuid,
+                                          1, 'resolved', 'x')`,
+    ],
+  ];
+
+  await test("W", "未サインインは管理RPCを4本とも呼べない", async () => {
+    for (const [name, sql] of ADMIN_RPCS) {
+      await expectFailure(() => value(db, ANON, sql), "permission denied");
+      void name;
+    }
+  });
+
+  await test("W", "登録利用者は管理RPCを4本とも呼べない", async () => {
+    const u = await makeMember(db, null);
+    for (const [name, sql] of ADMIN_RPCS) {
+      await expectFailure(() => value(db, asMember(u), sql), "permission denied");
+      void name;
+    }
+  });
+
+  await test("W", "ゲストは管理RPCを4本とも呼べない", async () => {
+    const g = await makeGuest(db);
+    for (const [name, sql] of ADMIN_RPCS) {
+      await expectFailure(() => value(db, asGuest(g), sql), "permission denied");
+      void name;
+    }
+  });
+
+  await test("W", "監査記録の表は、未サインインからも登録利用者からも読めない", async () => {
+    const u = await makeMember(db, null);
+    await expectFailure(
+      () => value(db, ANON, `select count(*) from public.admin_audit_log`),
+      "permission denied",
+    );
+    await expectFailure(
+      () => value(db, asMember(u), `select count(*) from public.admin_audit_log`),
+      "permission denied",
+    );
+  });
+
+  await test("W", "非表示にすると、公開一覧・ランキング・作品詳細から消える", async () => {
+    const { author, reporter, workId } = await makeReported("管理検査：消える");
+    await answerWork(db, reporter, workId);
+
+    const inList = async () =>
+      value(
+        db,
+        ANON,
+        `select count(*)::int from public.get_public_works(null, null, 100, 0, null, false)
+          where id = $1`,
+        [workId],
+      );
+    const inRanking = async () =>
+      value(
+        db,
+        ANON,
+        `select count(*)::int from public.get_rankings('popular', 'normal', null, 100, 0)
+          where id = $1`,
+        [workId],
+      );
+
+    assert((await inList()) === 1, "非表示にする前から公開一覧に出ていない");
+    assert((await inRanking()) === 1, "非表示にする前からランキングに出ていない");
+    assert(
+      (await value(db, ANON, `select public.get_work_detail($1)`, [workId])) !== null,
+      "非表示にする前から作品詳細が取れない",
+    );
+
+    await value(db, SVC, `select public.admin_hide_work($1, $2, '検査：不適切')`, [
+      author,
+      workId,
+    ]);
+
+    assert((await inList()) === 0, "非表示にしたのに公開一覧に残っている");
+    assert((await inRanking()) === 0, "非表示にしたのにランキングに残っている");
+    assert(
+      (await value(db, ANON, `select public.get_work_detail($1)`, [workId])) === null,
+      "非表示にしたのに作品詳細が取れる",
+    );
+  });
+
+  await test("W", "非表示にしても、行・回答・画像の場所・掃除の対象は変わらない", async () => {
+    const { author, reporter, workId } = await makeReported("管理検査：残る");
+    await answerWork(db, reporter, workId);
+
+    const before = (
+      await db.query(
+        `select image_path, image_deleted_at, deleted_at, is_published, answers_count
+           from public.works where id = $1`,
+        [workId],
+      )
+    ).rows[0];
+    const answersBefore = (
+      await db.query(`select count(*)::int n from public.answers where work_id = $1`, [workId])
+    ).rows[0].n;
+    const queueBefore = (
+      await db.query(`select count(*)::int n from public.storage_cleanup_queue`)
+    ).rows[0].n;
+
+    await value(db, SVC, `select public.admin_hide_work($1, $2, '検査：残ることの確認')`, [
+      author,
+      workId,
+    ]);
+
+    const after = (
+      await db.query(
+        `select review_status, image_path, image_deleted_at, deleted_at, is_published, answers_count
+           from public.works where id = $1`,
+        [workId],
+      )
+    ).rows[0];
+
+    assert(after.review_status === "hidden", `review_status が ${after.review_status}`);
+    assert(after.image_path === before.image_path, "画像の場所が書き換わった");
+    assert(after.image_deleted_at === before.image_deleted_at, "画像を消したことにされた");
+    assert(after.deleted_at === before.deleted_at, "deleted_at が立った（本人の削除と混ざる）");
+    assert(after.is_published === before.is_published, "is_published が書き換わった");
+    assert(after.answers_count === before.answers_count, "回答数のカウンタが変わった");
+
+    const answersAfter = (
+      await db.query(`select count(*)::int n from public.answers where work_id = $1`, [workId])
+    ).rows[0].n;
+    assert(answersAfter === answersBefore, `回答が ${answersBefore} → ${answersAfter} 件に減った`);
+
+    const queueAfter = (
+      await db.query(`select count(*)::int n from public.storage_cleanup_queue`)
+    ).rows[0].n;
+    assert(queueAfter === queueBefore, "画像の掃除待ちに積まれた（非表示は削除ではない）");
+  });
+
+  await test("W", "非表示にした作品は、作者本人には状態つきで見える", async () => {
+    const { author, workId } = await makeReported("管理検査：作者には見える");
+    await value(db, SVC, `select public.admin_hide_work($1, $2, '検査')`, [author, workId]);
+
+    const mine = await value(db, asMember(author), `select public.get_my_work($1)`, [workId]);
+    assert(mine !== null, "作者本人からも見えなくなっている");
+    assert(
+      mine.review_status === "hidden",
+      `作者に返る review_status が ${mine.review_status}`,
+    );
+  });
+
+  await test("W", "非表示にすると監査記録が1件だけ増え、何から何へかが残る", async () => {
+    const { author, workId } = await makeReported("管理検査：監査");
+    const before = await auditCount();
+
+    const res = await value(db, SVC, `select public.admin_hide_work($1, $2, '検査：理由あり')`, [
+      author,
+      workId,
+    ]);
+
+    assert((await auditCount()) === before + 1, "監査記録が1件増えていない");
+
+    const row = (
+      await db.query(`select * from public.admin_audit_log where id = $1`, [res.audit_id])
+    ).rows[0];
+    assert(row.action === "hide_work", `action が ${row.action}`);
+    assert(row.target_type === "work", `target_type が ${row.target_type}`);
+    assert(row.target_id === workId, "target_id が対象の作品を指していない");
+    assert(row.old_value === "ok", `old_value が ${row.old_value}`);
+    assert(row.new_value === "hidden", `new_value が ${row.new_value}`);
+    assert(row.reason === "検査：理由あり", "理由が残っていない");
+    assert(row.admin_user_id === author, "操作した人が残っていない");
+  });
+
+  await test("W", "二度目の非表示は断られ、監査記録も増えない", async () => {
+    const { author, workId } = await makeReported("管理検査：二度目");
+    await value(db, SVC, `select public.admin_hide_work($1, $2, '検査')`, [author, workId]);
+
+    const before = await auditCount();
+    await expectFailure(
+      () => value(db, SVC, `select public.admin_hide_work($1, $2, '検査')`, [author, workId]),
+      "WORK_ALREADY_HIDDEN",
+    );
+    assert((await auditCount()) === before, "断られたのに監査記録が増えた");
+  });
+
+  await test("W", "理由が空白だけなら断られ、作品も監査も変わらない", async () => {
+    const { author, workId } = await makeReported("管理検査：理由なし");
+    const before = await auditCount();
+
+    await expectFailure(
+      () => value(db, SVC, `select public.admin_hide_work($1, $2, '   ')`, [author, workId]),
+      "REASON_REQUIRED",
+    );
+
+    const status = (
+      await db.query(`select review_status from public.works where id = $1`, [workId])
+    ).rows[0].review_status;
+    assert(status === "ok", `断られたのに review_status が ${status}`);
+    assert((await auditCount()) === before, "断られたのに監査記録が増えた");
+  });
+
+  await test("W", "存在しない作品の非表示は断られ、監査記録も増えない", async () => {
+    const before = await auditCount();
+    await expectFailure(
+      () =>
+        value(
+          db,
+          SVC,
+          `select public.admin_hide_work($1, '00000000-0000-0000-0000-000000000009'::uuid, '検査')`,
+          ["00000000-0000-0000-0000-000000000001"],
+        ),
+      "WORK_NOT_FOUND",
+    );
+    assert((await auditCount()) === before, "断られたのに監査記録が増えた");
+  });
+
+  await test("W", "通報を対応済みにすると、状態と日時が対で入る", async () => {
+    const { author, reportId } = await makeReported("管理検査：resolve");
+    const before = await auditCount();
+
+    const res = await value(
+      db,
+      SVC,
+      `select public.admin_resolve_report($1, $2, 'resolved', '検査：作品を下げた')`,
+      [author, reportId],
+    );
+    assert(res.status === "resolved", `status が ${res.status}`);
+
+    const row = (
+      await db.query(`select status, resolved_at from public.reports where id = $1`, [reportId])
+    ).rows[0];
+    assert(row.status === "resolved", `DB の status が ${row.status}`);
+    assert(row.resolved_at !== null, "resolved_at が入っていない（CHECK と食い違う）");
+
+    assert((await auditCount()) === before + 1, "監査記録が1件増えていない");
+    const audit = (
+      await db.query(`select * from public.admin_audit_log where id = $1`, [res.audit_id])
+    ).rows[0];
+    assert(audit.action === "resolve_report", `action が ${audit.action}`);
+    assert(audit.target_type === "report", `target_type が ${audit.target_type}`);
+    assert(audit.old_value === "open" && audit.new_value === "resolved", "何から何へが残っていない");
+  });
+
+  await test("W", "通報を却下しても、対象の作品は1列も変わらない", async () => {
+    const { author, workId, reportId } = await makeReported("管理検査：reject");
+
+    const before = (
+      await db.query(
+        `select review_status, is_published, deleted_at from public.works where id = $1`,
+        [workId],
+      )
+    ).rows[0];
+
+    const res = await value(
+      db,
+      SVC,
+      `select public.admin_resolve_report($1, $2, 'rejected', '検査：理由に当たらない')`,
+      [author, reportId],
+    );
+    assert(res.status === "rejected", `status が ${res.status}`);
+
+    const row = (
+      await db.query(`select status, resolved_at from public.reports where id = $1`, [reportId])
+    ).rows[0];
+    assert(row.status === "rejected", `DB の status が ${row.status}`);
+    assert(row.resolved_at !== null, "resolved_at が入っていない");
+
+    const after = (
+      await db.query(
+        `select review_status, is_published, deleted_at from public.works where id = $1`,
+        [workId],
+      )
+    ).rows[0];
+    assert(after.review_status === before.review_status, "却下で作品の審査状態が変わった");
+    assert(after.is_published === before.is_published, "却下で作品の公開設定が変わった");
+    assert(after.deleted_at === before.deleted_at, "却下で作品が削除された");
+
+    const audit = (
+      await db.query(`select action from public.admin_audit_log where id = $1`, [res.audit_id])
+    ).rows[0];
+    assert(audit.action === "reject_report", `action が ${audit.action}`);
+  });
+
+  await test("W", "一度閉じた通報は開き直せず、監査記録も増えない", async () => {
+    const { author, reportId } = await makeReported("管理検査：二度閉じ");
+    await value(
+      db,
+      SVC,
+      `select public.admin_resolve_report($1, $2, 'resolved', '検査')`,
+      [author, reportId],
+    );
+
+    const before = await auditCount();
+    await expectFailure(
+      () =>
+        value(db, SVC, `select public.admin_resolve_report($1, $2, 'rejected', '検査')`, [
+          author,
+          reportId,
+        ]),
+      "REPORT_ALREADY_RESOLVED",
+    );
+    assert((await auditCount()) === before, "断られたのに監査記録が増えた");
+  });
+
+  await test("W", "処理の種類が違う・通報が無い・理由が空は、それぞれ別の合図で断られる", async () => {
+    const { author, reportId } = await makeReported("管理検査：入力");
+    const before = await auditCount();
+
+    await expectFailure(
+      () =>
+        value(db, SVC, `select public.admin_resolve_report($1, $2, 'maybe', '検査')`, [
+          author,
+          reportId,
+        ]),
+      "INVALID_RESOLUTION",
+    );
+    await expectFailure(
+      () =>
+        value(db, SVC, `select public.admin_resolve_report($1, 99999999, 'resolved', '検査')`, [
+          author,
+        ]),
+      "REPORT_NOT_FOUND",
+    );
+    await expectFailure(
+      () =>
+        value(db, SVC, `select public.admin_resolve_report($1, $2, 'resolved', '  ')`, [
+          author,
+          reportId,
+        ]),
+      "REASON_REQUIRED",
+    );
+
+    assert((await auditCount()) === before, "断られたのに監査記録が増えた");
+  });
+
+  await test("W", "一覧は未処理だけを返し、区切りと総数が合う", async () => {
+    const made = [];
+    for (let i = 0; i < 3; i += 1) made.push(await makeReported(`管理検査：一覧 ${i}`));
+
+    const openTotal = (
+      await db.query(`select count(*)::int n from public.reports where status = 'open'`)
+    ).rows[0].n;
+
+    const page1 = await value(db, SVC, `select public.admin_list_reports('open', 2, 0)`);
+    assert(page1.total === openTotal, `total が ${page1.total}（実際は ${openTotal}）`);
+    assert(page1.rows.length === 2, `1ページ目が ${page1.rows.length} 件`);
+    assert(
+      page1.rows.every((r) => r.status === "open"),
+      "未処理を指定したのに、閉じた通報が混ざっている",
+    );
+
+    const page2 = await value(db, SVC, `select public.admin_list_reports('open', 2, 2)`);
+    const ids1 = page1.rows.map((r) => r.report_id);
+    const ids2 = page2.rows.map((r) => r.report_id);
+    assert(
+      ids2.every((id) => !ids1.includes(id)),
+      "2ページ目に1ページ目と同じ通報が出ている",
+    );
+
+    // 閉じたものは open の一覧から外れる
+    const target = made[0];
+    await value(
+      db,
+      SVC,
+      `select public.admin_resolve_report($1, $2, 'resolved', '検査')`,
+      [target.author, target.reportId],
+    );
+    const after = await value(db, SVC, `select public.admin_list_reports('open', 100, 0)`);
+    assert(
+      !after.rows.some((r) => r.report_id === target.reportId),
+      "閉じた通報が未処理の一覧に残っている",
+    );
+  });
+
+  await test("W", "一覧も詳細も、通報者とお題の ID を1つも返さない", async () => {
+    const { workId, reportId } = await makeReported("管理検査：漏れ");
+
+    const list = await value(db, SVC, `select public.admin_list_reports('open', 100, 0)`);
+    const detail = await value(db, SVC, `select public.admin_get_report($1)`, [reportId]);
+
+    const promptId = (
+      await db.query(`select prompt_id from public.works where id = $1`, [workId])
+    ).rows[0].prompt_id;
+    const reporterId = (
+      await db.query(`select reporter_id from public.reports where id = $1`, [reportId])
+    ).rows[0].reporter_id;
+
+    for (const [label, payload] of [
+      ["一覧", JSON.stringify(list)],
+      ["詳細", JSON.stringify(detail)],
+    ]) {
+      assert(!payload.includes("reporter"), `${label}に reporter という語が出ている`);
+      assert(!payload.includes(reporterId), `${label}に通報者の ID が入っている`);
+      assert(!payload.includes(promptId), `${label}にお題の ID が入っている`);
+      assert(!payload.includes("prompt_id"), `${label}に prompt_id という語が出ている`);
+    }
+  });
+
+  await test("W", "詳細は同じ作品への他の通報を並べ、未処理の件数を数える", async () => {
+    const { workId, reportId } = await makeReported("管理検査：同一作品");
+    const other = await makeMember(db, null);
+    const second = await value(db, asMember(other), `select public.create_report($1,'other','検査の補足')`, [
+      workId,
+    ]);
+
+    const detail = await value(db, SVC, `select public.admin_get_report($1)`, [reportId]);
+    assert(detail.report.report_id === reportId, "違う通報が返っている");
+    assert(detail.work.work_id === workId, "違う作品が返っている");
+    assert(
+      detail.same_work_reports.some((r) => r.report_id === second.report_id),
+      "同じ作品への2件目が並んでいない",
+    );
+    assert(
+      !detail.same_work_reports.some((r) => r.report_id === reportId),
+      "自分自身が「他の通報」に混ざっている",
+    );
+    assert(detail.same_work_open_count === 2, `未処理の件数が ${detail.same_work_open_count}`);
   });
 
 }

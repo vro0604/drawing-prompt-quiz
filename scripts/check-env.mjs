@@ -118,6 +118,17 @@ const REQUIRED = [
     label: "通報の CAPTCHA（検証用）",
     check: (v) => (TEST_KEYS.has(v) ? "本番でテスト鍵は使えません" : null),
   },
+  {
+    // 管理画面（/admin）に入れる1人を決める値。未設定なら管理画面は
+    // 誰にも開かず、通報を閉じることも作品を下げることもできない。
+    // **「未設定だから素通し」にはしない**（CRON_SECRET と同じ考え方）。
+    name: "ADMIN_USER_ID",
+    label: "管理画面に入れる運営者の user id",
+    check: (v) =>
+      /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(v)
+        ? null
+        : "uuid の形にしてください（Supabase の Authentication → Users で確認できます）",
+  },
 ];
 
 const problems = [];

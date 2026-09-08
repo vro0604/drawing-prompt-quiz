@@ -17,8 +17,10 @@ import type { NextConfig } from "next";
  *   **画像そのものの上限は 5MB のまま**で、それはバケットの
  *   file_size_limit と投稿処理の両方が見ている。
  *
- * 【3】検索除外（限定公開のあいだだけ）
- *   下の headers() を参照。一般公開に切り替えるときに消す。
+ * 【3】検索除外
+ *   下の headers() を参照。2つある。
+ *   全経路のぶんは限定公開のあいだだけで、一般公開に切り替えるときに消す。
+ *   /admin のぶんは恒久で、一般公開になっても消さない。
  */
 
 /**
@@ -63,23 +65,41 @@ const nextConfig: NextConfig = {
     },
   },
 
-  // ───────── 【限定公開】検索除外（1/2）─────────
+  // ───────── 検索除外 ─────────
   //
-  // もう1か所は src/app/layout.tsx の metadata.robots（<meta>）。
-  // **一般公開に切り替えるときは、この headers() と
-  //   layout.tsx の robots ブロックの2か所だけを消す。**
+  // 下に2つある。**消してよいのは (a) だけ。**
   //
   // ヘッダにするのは、HTML でない応答にも付けるため。
   // 画像・OGP画像・Server Action の応答・404 の本文にも同じ札が付く。
   // meta タグだけだと、そこに穴が残る。
   //
-  // `/:path*` は全経路。静的ファイルより先に評価される。
   // 環境で切り替えない（新しい環境変数を増やさない）。
   // 限定公開をやめる判断は、コードを消すことで表す。
   headers() {
     return [
+      // (a) 【限定公開】全経路（1/2）
+      //
+      //   もう1か所は src/app/layout.tsx の metadata.robots（<meta>）。
+      //   **一般公開に切り替えるときは、この (a) と
+      //     layout.tsx の robots ブロックの2か所だけを消す。**
+      //   下の (b) は消さない。
       {
         source: "/:path*",
+        headers: [
+          { key: "X-Robots-Tag", value: "noindex, nofollow, noarchive" },
+        ],
+      },
+
+      // (b) 【恒久】管理画面だけ。**一般公開になっても消さない。**
+      //
+      //   (a) を消したあと、管理画面だけは検索から外れたままにする。
+      //   もう1か所は src/app/admin/layout.tsx の metadata.robots。
+      //
+      //   **これは認証ではない。**クローラーに読ませないだけで、
+      //   人が URL を打てば届く。入れるかどうかを決めているのは
+      //   src/features/admin/auth.ts の requireAdminPage()。
+      {
+        source: "/admin/:path*",
         headers: [
           { key: "X-Robots-Tag", value: "noindex, nofollow, noarchive" },
         ],

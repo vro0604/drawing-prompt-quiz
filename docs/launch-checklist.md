@@ -357,6 +357,12 @@ curl -s  https://<本番>/ | grep -o '<meta name="robots"[^>]*>'
 | `CRON_SECRET` | **×** | 自分で作る。**24文字以上**のランダム文字列 |
 | `NEXT_PUBLIC_TURNSTILE_SITE_KEY` | ○ | 手順3 |
 | `TURNSTILE_SECRET_KEY` | **×** | 手順3 |
+| `ADMIN_USER_ID` | **×** | Supabase → Authentication → Users → 自分の行の User UID |
+
+`ADMIN_USER_ID` は**管理画面（`/admin`）に入れる1人**を決める値。
+未設定だと `/admin` は誰にも開かず、通報を閉じることも作品を下げることも
+できない（**素通しにはしない**）。2026-09-08 の管理 v0 で追加した。
+入れる値は自分の Supabase user id（uuid）で、`NEXT_PUBLIC_` を付けない。
 
 `CRON_SECRET` は手元の端末で作って、**Vercel の入力欄に直接貼る**。
 ファイルに保存しない。
@@ -371,7 +377,8 @@ openssl rand -base64 32
       （付いているとブラウザに埋め込まれ、誰でも読める。ビルドが止まる）
 - [ ] `TURNSTILE_SECRET_KEY` も同じく `NEXT_PUBLIC_` を付けない
 - [ ] `NEXT_PUBLIC_SITE_URL` の末尾に `/` を付けない
-- [ ] 7つとも Production にチェックが入っている
+- [ ] `ADMIN_USER_ID` にも `NEXT_PUBLIC_` を付けない
+- [ ] 8つとも Production にチェックが入っている
 
 ### 成功の判定
 

@@ -113,16 +113,23 @@ terms_agreements (id, user_id, doc_kind, version, agreed_at, retain_until)
 | 同じ作品への通報は1回 | `reports` に UNIQUE(work_id, reporter_id) |
 | 通報の件数は誰にも返さない | 「受け付けた」だけを返す |
 | 作品の削除は**論理削除** | `delete_work` が `is_published=false` ＋ `deleted_at` |
+| 運営による非表示も**行を消さない** | `admin_hide_work` が `review_status='hidden'` だけを立てる。画像も回答も残る |
 | 画像の消去は**キュー処理** | `storage_cleanup_queue` ＋ 毎日の Cron。再試行あり |
 | 手放した ID | `handle_reservations` に鍵付きハッシュ。平文なし |
 | 旧 ID からの転送 | `handle_history` ＋ `get_handle_redirect` |
 
-**通報を受けたあとの運用は、まだ画面が無い。**
+**通報を受けたあとの運用に、2026-09-08 に画面ができた（管理 v0 / D177）。**
 `reports.status`（`open`/`reviewing`/`resolved`/`rejected`）と
-`works.review_status`（`ok`/`flagged`/`hidden`）は表にあるが、
-**それを操作するコードは無い**（確認済み）。
-いまは運営がダッシュボードで手作業する前提。
-規約では「〜することがあります」と書き、自動処理を約束しない。
+`works.review_status`（`ok`/`flagged`/`hidden`）を、
+`/admin/reports` から動かせる。できるのは3つだけ。
+作品を非表示にする（`review_status = 'hidden'`）／通報を対応済みにする／
+通報を却下する。どれも理由の記入が必須で、`admin_audit_log` に記録が残る。
+
+**それ以外は変わっていない。**利用停止（BAN）の経路は無く、
+作品の物理削除も無く、画像の消去もこの画面では行わない。
+`reviewing` を立てる操作も作っていない。
+規約では引き続き「〜することがあります」と書き、自動処理を約束しない
+（通報の件数で自動的に何かが起きる仕組みは無い）。
 
 ### 0-7. 外部サービスと通信の実装事実
 

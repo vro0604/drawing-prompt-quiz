@@ -25,7 +25,16 @@ import { startApp, warmupRoutes } from "./server.mjs";
 import { acquireHeavyLock } from "./exclusive.mjs";
 import { createRecorder } from "./record.mjs";
 import { recordCount } from "../counts.mjs";
-import { answerWork, makeMember, pickTags, rewindChallenge } from "../db/helpers.mjs";
+import {
+  answerWork,
+  asMember,
+  drawPrompt,
+  makeMember,
+  pickTags,
+  postWork,
+  rewindChallenge,
+  value,
+} from "../db/helpers.mjs";
 
 // **最初のネットワーク要求より前に柵を立てる。**
 // 本番のURL・project ref・ホスト名・鍵が環境にあれば、ここで異常終了する。
@@ -2569,6 +2578,424 @@ async function main() {
     const normal = await settledBody(m);
     assert(/お題の制作時間/.test(normal), "通常の作品から制作時間が消えた");
   });
+
+  /* =====================================================================
+   * X. 管理画面（管理 v0）
+   * =====================================================================
+   *
+   * 【何を確かめるか】
+   *   1. 管理者でない人には、URL を直接打っても見えないこと
+   *   2. 通報 → 判断 → 非表示／却下 → 記録 が、画面の操作だけで通ること
+   *   3. 非表示にした作品が、公開の一覧から実際に消えること
+   *
+   * 【作品は毎回この節の中で作る】
+   *   ここで作った作品を非表示にする。seed の作品を使うと、
+   *   他の節が見ている一覧から作品が1件消えてしまう。
+   *   自分で足して自分で消すので、**他の節から見た数は変わらない。**
+   *
+   * 【窓を開き直さない】
+   *   運営者の窓と、外から見る人の窓を1つずつだけ作って使い回す。
+   *   試験ごとにサインインし直すと、そのぶん画面の組み立てが増え、
+   *   計算機の混み具合だけで落ちるようになる（実測: 4回サインインする形だと
+   *   全件通しで /works への移動が30秒に届かなかった）。
+   */
+
+  let adminCtx = null;
+  let adminPage = null;
+  let outsideCtx = null;
+  let outsidePage = null;
+
+  /** 運営者としてサインイン済みの窓。最初に呼んだときだけ作る */
+  async function adminWindow() {
+    if (adminPage) return adminPage;
+    adminCtx = await browser.newContext();
+    adminPage = await adminCtx.newPage();
+    await signInAs(adminPage, base, seeded.adminEmail);
+    return adminPage;
+  }
+
+  /** サインインしていない人の窓。公開の一覧を見るのに使う */
+  async function outsideWindow() {
+    if (outsidePage) return outsidePage;
+    outsideCtx = await browser.newContext();
+    outsidePage = await outsideCtx.newPage();
+    return outsidePage;
+  }
+
+  /**
+   * 通報が1件付いた作品を作り、通報IDを返す。
+   *
+   * 通報するのは毎回あたらしい人。create_report が
+   * 「24時間に10件まで」を数えているので、同じ人を使い回すと
+   * 節を足したときに上限へ当たる。
+   */
+  async function seedReportedWork(title) {
+    const { prompt_id: promptId } = await drawPrompt(db, seeded.author, {
+      timeLimit: 3600,
+    });
+    const workId = await postWork(db, seeded.author, promptId, title);
+
+    const reporter = await makeMember(db, null);
+    const res = await value(
+      db,
+      asMember(reporter),
+      `select public.create_report($1, 'inappropriate', null)`,
+      [workId],
+    );
+    return { workId, reportId: res.report_id };
+  }
+
+  await test("X", "管理者でない人には、URL を直接打っても管理画面が出ない（404）", async (t) => {
+    const { reportId } = await seedReportedWork("管理E2E：他人は開けない");
+
+    t.stage("未サインインで一覧の URL を開く");
+    const anon = await outsideWindow();
+    const res1 = await anon.goto(`${base}/admin/reports`);
+    assert(res1.status() === 404, `未サインインで ${res1.status()} が返った（404 のはず）`);
+
+    t.stage("未サインインで詳細の URL を開く");
+    const res2 = await anon.goto(`${base}/admin/reports/${reportId}`);
+    assert(res2.status() === 404, `未サインインで ${res2.status()} が返った（404 のはず）`);
+
+    t.stage("一般の登録利用者でサインインして、同じ2つを開く");
+    const ctx = await browser.newContext();
+    const p = await ctx.newPage();
+    await signInAs(p, base, seeded.memberEmail);
+
+    const res3 = await p.goto(`${base}/admin/reports`);
+    assert(res3.status() === 404, `一般利用者に ${res3.status()} が返った（404 のはず）`);
+
+    const res4 = await p.goto(`${base}/admin/reports/${reportId}`);
+    assert(res4.status() === 404, `一般利用者に ${res4.status()} が返った（404 のはず）`);
+
+    await ctx.close();
+  });
+
+  await test("X", "運営者は通報の一覧を開ける。一覧からは何も変えられない", async (t) => {
+    const { reportId } = await seedReportedWork("管理E2E：一覧に出る");
+
+    t.stage("運営者で一覧を開く");
+    const p = await adminWindow();
+    const res = await p.goto(`${base}/admin/reports`);
+    assert(res.status() === 200, `運営者に ${res.status()} が返った（200 のはず）`);
+
+    await p.locator(`[data-report-id="${reportId}"]`).waitFor({
+      state: "visible",
+      timeout: 20000,
+    });
+
+    t.stage("一覧に操作のボタンが無い");
+    const body = await settledBody(p);
+    assert(!/非表示にする/.test(body), "一覧に「非表示にする」ボタンが出ている");
+    assert(!/対応済みにする/.test(body), "一覧に「対応済みにする」ボタンが出ている");
+    assert(!/却下する/.test(body), "一覧に「却下する」ボタンが出ている");
+  });
+
+  await test("X", "通報 → 非表示 → 対応済み が画面の操作だけで通り、作品が公開から消える", async (t) => {
+    const { workId, reportId } = await seedReportedWork("管理E2E：下げる");
+
+    t.stage("下げる前に、公開の一覧に出ていることを確かめる");
+    const anon = await outsideWindow();
+    await anon.goto(`${base}/works`);
+    assert(
+      /管理E2E：下げる/.test(await settledBody(anon)),
+      "非表示にする前から一覧に出ていない",
+    );
+
+    t.stage("運営者で詳細を開く");
+    const p = await adminWindow();
+    await p.goto(`${base}/admin/reports/${reportId}`);
+    await p.locator('[data-action="hide-work"]').waitFor({ state: "visible", timeout: 20000 });
+
+    t.stage("理由の欄が必須になっている");
+    const reasonBox = p
+      .locator('form:has([data-action="hide-work"]) textarea[name=reason]')
+      .first();
+    assert(await reasonBox.evaluate((el) => el.required), "理由の欄が必須になっていない");
+
+    t.stage("理由と確認を入れて非表示にする");
+    await reasonBox.fill("E2E：不適切な内容であることを確認した");
+    await p.locator("[data-confirm-hide]").check();
+    await submitAndSettle(p, p.locator('[data-action="hide-work"]'));
+
+    const afterHide = await settledBody(p);
+    assert(
+      /作品を非表示にしました/.test(afterHide),
+      `非表示の知らせが出ていない: ${afterHide.slice(0, 300)}`,
+    );
+    assert(
+      (await p.locator('[data-review-status="hidden"]').count()) > 0,
+      "画面の作品の状態が「運営が非表示」になっていない",
+    );
+
+    t.stage("通報はまだ開いている（下げることと閉じることは別）");
+    assert(
+      (await p.locator('[data-report-status="open"]').count()) > 0,
+      "作品を下げただけで通報まで閉じている",
+    );
+
+    t.stage("公開の一覧からも作品ページからも消えている");
+    await anon.goto(`${base}/works`);
+    assert(
+      !/管理E2E：下げる/.test(await settledBody(anon)),
+      "非表示にしたのに一覧に残っている",
+    );
+    const detail = await anon.goto(`${base}/works/${workId}`);
+    assert(detail.status() === 404, `非表示の作品ページが ${detail.status()} で開けた`);
+
+    t.stage("通報を対応済みにする");
+    await p
+      .locator('form:has([data-action="resolve-report"]) textarea[name=reason]')
+      .first()
+      .fill("E2E：作品を非表示にした");
+    await submitAndSettle(p, p.locator('[data-action="resolve-report"]'));
+
+    const afterResolve = await settledBody(p);
+    assert(/通報を対応済みにしました/.test(afterResolve), "対応済みの知らせが出ていない");
+    assert(
+      (await p.locator('[data-report-status="resolved"]').count()) > 0,
+      "通報の状態が対応済みになっていない",
+    );
+
+    t.stage("行も回答も画像の場所も残っている");
+    const row = (
+      await db.query(
+        `select review_status, deleted_at, image_path, image_deleted_at
+           from public.works where id = $1`,
+        [workId],
+      )
+    ).rows[0];
+    assert(row.review_status === "hidden", `review_status が ${row.review_status}`);
+    assert(row.deleted_at === null, "非表示なのに削除済みになっている");
+    assert(row.image_path !== null, "画像の場所が消えている");
+    assert(row.image_deleted_at === null, "画像を消したことにされている");
+    const queued = (
+      await db.query(
+        `select count(*)::int n from public.storage_cleanup_queue where path = $1`,
+        [row.image_path],
+      )
+    ).rows[0].n;
+    assert(queued === 0, "画像が消す順番待ちに積まれた（非表示は削除ではない）");
+
+    t.stage("監査記録が2件ぶん残っている");
+    const audit = (
+      await db.query(
+        `select admin_user_id, action, old_value, new_value, reason
+           from public.admin_audit_log
+          where (target_type = 'work' and target_id = $1)
+             or (target_type = 'report' and target_id = $2)
+          order by id`,
+        [workId, String(reportId)],
+      )
+    ).rows;
+    assert(audit.length === 2, `監査記録が ${audit.length} 件（2件のはず）`);
+    assert(audit[0].action === "hide_work", `1件目が ${audit[0].action}`);
+    assert(
+      audit[0].old_value === "ok" && audit[0].new_value === "hidden",
+      "1件目に、何から何へが残っていない",
+    );
+    assert(audit[1].action === "resolve_report", `2件目が ${audit[1].action}`);
+    assert(
+      audit[1].old_value === "open" && audit[1].new_value === "resolved",
+      "2件目に、何から何へが残っていない",
+    );
+    assert(
+      audit.every((a) => a.reason && a.reason.trim().length > 0),
+      "理由が空の記録がある",
+    );
+    assert(
+      audit.every((a) => a.admin_user_id === seeded.admin),
+      "操作した運営者の id が残っていない（画面から渡した人と違う）",
+    );
+  });
+
+  await test("X", "却下すると通報だけが閉じ、作品は公開されたまま", async (t) => {
+    const { workId, reportId } = await seedReportedWork("管理E2E：却下");
+
+    t.stage("運営者で詳細を開く");
+    const p = await adminWindow();
+    await p.goto(`${base}/admin/reports/${reportId}`);
+    await p.locator('[data-action="reject-report"]').waitFor({ state: "visible", timeout: 20000 });
+
+    t.stage("理由を書いて却下する");
+    await p
+      .locator('form:has([data-action="reject-report"]) textarea[name=reason]')
+      .first()
+      .fill("E2E：通報の理由に当たらなかった");
+    await submitAndSettle(p, p.locator('[data-action="reject-report"]'));
+
+    const body = await settledBody(p);
+    assert(/通報を却下しました/.test(body), "却下の知らせが出ていない");
+    assert(
+      (await p.locator('[data-report-status="rejected"]').count()) > 0,
+      "通報の状態が却下になっていない",
+    );
+
+    t.stage("作品は1列も変わっていない");
+    const row = (
+      await db.query(
+        `select review_status, is_published, deleted_at from public.works where id = $1`,
+        [workId],
+      )
+    ).rows[0];
+    assert(row.review_status === "ok", `却下で review_status が ${row.review_status} になった`);
+    assert(row.is_published === true, "却下で作品の公開設定が変わった");
+    assert(row.deleted_at === null, "却下で作品が削除された");
+
+    t.stage("公開の一覧にも残っている");
+    const anon = await outsideWindow();
+    await anon.goto(`${base}/works`);
+    assert(
+      /管理E2E：却下/.test(await settledBody(anon)),
+      "却下したのに作品が一覧から消えた",
+    );
+  });
+
+  await test("X", "一般の登録利用者は、管理の操作そのものを実行できない", async (t) => {
+    const { workId, reportId } = await seedReportedWork("管理E2E：直接送信");
+
+    /*
+     * 【なぜ画面を出さないだけでは足りないか】
+     *   Next.js 16 の同梱文書がこう書いている。
+     *   「Render-time gating (only rendering a form on an authenticated page)
+     *     is not a security boundary, because requests can be sent without
+     *     going through the UI.」
+     *   （node_modules/next/dist/docs/01-app/02-guides/server-actions.md）
+     *
+     *   だから **画面を通さずに、送信だけを真似る。**
+     *   運営者の画面から送り先と隠し項目を写し取り、
+     *   一般の利用者の窓からそのまま送る。
+     */
+
+    t.stage("運営者の画面から、送り先と隠し項目を写し取る");
+    const admin = await adminWindow();
+    await admin.goto(`${base}/admin/reports/${reportId}`);
+    await admin.locator('[data-action="hide-work"]').waitFor({
+      state: "visible",
+      timeout: 20000,
+    });
+
+    const shape = await admin.evaluate(() => {
+      const btn = document.querySelector('[data-action="hide-work"]');
+      const form = btn.closest("form");
+      const fields = [];
+      for (const el of form.querySelectorAll("input, textarea")) {
+        if (el.name) fields.push([el.name, el.value]);
+      }
+      return { action: form.getAttribute("action"), fields };
+    });
+
+    // Next.js は、JavaScript が動かなくても送れるように
+    // 隠し項目（$ACTION_ID_…）と、いまの経路を action に描く。
+    // 形が変わったらこの試験は成り立たないので、その場で落とす。
+    assert(
+      shape.fields.some(([name]) => name.startsWith("$ACTION_ID")),
+      `フォームに $ACTION_ID の隠し項目が無い（描かれ方が変わった）: ${JSON.stringify(shape)}`,
+    );
+
+    t.stage("一般の登録利用者の窓から、同じものを送る");
+    const ctx = await browser.newContext();
+    const p = await ctx.newPage();
+    await signInAs(p, base, seeded.memberEmail);
+
+    const multipart = {};
+    for (const [name, v] of shape.fields) multipart[name] = v;
+    multipart.reason = "E2E：一般利用者からの直接送信";
+    multipart.confirm = "yes";
+
+    const target = shape.action && shape.action.startsWith("/")
+      ? `${base}${shape.action}`
+      : `${base}/admin/reports/${reportId}`;
+
+    const res = await p.request.post(target, {
+      multipart,
+      failOnStatusCode: false,
+      maxRedirects: 0,
+    });
+
+    t.stage("作品も通報も、1列も変わっていない");
+    const work = (
+      await db.query(
+        `select review_status, is_published, deleted_at from public.works where id = $1`,
+        [workId],
+      )
+    ).rows[0];
+    assert(
+      work.review_status === "ok",
+      `一般利用者の直接送信で review_status が ${work.review_status} になった（応答は ${res.status()}）`,
+    );
+    assert(work.is_published === true, "一般利用者の直接送信で公開設定が変わった");
+    assert(work.deleted_at === null, "一般利用者の直接送信で作品が削除された");
+
+    const report = (
+      await db.query(`select status from public.reports where id = $1`, [reportId])
+    ).rows[0];
+    assert(report.status === "open", `一般利用者の直接送信で通報が ${report.status} になった`);
+
+    t.stage("監査記録も1件も増えていない");
+    const audit = (
+      await db.query(
+        `select count(*)::int n from public.admin_audit_log
+          where (target_type = 'work' and target_id = $1)
+             or (target_type = 'report' and target_id = $2)`,
+        [workId, String(reportId)],
+      )
+    ).rows[0].n;
+    assert(audit === 0, `断られたはずなのに監査記録が ${audit} 件ある`);
+
+    await ctx.close();
+
+    /*
+     * 【ここまでだと、試験が空振りでも合格してしまう】
+     *   送り方そのものが間違っていて操作に届いていなくても、
+     *   「何も変わっていない」は成り立つ。
+     *   **同じものを運営者の窓から送って、今度は変わることを確かめる。**
+     *   変われば、上の「変わらなかった」は断られた結果だと言える。
+     */
+    t.stage("同じものを運営者の窓から送ると、今度は効く");
+    const ok = await admin.request.post(target, {
+      multipart: { ...multipart, reason: "E2E：運営者からの直接送信（効くことの確認）" },
+      failOnStatusCode: false,
+      maxRedirects: 0,
+    });
+
+    const afterAdmin = (
+      await db.query(`select review_status from public.works where id = $1`, [workId])
+    ).rows[0].review_status;
+    assert(
+      afterAdmin === "hidden",
+      `運営者が同じものを送っても効かなかった（${afterAdmin} / 応答 ${ok.status()}）。` +
+        "送り方が間違っているので、上の「一般利用者では変わらない」は根拠にならない",
+    );
+  });
+
+  await test("X", "一度閉じた通報は、画面からも閉じ直せない", async (t) => {
+    const { reportId } = await seedReportedWork("管理E2E：二度閉じ");
+
+    const p = await adminWindow();
+    await p.goto(`${base}/admin/reports/${reportId}`);
+    await p.locator('[data-action="resolve-report"]').waitFor({ state: "visible", timeout: 20000 });
+
+    t.stage("いったん閉じる");
+    await p
+      .locator('form:has([data-action="resolve-report"]) textarea[name=reason]')
+      .first()
+      .fill("E2E：一度閉じる");
+    await submitAndSettle(p, p.locator('[data-action="resolve-report"]'));
+
+    t.stage("閉じたあとは、閉じるボタンそのものが出ない");
+    const body = await settledBody(p);
+    assert(/すでに閉じています/.test(body), "閉じたことが画面に出ていない");
+    assert(
+      (await p.locator('[data-action="resolve-report"]').count()) === 0,
+      "閉じたのに「対応済みにする」がまだ押せる",
+    );
+    assert(
+      (await p.locator('[data-action="reject-report"]').count()) === 0,
+      "閉じたのに「却下する」がまだ押せる",
+    );
+  });
+
 
   /* =====================================================================
    * !. 記録の自己試験（E2E_FORCE_FAIL=1 のときだけ動く）

@@ -25,6 +25,30 @@ export const SUPABASE_PUBLISHABLE_KEY =
 export const SUPABASE_SECRET_KEY = process.env.SUPABASE_SECRET_KEY ?? "";
 
 /**
+ * 運営者本人の Supabase user id。**サーバー専用**。
+ *
+ * 【なぜ DB の列ではなく環境変数か】
+ *   管理者は1人しかいない（`docs/legal-draft.md`「VRO（個人運営）」）。
+ *   profiles に role の列を足すと、**その列を誰が書き換えられるか**という
+ *   問題が新しく増える（account_status のときは列権限を revoke する
+ *   手当てが要った）。1人を見分けるだけなら、DB を1行も変えずに済む。
+ *
+ * 【NEXT_PUBLIC_ を付けない】
+ *   付けるとブラウザに埋め込まれ、管理者の user id が誰にでも読める。
+ *   uuid が漏れても直ちに入られはしないが、**照合の片側を配る意味は無い。**
+ *
+ * 【未設定のとき】
+ *   管理画面は誰にも開かない（404）。管理操作もすべて断る。
+ *   「未設定だから素通し」にしない。CRON_SECRET と同じ考え方。
+ */
+export const ADMIN_USER_ID = (process.env.ADMIN_USER_ID ?? "").trim();
+
+/** 管理者の照合ができる状態か。未設定なら管理機能は全部閉じる。 */
+export function hasAdminUserId(): boolean {
+  return ADMIN_USER_ID !== "";
+}
+
+/**
  * このサービスの**正規URL**。
  *
  * 確認メールの戻り先に使う。ここを個別 Deployment URL

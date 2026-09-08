@@ -5,6 +5,96 @@
 日時は JST。全体が400行を超えたら、一番下（最も古いもの）から削ります。
 
 ---
+## 2026-09-09 管理 v0 を独立コミットにした（DBは適用済み。画面はこれから出す）
+
+### 終えたこと
+
+- 通報を見て判断し、作品を非表示にするか通報を閉じるかを、ブラウザから
+  1件ずつ行えるようにした。これまでは表に列があるだけで、操作する道が
+  1本も無かった（決定は `docs/decisions.md` の D177）。
+- 管理者は1人だけ。DB に役割の列は作らず、環境変数 `ADMIN_USER_ID` に
+  入っている利用者ID1つとだけ照合する。**未設定なら誰も入れない**（404）。
+- 危ない書き込み4本は service_role からしか呼べない関数にして、
+  監査記録（`admin_audit_log`）を同じトランザクションに置いた。
+  **理由の記入が無いと記録できない**ので、記録の無い操作が起きない。
+- 作品を下げることと、通報を閉じることは別の操作にした。
+  下げても通報は開いたまま。行は消さない。画像も回答も残る。
+
+### 本番DBへの適用（2026-09-08 に実施済み）
+
+`supabase/migrations/20260908130000_admin_moderation.sql` の1本だけを
+`npm run db:apply:one` で当て、`supabase migration repair` で履歴へ記録した。
+本番の migration は45本から46本になった。詳しくは `docs/verify-2026-09-09.md`。
+
+### 土台を origin/main にした理由（実測）
+
+作業ツリーには複数の作業線が混ざっている。とくに手元の `main` にある
+未 push のコミット `eca460a`（プロフィール拡張）は、その migration
+`20260908150000` が**本番に当たっていない**。一緒に押すと本番の
+`/account` と `/u/[handle]` が壊れる。
+
+本番の migration 履歴と `origin/main` のファイルを突き合わせた実測。
+
+- 本番に入っている版番号 46 本
+- `origin/main` の migration ファイル 45 本（`.gitkeep` を除く）
+- 本番にあって `origin/main` に無いのは `20260908130000`（管理 v0）だけ
+- `origin/main` にあって本番に無いものは 0 本
+
+したがって `origin/main` ＋ 管理 v0 が、いまの本番DBとちょうど噛み合う。
+そこで `origin/main` から worktree を切り、管理 v0 のぶんだけを載せた。
+他の作業線のファイルには 1 行も触っていない。
+
+### その木での実測
+
+- `npm run typecheck` 終了コード0
+- `npm run lint` エラー0・警告2（すべて既存の `smoke-cutover.mjs`）
+- `npm run db:verify:local` 合格184・不合格0（管理の検査8項目と、
+  実際に呼んで断られることを見る10件を含む）
+- `npm run test:db` 183件すべて合格（管理のW群18件を含む）
+- `npm run build` 成功。経路一覧で `/admin/reports` と
+  `/admin/reports/[id]` が ƒ（動的）になっている
+- `npm run test:e2e` 67件中57件合格・10件不合格。**不合格10件はすべて時間切れ**で、
+  サーバー側は 200 / 303 を返していた（`GET /api/challenge 200 in 28.9s` 等）。
+  落ちた7群（A・C・D・E・F・Q・S）だけを流し直すと 29 件すべて合格。
+  管理のX群6件は、全件通しでも6件とも合格した。
+
+### 次の一手
+
+- push すると Vercel が組み直す。**Vercel の Production に `ADMIN_USER_ID`
+  が入っていること**が前提（入っていないと `check-env.mjs` がビルドを止める）。
+- 出したあとの検収は、この順を崩さない。
+  未ログインで404 → 一般利用者で404 → 運営者で200（read）→ 通報1件だけ write
+  → write 後にDBを読んで実測。
+- 拒否試験だけでは足りない。出す前も404、出したあと断られても404で
+  見分けがつかない。**運営者で200が返ることを確かめて初めて**、
+  404 が「画面が無い」ではなく「断られた」だと言える。
+- 本番の未処理の通報70件は、**全部が削除済みの検査用作品への通報**
+  （実利用者の通報0件・公開中の作品への通報0件。2026-09-09 の実測）。
+  扱いは決まっていない。勝手に閉じない。
+
+### 400行を超えたので、いちばん古い2件を削った
+
+削ったのは「2026-09-07（3回目）放棄と『他の候補を見る』に押せるボタンを付けた／
+メール確認を2枚のタブで確かめた」と「2026-09-07（2回目）D171 開示後の引き直し禁止・
+放棄・表示名・タイマー・認証」。**どちらも 2026-09-07 に本番へ出し終えている**
+（同ファイルの「2026-09-07（4回目）本番へ反映した」に記録がある）ので、
+進行中の作業線の記録は1件も消していない。中身は `docs/decisions.md` の
+D171 と、その回の verify 文書に残っている。
+
+### 触ったファイル
+
+- `supabase/migrations/20260908130000_admin_moderation.sql`（新規）
+- `src/features/admin/{auth.ts,rpc.ts,types.ts}`（新規）
+- `src/app/admin/layout.tsx`、`src/app/admin/reports/page.tsx`、
+  `src/app/admin/reports/[id]/{page.tsx,actions.ts}`（新規）
+- `src/app/_pending.tsx`、`src/lib/env.ts`、`src/lib/supabase/admin.ts`
+- `next.config.ts`、`scripts/check-env.mjs`、`scripts/db-checks.mjs`、`.env.example`
+- `test/db/run.mjs`、`test/e2e/{browser.mjs,seed.mjs,server.mjs}`
+- `docs/admin-tool-investigation.md`（新規）、`docs/verify-2026-09-09.md`（新規）
+- `docs/{decisions.md,spec.md,legal-draft.md,launch-checklist.md}`、`PROGRESS.md`
+
+---
+
 ## 2026-09-08（5回目）art_first を本番へ出した（DB1本＋画面。書きかけは入れていない）
 
 直前に終えたこと。
@@ -298,93 +388,3 @@
 - docs/art-first-investigation.md（新規）
 
 ---
-## 2026-09-07（3回目）放棄と「他の候補を見る」に押せるボタンを付けた／メール確認を2枚のタブで確かめた
-
-### 終えたこと
-
-- 前回「実装済み」と書いた「他の候補を見る」と放棄は、DB の関数だけで
-  画面のボタンが無かった。利用者から見れば無いのと同じ。お題の画面に
-  2つの操作を置いて、押せる状態にした。
-- 「他の候補を見る」は、まだ開いていないときだけ出る。押すと引かなかった
-  カードが開き、ボタンは消える。投稿の入口はそのまま残る。
-- 「このお題は描かない」は、進行中のお題にだけ出る。押すと放棄になり、
-  投稿の入口が消え、引かなかったカードが開く。
-- 放棄したお題の投稿画面（/works/new）に、断りの文を足した。
-  状態の英字をそのまま出していたのを、押した操作の言葉で書き直した。
-- メールの確認を、実際にタブ2枚で確かめられるようにした。検証用の
-  Supabase から確認の印を1つ取り出せるようにし、リンクを組み立てて開く。
-  元のタブが読み込み直さずに登録済みへ変わることを試験にした。
-- 嘘の合図だけでは登録済みにならないこと、別の端末に当たるところで開いた
-  ときは元のタブが勝手に切り替わらないことも、試験にした。
-
-### 検査（すべて実測）
-
-- test/db/run.mjs 145件中145件合格
-- test/db/upgrade.mjs 27件中27件合格
-- scripts/db-verify-local.mjs 171件中171件合格（判定しない11件は本番データ前提）
-- test/e2e/browser.mjs 56件中56件合格（今回5件追加。P群3件・Q群2件）
-- npm run typecheck 終了コード0 / npm run lint エラー0・警告3 / npm run build 成功
-
-### 次の一手
-
-- 本番へ migration 3本を当てる（日付順）。DBと画面を同時に出す。
-- 当てたあと npm run db:verify、smoke:draft、smoke:play、verify:launch。
-  この4本だけが本番の鍵を要するため未実行。
-- コミットも push も本番適用もまだしていない。
-
-### 触ったファイル
-
-- src/app/prompt/[id]/page.tsx（2つの操作を置いた）
-- src/app/prompt/[id]/actions.ts（押したときの処理を2本）
-- src/features/draft/rpc.ts（callAbandonPrompt / callRevealPromptCandidates）
-- src/app/works/new/page.tsx（放棄したお題への断り）
-- test/e2e/browser.mjs（P群3件・Q群2件とヘルパー3本）
-- test/e2e/supabase-mock.mjs（確認の印の取り出し口）
-- docs/decisions.md（D171 に 9 と 10 を追記）／docs/spec.md（4-4 に追記）
-
----
-
-
-## 2026-09-07（2回目）D171 開示後の引き直し禁止・放棄・表示名・タイマー・認証
-
-### 終えたこと
-
-- **前回の取りこぼしを塞いだ。**残りを開示した枠があるドラフトは引き直せなくなった。
-  開示してから引き直せば新しい候補をもう一式見られる抜け道があった。
-  画面で隠すのではなく、RPC を直に叩いても止まる形にした。
-- **お題の放棄を実装した。**仕様書にあって関数が1本も無かった。
-  放棄すると未選択候補が開く。投稿済みのお題は放棄できない。
-- **「他の候補を見る」も実装した。**制作中の開示とは時点も範囲も違うので、
-  廃止ではなく実装で埋めた。開いても投稿は続けられる。
-- **カテゴリ表示名を1か所から変えられるようにした。**2つの表にあって、
-  画面が読むのは片方だけだった。1回の呼び出しで両方が変わる関数を作り、
-  ずれていないことを検査で見張る。名前そのものは1つも変えていない。
-- **お題画面の静止タイマーを外した。**残り時間と経過は上部の帯に一本化。
-  帯が出していない期限の時刻と、延長ボタンは残した。
-- **メール確認の元タブ継続を入れた。**同じブラウザの他のタブへ合図を送り、
-  受け取った側はサーバーへ聞き直す。合図を認証の証拠にしていない。
-- 本番用の smoke 2本を新仕様へ直した（実行はしていない。本番の鍵が要るため）。
-- 検査: test/db/run.mjs 145件合格、upgrade 27件合格、db-verify-local 171件合格、
-  test/e2e 51件合格、typecheck・build 通過、lint はエラー0。
-
-### 次の一手
-
-**本番へ当てる順番が要注意。**DBを先に当てて画面を後にすると、
-古い画面はめくった時点で確定すると思って動くので枠が進まない。同時に出すこと。
-
-本番の smoke 2本は、当てたあとでないと実行できない。
-
-### 触ったファイル
-
-- supabase/migrations/20260907093000_reveal_locks_and_prompt_reveal.sql（新規）
-- supabase/migrations/20260907094000_category_label_single_source.sql（新規）
-- src/app/_auth-sync.tsx（新規）、src/app/layout.tsx、src/app/account/page.tsx、
-  src/app/auth/confirm/route.ts、src/app/prompt/[id]/_timer.tsx
-- scripts/smoke-draft.mjs、scripts/smoke-play.mjs
-- test/db/run.mjs、test/e2e/browser.mjs
-- docs/decisions.md（D171 追加）、docs/spec.md、PROGRESS.md
-
-**本番DBには当てていない。deploy もコミットもしていない。**
-
----
-

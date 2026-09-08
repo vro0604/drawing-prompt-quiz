@@ -4,9 +4,12 @@ import { SUPABASE_SECRET_KEY, SUPABASE_URL, hasSupabaseSecretKey } from "@/lib/e
 /**
  * Supabase クライアントの4つめ。**RLS を迂回する。**
  *
- * 使ってよい場所はここに書いた1つだけ。
+ * 使ってよい場所はここに書いたものだけ。
  *
  *   ・退会の第2段階（auth.users の削除と、遮断表への進み具合の記録）
+ *   ・運営の操作（管理 v0 / D177）。src/features/admin/rpc.ts が
+ *     service_role 専用の管理RPCを呼ぶ。**呼ぶ前に requireAdmin() を通すこと。**
+ *     認可はこのファイルではなく src/features/admin/auth.ts が持つ。
  *
  * ほかの用途で使わないこと。RLS を迂回するということは、
  * このプロジェクトが12の遮断表とRPCで積み上げてきた守りを、

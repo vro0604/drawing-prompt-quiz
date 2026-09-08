@@ -143,6 +143,12 @@ export async function seedForE2E(db, { memberEmail = "e2e-member@example.test" }
     await c.query(`select public.update_work_completeness($1, 'sketch')`, [sketchWork]);
   });
 
+  // 管理画面の検証に使う運営者。**ADMIN_USER_ID にこの id を渡す**
+  // （test/e2e/server.mjs）。作品も回答も持たせない。管理画面しか触らない人。
+  const adminEmail = "e2e-admin@example.test";
+  const admin = await createUser(db, { email: adminEmail, handle: "e2e-admin" });
+  await agree(db, admin);
+
   const hintReader = await createUser(db, { email: hintReaderEmail, handle: "e2e-hint" });
   await agree(db, hintReader);
   const plainAnswerer = await createUser(db, { email: plainAnswererEmail, handle: "e2e-plain" });
@@ -159,6 +165,8 @@ export async function seedForE2E(db, { memberEmail = "e2e-member@example.test" }
     hardPromptId: hardPrompt.prompt_id,
     flavorWork,
     memberEmail,
+    admin,
+    adminEmail,
     hintReader,
     hintReaderEmail,
     plainAnswerer,
