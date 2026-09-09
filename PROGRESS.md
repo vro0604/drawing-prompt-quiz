@@ -5,7 +5,7 @@
 日時は JST。全体が400行を超えたら、一番下（最も古いもの）から削ります。
 
 ---
-## 2026-09-10 回答の知らせを作った（D192。本番へはまだ当てていない）
+## 2026-09-10 回答の知らせを本番へ出した（D192。DB → push → 本番往復まで完了）
 
 ### 何ができるようになったか
 
@@ -58,16 +58,37 @@ D112（数字は取りに行った人にだけ出す）を保つため。
 - `npm run build` 成功（`/notices` が出た）
 - `E2E_ONLY=T npm run test:e2e` T群7件すべて合格
 
+### 本番へ出した（2026-09-10）
+
+順番は migration → DB検査 → push → 反映 → 本番往復。
+
+- `20260910090000_answer_notice.sql` を1本だけ当てた（他の49本には触れていない）。
+  本番の migration は 49 → 50 本。
+- 本番DB検査 203項目すべて合格・不合格0（A42・A43・A44 を足したので 200→203）。
+- push は `2f3eb1c` の1本だけ。Vercel の反映は 45 秒後に確認。
+- 本番往復（`npm run smoke:prod -- notice`）A〜I すべて合格。
+
+**本番のデータは1件も壊れていない。**表52・タグ474 は前後で同じ。
+既存の作品925件はすべて「まだ開いていない」から始まっている。
+
+### 本番の検査を書くときに3回間違えた（どれも検査側）
+
+- `get_art_first_vocabulary` の戻りを配列だと思っていた。
+  実際は `{ max_words, min_words, categories: [{ kind, tags }] }`。
+- 持ち込みの作品を秘密鍵で作ろうとして断られた（NOT_SIGNED_IN）。
+  あの関数は auth.uid() で作者を決めるので、**本人の道を通す**必要がある。
+- 選んだ語を同じ名前で3回送っていた。受け取る側はカンマで割って読むので、
+  1件しか届かなかった。
+
 ### 次の一手
 
-- 本番へはまだ当てていない。push もしていない。指示待ち。
-- 当てる順番は「migration → push」。列が増えるだけなので、
-  逆順でも壊れないが、知らせが出ない時間ができる。
-- そのあと modifier（B）へ進む。**別の migration・別のコミットにする。**
+- 通知は本番完了。次は modifier（正式語ごとの自動制作アシスト）。
+  **別の migration・別のコミットにする。**
 
 ### 触ったファイル
 
-- `supabase/migrations/20260910090000_answer_notice.sql`（新規・本番未適用）
+- `supabase/migrations/20260910090000_answer_notice.sql`（本番適用済み）
+- `scripts/smoke-notice.mjs`（新規）、`package.json`
 - `src/features/notice/{types.ts,rpc.ts}`（新規）、`src/app/notices/page.tsx`（新規）
 - `src/features/work/rpc.ts`（openMyWorkResult を追加）
 - `src/app/_shell.tsx`（ヘッダーに入口）、`src/app/works/[id]/page.tsx`
