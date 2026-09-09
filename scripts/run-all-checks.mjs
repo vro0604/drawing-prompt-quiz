@@ -103,6 +103,9 @@ const CHILD_ENV = neutraliseEnvFiles({
 
 const STEPS = [
   { key: "guard", name: "本番接続を止める柵の自己試験", cmd: "npm", args: ["run", "test:guard"] },
+  // **DB もブラウザも要らない検査を、いちばん先に置く。**数秒で終わるので、
+  // 長い工程を回してから「長押しの勘定が壊れていた」と分かる形にしない。
+  { key: "unit", name: "回答の単体試験（長押し・回答の組み立て）", cmd: "npm", args: ["run", "test:unit"] },
   { key: "db", name: "まっさらなDBへの全 migration ＋ 縦断試験", cmd: "npm", args: ["run", "test:db"] },
   { key: "db-upgrade", name: "旧 migration 状態からのアップグレード試験", cmd: "npm", args: ["run", "test:db:upgrade"] },
   { key: "db-verify", name: "DB構造・権限・漏洩経路の検査", cmd: "npm", args: ["run", "db:verify:local"] },

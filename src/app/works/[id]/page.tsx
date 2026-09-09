@@ -372,7 +372,32 @@ function PublicView({
             flavor={after.flavor}
             canUse={after.isRegistered}
           />
-          <QuizForm quiz={quiz} />
+
+          {/*
+            回答は1セクションずつ・長押しで確定する（_answer.tsx）。
+            絵はこの中にもう一度置いてある。**答えている間ずっと見えている**
+            必要があるためで、上の大きな1枚とは役目が違う
+            （同じ画像なので、読み込みは1回で済む）。
+          */}
+          <AnswerFlow
+            quiz={quiz}
+            imageSrc={workImageUrl(work.image_path)}
+            imageWidth={work.image_width}
+            imageHeight={work.image_height}
+            title={work.title}
+          />
+
+          {/*
+            JavaScript が動かないときの回答手段。
+            **長押しは JavaScript が要る。**動かない環境で答える道を
+            消さないために、今までの「全部並べてチェックする」形を残す。
+            JavaScript が動くときは、この noscript の中身は無いものとして扱われ、
+            中の style も効かない（＝上の AnswerFlow が見える）。
+          */}
+          <noscript>
+            <style>{"[data-answer-flow]{display:none}"}</style>
+            <QuizForm quiz={quiz} />
+          </noscript>
         </>
       )}
 

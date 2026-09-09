@@ -33,6 +33,7 @@ import {
   pickTags,
   postWork,
   rewindChallenge,
+  shiftDeadline,
   value,
 } from "../db/helpers.mjs";
 
@@ -209,6 +210,107 @@ async function submitAndSettle(page, locator) {
   await waiting;
   await page.waitForLoadState("networkidle");
   await page.waitForTimeout(600);
+}
+
+/* ===========================================================================
+ * 回答の画面（1セクションずつ・長押しで確定）を進める
+ * ===========================================================================
+ *
+ * 【なぜ手順を1つにまとめるか】
+ *   回答は10か所以上の節から呼ばれる。各節が自分でカードを押す形にすると、
+ *   確定の作法が変わるたびに10か所を直すことになる。
+ *
+ * 【長押しは本物の 1.5 秒を使う】
+ *   時間を縮める抜け道は作らない。時間そのものが仕様なので、
+ *   短くできる経路があると、その経路でしか通らない試験になる。
+ *   代わりに、**時間の勘定そのものは別の試験（npm run test:unit）で
+ *   時計を手で進めて確かめてある。**ここは「画面の上で本当に押せるか」だけを見る。
+ */
+
+/** src/features/quiz/hold.ts の HOLD_MS と同じ値。ここを短くしない */
+const HOLD_MS = 1500;
+
+/**
+ * カードを長押しして確定させる。
+ *
+ * 【画面のいちばん下へ寄せてから押す】
+ *   回答の画面は上に作品の絵が貼り付いている。真ん中へ寄せると
+ *   絵の下に潜って押せないことがある。下端へ寄せれば絵とは重ならない。
+ *
+ * 【満ちたあと、次のセクションへ移る前に指を離す】
+ *   確定は 1.5 秒、次へ移るのはその 0.52 秒後。
+ *   その間に離しておかないと、入れ替わった先のカードの上で指が離れる。
+ */
+async function holdToConfirm(p, locator) {
+  await locator.scrollIntoViewIfNeeded();
+  await locator.evaluate((n) => n.scrollIntoView({ block: "end", behavior: "instant" }));
+  const box = await locator.boundingBox();
+  assert(box, "長押しするカードの位置が取れない");
+  await p.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
+  await p.mouse.down();
+
+  // 満ちたら**すぐ離す。**満ちてから 0.52 秒で次のセクションへ入れ替わるので、
+  // そのあとに離すと、入れ替わった先のカードの上で指が離れることになる。
+  //
+  // 【見た目の数字では判定しない】
+  //   充填の曲線は終盤ほど遅いので、`data-hold-progress` は 1.5 秒に
+  //   届く手前で 100 に丸まる。そこで離すと確定しない。
+  //   確定したかどうかだけを出している `data-hold-done` を見る。
+  const deadline = Date.now() + HOLD_MS + 4000;
+  while (Date.now() < deadline) {
+    const v = await locator.getAttribute("data-hold-done").catch(() => null);
+    if (v === "1") break;
+    await p.waitForTimeout(50);
+  }
+  await p.mouse.up();
+}
+
+/** いま何セクション答え終わっているか（画面が持っている数を読む） */
+async function answeredCount(p) {
+  const v = await p.locator("[data-answer-flow]").getAttribute("data-answered-count");
+  return Number(v ?? -1);
+}
+
+/** そのセクションの総数 */
+async function sectionTotal(p) {
+  const v = await p.locator("[data-section]").first().getAttribute("data-section-total");
+  return Number(v ?? -1);
+}
+
+/**
+ * 回答の画面を最後まで進めて送る。
+ *
+ * choose を渡さなければ、各セクションの1枚目をビタ当てで確定する。
+ */
+async function answerAllSections(p, { choose = null } = {}) {
+  act(`回答の画面を進める（${p.url()}）`);
+  const flow = p.locator("[data-answer-flow]");
+  await flow.waitFor({ state: "visible", timeout: 20000 });
+
+  const total = await sectionTotal(p);
+  assert(total > 0, "出題が1問も出ていない");
+
+  for (let i = 0; i < total; i += 1) {
+    const section = p.locator(`[data-section][data-section-index="${i}"]`);
+    await section.waitFor({ state: "visible", timeout: 20000 });
+    const card = choose
+      ? await choose(section, p)
+      : section.locator("[data-answer-card]").first();
+    await holdToConfirm(p, card);
+    await p.waitForFunction(
+      (n) =>
+        Number(
+          document
+            .querySelector("[data-answer-flow]")
+            ?.getAttribute("data-answered-count") ?? -1,
+        ) >= n,
+      i + 1,
+      { timeout: 15000 },
+    );
+  }
+
+  await p.locator("[data-confirm-stage]").waitFor({ state: "visible", timeout: 15000 });
+  await submitAndSettle(p, p.getByRole("button", { name: "回答する" }));
 }
 
 /**
@@ -572,13 +674,7 @@ async function main() {
   });
 
   await test("A", "ゲストがそのまま回答でき、結果が出る", async () => {
-    const groups = g.locator("fieldset");
-    await groups.first().waitFor({ state: "attached", timeout: 15000 });
-    const n = await groups.count();
-    for (let i = 0; i < n; i += 1) {
-      await groups.nth(i).locator("input[type=checkbox]").first().check();
-    }
-    await submitAndSettle(g, g.getByRole("button", { name: "回答する" }));
+    await answerAllSections(g);
 
     const body = await settledBody(g);
     assert(body.includes("この絵のお題"), "回答後にお題が開示されていない");
@@ -924,12 +1020,7 @@ async function main() {
     const p = await guest2.newPage();
 
     await p.goto(`${base}/works/${seeded.works[2].workId}`);
-    const groups = p.locator("fieldset");
-    await groups.first().waitFor({ state: "attached", timeout: 15000 });
-    for (let i = 0; i < (await groups.count()); i += 1) {
-      await groups.nth(i).locator("input[type=checkbox]").first().check();
-    }
-    await submitAndSettle(p, p.getByRole("button", { name: "回答する" }));
+    await answerAllSections(p);
 
     await settledBody(p);   // 本文が届くまで待つ（読むのは下の判定）
     await assertBody(p, /いまの流れの中だけ/, "ゲストに「いまの流れの中だけ」の説明が出ていない");
@@ -1008,14 +1099,7 @@ async function main() {
   await test("F", "他者のお題に答えて、要素を1つ持ち出せる", async () => {
     await m.goto(`${base}/works/${seeded.works[0].workId}`);
 
-    const groups = m.locator("fieldset");
-    await groups.first().waitFor({ state: "attached", timeout: 15000 });
-    const n = await groups.count();
-    assert(n > 0, "回答の欄が出ていない");
-    for (let i = 0; i < n; i += 1) {
-      await groups.nth(i).locator("input[type=checkbox]").first().check();
-    }
-    await submitAndSettle(m, m.getByRole("button", { name: "回答する" }));
+    await answerAllSections(m);
 
     await m.locator("[data-revealed-card] input[type=checkbox]").first().check();
     await submitAndSettle(m, m.getByRole("button", { name: /1つの保存枠にする/ }));
@@ -1093,13 +1177,8 @@ async function main() {
 
     // もう1件、別の作品から持ち出そうとする
     await m.goto(`${base}/works/${seeded.works[1].workId}`);
-    const groups = m.locator("fieldset");
-    const n = await groups.count();
-    if (n > 0) {
-      for (let i = 0; i < n; i += 1) {
-        await groups.nth(i).locator("input[type=checkbox]").first().check();
-      }
-      await submitAndSettle(m, m.getByRole("button", { name: "回答する" }));
+    if ((await m.locator("[data-answer-flow]").count()) > 0) {
+      await answerAllSections(m);
       await m.waitForLoadState("networkidle");
     }
 
@@ -1250,12 +1329,7 @@ async function main() {
     await settledBody(page);   // 本文が届くまで待つ（読むのは下の判定）
     await assertBody(page, /作者からの言葉（ヒント）/, "開いても文章が出ていない");
 
-    const groups = page.locator("fieldset");
-    await groups.first().waitFor({ state: "attached", timeout: 15000 });
-    for (let i = 0; i < (await groups.count()); i += 1) {
-      await groups.nth(i).locator("input[type=checkbox]").first().check();
-    }
-    await submitAndSettle(page, page.getByRole("button", { name: "回答する" }));
+    await answerAllSections(page);
 
     const { rows } = await db.query(
       `select hint_used from public.answers where work_id = $1 and user_id = $2`,
@@ -1271,12 +1345,7 @@ async function main() {
     const { ctx, page } = await signedInPage(seeded.plainAnswererEmail);
 
     await page.goto(`${base}/works/${seeded.flavorWork}`);
-    const groups = page.locator("fieldset");
-    await groups.first().waitFor({ state: "attached", timeout: 15000 });
-    for (let i = 0; i < (await groups.count()); i += 1) {
-      await groups.nth(i).locator("input[type=checkbox]").first().check();
-    }
-    await submitAndSettle(page, page.getByRole("button", { name: "回答する" }));
+    await answerAllSections(page);
 
     const { rows } = await db.query(
       `select hint_used from public.answers where work_id = $1 and user_id = $2`,
@@ -1472,13 +1541,15 @@ async function main() {
     assert(cards >= 5, `高難度のお題が ${cards} 語（5語以上のはず）`);
 
     await p.goto(`${base}/works/${seeded.hardWork}`);
-    await p
-      .locator("fieldset[data-question]")
-      .first()
-      .waitFor({ state: "attached", timeout: 15000 })
-      .catch(() => null);
-    const shown = await p.locator("fieldset[data-question]").count();
+    await p.locator("[data-answer-flow]").waitFor({ state: "visible", timeout: 20000 });
+
+    // 画面には**1セクションしか出ない。**問数はセクションが持っている総数を読む
+    const shown = await sectionTotal(p);
     assert(shown === cards, `出題が ${shown} 問（お題の ${cards} 語と同じはず）`);
+    assert(
+      (await p.locator("[data-section]").count()) === 1,
+      "セクションが同時に2つ以上出ている（1つずつのはず）",
+    );
 
     // 共有された画面に答えが出ていないこと。**選択肢の外に正解が無いか**を見る。
     //
@@ -1490,7 +1561,7 @@ async function main() {
     const outside = await p.evaluate(() => {
       const clone = document.body.cloneNode(true);
       for (const el of clone.querySelectorAll("script, style, template, noscript")) el.remove();
-      for (const fs of clone.querySelectorAll("fieldset[data-question]")) fs.remove();
+      for (const fs of clone.querySelectorAll("[data-answer-flow]")) fs.remove();
       return clone.textContent;
     });
     const answers = (
@@ -1506,90 +1577,542 @@ async function main() {
     await ctx.close();
   });
 
-  await test("I", "2つ選ぶと2択当てになり、片方が当たっていれば的中する", async () => {
+  /* =====================================================================
+   * T. 回答の画面（1セクションずつ・長押しで確定）
+   * =====================================================================
+   *
+   * 【何を見るか】
+   *   ここで見るのは**画面の上で本当に操作できるか**だけ。
+   *   1.5 秒という時間そのものの勘定は npm run test:unit が
+   *   時計を手で進めて確かめている（本物の秒を待たずに済む）。
+   */
+
+  await test("T", "セクションは1つずつ出て、いま何番目かが分かる", async () => {
     const ctx = await browser.newContext();
     const p = await ctx.newPage();
     await p.goto(`${base}/works/${seeded.hardWork}`);
+    await p.locator("[data-answer-flow]").waitFor({ state: "visible", timeout: 20000 });
 
-    // 各問で「正解 ＋ 正解ではない1つ」を選ぶ。**どちらかが当たれば的中**
-    const groups = p.locator("fieldset[data-question]");
-    await groups.first().waitFor({ state: "attached", timeout: 15000 });
-    const n = await groups.count();
-
-    for (let i = 0; i < n; i += 1) {
-      const fs = groups.nth(i);
-      const slotKey = await fs.getAttribute("data-slot-key");
-      const correct = (
-        await db.query(
-          `select t.label from public.prompt_cards pc join public.tags t on t.id = pc.tag_id
-            where pc.prompt_id = $1 and pc.card_slot_key = $2`,
-          [seeded.hardPromptId, slotKey],
-        )
-      ).rows[0].label;
-
-      const boxes = fs.locator("input[type=checkbox]");
-      const count = await boxes.count();
-      let pickedCorrect = false;
-      let pickedOther = false;
-      for (let j = 0; j < count; j += 1) {
-        const label = await boxes.nth(j).getAttribute("data-choice-label");
-        if (label === correct && !pickedCorrect) {
-          await boxes.nth(j).check();
-          pickedCorrect = true;
-        } else if (label !== correct && !pickedOther) {
-          await boxes.nth(j).check();
-          pickedOther = true;
-        }
-      }
-      assert(pickedCorrect && pickedOther, `${slotKey} で2つ選べなかった`);
-    }
-
-    await submitAndSettle(p, p.getByRole("button", { name: "回答する" }));
-
-    await settledBody(p);   // 本文が届くまで待つ（読むのは下の判定）
-    await assertBody(
-      p,
-      new RegExp(`${n}問中 ${n}問 的中`),
-      "2択当てで的中しなかった",
+    const total = await sectionTotal(p);
+    assert(total >= 5, `セクションが ${total} 個（5個以上のはず）`);
+    assert(
+      (await p.locator("[data-section]").count()) === 1,
+      "セクションが同時に2つ以上出ている",
     );
-    await assertBody(p, /2択当て/, "方式（2択当て）が結果に出ていない");
-    await assertBody(p, /2つまでの絞り込みでした/, "断定ではないことが書かれていない");
 
-    const { rows } = await db.query(
-      `select ai.answer_mode, count(*)::int as n from public.answer_items ai
-         join public.answers a on a.id = ai.answer_id
-        where a.work_id = $1 group by 1`,
-      [seeded.hardWork],
+    const shown = (await p.locator("[data-section-position]").innerText()).replace(/\s+/g, "");
+    assert(shown === `セクション1/${total}`, `位置の表示が「${shown}」`);
+
+    // 最初のセクションでは「前へ」が無い（戻る先が無い）
+    assert(
+      (await p.locator("[data-prev-section]").count()) === 0,
+      "1つ目のセクションに「前へ」が出ている",
     );
-    assert(rows.length === 1 && rows[0].answer_mode === "pair", "2択当てとして保存されていない");
-    assert(rows[0].n === n, `保存された内訳が ${rows[0].n} 件（${n} 件のはず）`);
+
+    // 絵は回答の中にも置いてあり、答えている間ずっと見える
+    assert(
+      (await p.locator("[data-answer-flow] img").count()) >= 1,
+      "回答の画面に作品の絵が無い",
+    );
 
     await ctx.close();
   });
 
-  await test("I", "問ごとに、いまの答え方が画面に出る（未選択／ビタ当て／2択当て）", async () => {
+  await test("T", "短く押しても確定しない。長く押すと確定して次へ進む", async () => {
     const ctx = await browser.newContext();
     const p = await ctx.newPage();
     await p.goto(`${base}/works/${seeded.hardWork}`);
+    await p.locator("[data-answer-flow]").waitFor({ state: "visible", timeout: 20000 });
 
-    const fs = p.locator("fieldset[data-question]").first();
-    await fs.waitFor({ state: "attached", timeout: 15000 });
-    const state = fs.locator("p.answer-mode-state");
-    const boxes = fs.locator("input[type=checkbox]");
+    const card = p.locator("[data-section] [data-answer-card]").first();
+    await card.evaluate((n) => n.scrollIntoView({ block: "end", behavior: "instant" }));
+    const box = await card.boundingBox();
 
-    // **見えている文だけを読む。**CSS で1つだけ表示する作りなので、
-    // innerText を取れば「いま何と書いてあるか」がそのまま出る。
-    const shown = async () => (await state.innerText()).replace(/\s+/g, " ").trim();
+    // ふつうに押して離すだけ（＝短い押下）。**これで確定してはいけない**
+    await p.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
+    await p.mouse.down();
+    await p.waitForTimeout(300);
+    await p.mouse.up();
+    await p.waitForTimeout(400);
 
+    assert(await answeredCount(p) === 0, "短く押しただけで確定した");
     assert(
-      /回答を選んでください/.test(await shown()),
-      `未選択のときの表示が違う: ${await shown()}`,
+      (await p.locator('[data-section][data-section-index="0"]').count()) === 1,
+      "短く押しただけでセクションが進んだ",
     );
 
-    await boxes.nth(0).check();
+    // 押している途中でゲージが増えていること（押した手応えが出ている）
+    await p.mouse.down();
+    await p.waitForTimeout(700);
+    const mid = Number(await card.getAttribute("data-hold-progress"));
+    await p.mouse.up();
+    assert(mid > 0 && mid < 100, `途中のゲージが ${mid}%`);
+
+    // 巻き戻し。離した直後に 0 へ落ちないこと
+    await p.waitForTimeout(150);
+    const rewinding = Number(await card.getAttribute("data-hold-progress"));
+    assert(rewinding > 0, "離した直後にゲージが 0 になった");
+
+    // 今度は最後まで押す
+    await holdToConfirm(p, card);
+    await p.waitForFunction(
+      () =>
+        Number(
+          document.querySelector("[data-answer-flow]")?.getAttribute("data-answered-count") ?? -1,
+        ) >= 1,
+      undefined,
+      { timeout: 15000 },
+    );
+    await p.locator('[data-section][data-section-index="1"]').waitFor({ timeout: 15000 });
+
+    await ctx.close();
+  });
+
+  await test("T", "前へ戻って答えを変えられ、他のセクションの答えは消えない", async () => {
+    const ctx = await browser.newContext();
+    const p = await ctx.newPage();
+    await p.goto(`${base}/works/${seeded.hardWork}`);
+    await p.locator("[data-answer-flow]").waitFor({ state: "visible", timeout: 20000 });
+
+    // 1つ目と2つ目を答える
+    for (const i of [0, 1]) {
+      const sec = p.locator(`[data-section][data-section-index="${i}"]`);
+      await sec.waitFor({ timeout: 15000 });
+      await holdToConfirm(p, sec.locator("[data-answer-card]").first());
+      await p.waitForFunction(
+        (n) =>
+          Number(
+            document.querySelector("[data-answer-flow]")?.getAttribute("data-answered-count") ?? -1,
+          ) >= n,
+        i + 1,
+        { timeout: 15000 },
+      );
+    }
+
+    // 3つ目から「前へ」で2つ目へ戻る
+    await p.locator('[data-section][data-section-index="2"]').waitFor({ timeout: 15000 });
+    await clickSafely(p.locator("[data-prev-section]"));
+    await p.locator('[data-section][data-section-index="1"]').waitFor({ timeout: 15000 });
     assert(
-      /ビタ当て/.test(await shown()) && !/2択当て/.test(await shown()),
-      `1つ選んだときの表示が違う: ${await shown()}`,
+      (await p.locator('[data-section][data-section-answered="1"]').count()) === 1,
+      "戻った先が「回答済み」になっていない",
+    );
+
+    // 別の語で答え直す。**回答済みの数は増えない（置き換わる）**
+    const second = p.locator('[data-section][data-section-index="1"]');
+    const other = second.locator("[data-answer-card]").nth(1);
+    const otherLabel = await other.getAttribute("data-choice-label");
+    await holdToConfirm(p, other);
+    await p.waitForTimeout(900);
+    assert(await answeredCount(p) === 2, `答え直したら ${await answeredCount(p)} 件になった`);
+
+    // 残りを答えて最終確認まで進む
+    const total = await sectionTotal(p);
+    for (let i = 2; i < total; i += 1) {
+      const sec = p.locator(`[data-section][data-section-index="${i}"]`);
+      await sec.waitFor({ timeout: 15000 });
+      await holdToConfirm(p, sec.locator("[data-answer-card]").first());
+      await p.waitForFunction(
+        (n) =>
+          Number(
+            document.querySelector("[data-answer-flow]")?.getAttribute("data-answered-count") ?? -1,
+          ) >= n,
+        i + 1,
+        { timeout: 15000 },
+      );
+    }
+
+    const confirm = p.locator("[data-confirm-stage]");
+    await confirm.waitFor({ state: "visible", timeout: 15000 });
+
+    // 最終確認に、答え直したほうの語が出ている（1つ目の語で上書きされていない）
+    const confirmText = (await confirm.innerText()).replace(/\s+/g, " ");
+    assert(
+      confirmText.includes(otherLabel),
+      `答え直した語「${otherLabel}」が最終確認に出ていない: ${confirmText.slice(0, 200)}`,
+    );
+    assert(!confirmText.includes("未回答"), "全部答えたのに未回答が残っている");
+
+    // 最終確認から戻って直せる
+    await clickSafely(confirm.locator('[data-edit-section="0"]'));
+    await p.locator('[data-section][data-section-index="0"]').waitFor({ timeout: 15000 });
+
+    await ctx.close();
+  });
+
+  await test("T", "全部答えるまで送れない（最終確認の送信が押せない）", async () => {
+    const ctx = await browser.newContext();
+    const p = await ctx.newPage();
+    await p.goto(`${base}/works/${seeded.hardWork}`);
+    await p.locator("[data-answer-flow]").waitFor({ state: "visible", timeout: 20000 });
+
+    // 1つだけ答えてから、最終確認へは行けないことを見る
+    const sec = p.locator('[data-section][data-section-index="0"]');
+    await holdToConfirm(p, sec.locator("[data-answer-card]").first());
+    await p.waitForTimeout(900);
+
+    assert(
+      (await p.locator("[data-to-confirm]").count()) === 0,
+      "1問しか答えていないのに「最終確認へ」が出ている",
+    );
+    assert(
+      (await p.locator("[data-confirm-stage]").count()) === 0,
+      "1問しか答えていないのに最終確認が出ている",
+    );
+
+    await ctx.close();
+  });
+
+  await test("T", "読み込み直しても、確定した回答が残っている", async () => {
+    const ctx = await browser.newContext();
+    const p = await ctx.newPage();
+    await p.goto(`${base}/works/${seeded.hardWork}`);
+    await p.locator("[data-answer-flow]").waitFor({ state: "visible", timeout: 20000 });
+
+    const sec = p.locator('[data-section][data-section-index="0"]');
+    const label = await sec.locator("[data-answer-card]").first().getAttribute("data-choice-label");
+    await holdToConfirm(p, sec.locator("[data-answer-card]").first());
+    await p.waitForTimeout(900);
+    assert(await answeredCount(p) === 1, "確定できていない");
+
+    await p.reload({ waitUntil: "domcontentloaded" });
+    await p.locator("[data-answer-flow]").waitFor({ state: "visible", timeout: 20000 });
+    await p.waitForFunction(
+      () =>
+        Number(
+          document.querySelector("[data-answer-flow]")?.getAttribute("data-answered-count") ?? -1,
+        ) === 1,
+      undefined,
+      { timeout: 15000 },
+    );
+
+    // 続きのセクションから再開している
+    const idx = await p.locator("[data-section]").getAttribute("data-section-index");
+    assert(idx === "1", `読み込み直したら ${idx} 番目に戻った（1 のはず）`);
+    assert(label !== null, "選んだ語が読めない（準備の失敗）");
+
+    await ctx.close();
+  });
+
+  await test("T", "キーボードだけでも確定できる（Space の長押し）", async () => {
+    const ctx = await browser.newContext();
+    const p = await ctx.newPage();
+    await p.goto(`${base}/works/${seeded.hardWork}`);
+    await p.locator("[data-answer-flow]").waitFor({ state: "visible", timeout: 20000 });
+
+    const card = p.locator("[data-section] [data-answer-card]").first();
+    await card.focus();
+    await p.keyboard.down(" ");
+    await p.waitForTimeout(HOLD_MS + 250);
+    await p.keyboard.up(" ");
+
+    await p.waitForFunction(
+      () =>
+        Number(
+          document.querySelector("[data-answer-flow]")?.getAttribute("data-answered-count") ?? -1,
+        ) >= 1,
+      undefined,
+      { timeout: 15000 },
+    );
+    await ctx.close();
+  });
+
+  await test(
+    "T",
+    "複勝（2語）で送ると、片方が当たっていれば的中する【操作方法は暫定】",
+    async () => {
+      /*
+        【この節が固定していないこと】
+          「2語をどう確定するか」はまだ決まっていない。
+          いまは「2語を選んでから、確定のボタンを長押し」という
+          **暫定の操作**で通している。操作が変わったらこの節も変わる。
+
+        【この節が固定していること】
+          2語で送ったときに、DB へ pair として残り、
+          どちらかが当たっていれば的中になること。これは操作方法が
+          どちらに決まっても変わらない。
+      */
+      const ctx = await browser.newContext();
+      const p = await ctx.newPage();
+      await p.goto(`${base}/works/${seeded.hardWork}`);
+      await p.locator("[data-answer-flow]").waitFor({ state: "visible", timeout: 20000 });
+
+      const total = await sectionTotal(p);
+
+      for (let i = 0; i < total; i += 1) {
+        const sec = p.locator(`[data-section][data-section-index="${i}"]`);
+        await sec.waitFor({ timeout: 15000 });
+
+        const slotKey = await sec.getAttribute("data-slot-key");
+        const correct = (
+          await db.query(
+            `select t.label from public.prompt_cards pc join public.tags t on t.id = pc.tag_id
+              where pc.prompt_id = $1 and pc.card_slot_key = $2`,
+            [seeded.hardPromptId, slotKey],
+          )
+        ).rows[0].label;
+
+        // 答え方を「複勝」に変える
+        await clickSafely(sec.locator('[data-mode-button="pair"]'));
+
+        // 正解 ＋ 正解ではない1つ を仮に選ぶ
+        const cards = sec.locator("[data-answer-card]");
+        const count = await cards.count();
+        let pickedCorrect = false;
+        let pickedOther = false;
+        for (let j = 0; j < count; j += 1) {
+          const label = await cards.nth(j).getAttribute("data-choice-label");
+          if (label === correct && !pickedCorrect) {
+            await clickSafely(cards.nth(j));
+            pickedCorrect = true;
+          } else if (label !== correct && !pickedOther) {
+            await clickSafely(cards.nth(j));
+            pickedOther = true;
+          }
+        }
+        assert(pickedCorrect && pickedOther, `${slotKey} で2語を選べなかった`);
+
+        await sec.locator('[data-pair-commit="ready"]').waitFor({ timeout: 10000 });
+        await holdToConfirm(p, sec.locator("[data-pair-commit]"));
+        await p.waitForFunction(
+          (n) =>
+            Number(
+              document
+                .querySelector("[data-answer-flow]")
+                ?.getAttribute("data-answered-count") ?? -1,
+            ) >= n,
+          i + 1,
+          { timeout: 15000 },
+        );
+      }
+
+      await p.locator("[data-confirm-stage]").waitFor({ state: "visible", timeout: 15000 });
+      await submitAndSettle(p, p.getByRole("button", { name: "回答する" }));
+
+      await settledBody(p);
+      await assertBody(
+        p,
+        new RegExp(`${total}問中 ${total}問 的中`),
+        "2語で答えて的中しなかった",
+      );
+      await assertBody(p, /2択当て/, "方式（2択当て）が結果に出ていない");
+      await assertBody(p, /2つまでの絞り込みでした/, "断定ではないことが書かれていない");
+
+      const { rows } = await db.query(
+        `select ai.answer_mode, count(*)::int as n from public.answer_items ai
+           join public.answers a on a.id = ai.answer_id
+          where a.work_id = $1 group by 1`,
+        [seeded.hardWork],
+      );
+      assert(
+        rows.length === 1 && rows[0].answer_mode === "pair",
+        "2語の回答として保存されていない",
+      );
+      assert(rows[0].n === total, `保存された内訳が ${rows[0].n} 件（${total} 件のはず）`);
+
+      await ctx.close();
+    },
+  );
+
+  await test("T", "複勝では3語目を選ぶと、古いほうが外れる（2語を超えない）", async () => {
+    const ctx = await browser.newContext();
+    const p = await ctx.newPage();
+    await p.goto(`${base}/works/${seeded.hardWork}`);
+    await p.locator("[data-answer-flow]").waitFor({ state: "visible", timeout: 20000 });
+
+    const sec = p.locator("[data-section]").first();
+    await clickSafely(sec.locator('[data-mode-button="pair"]'));
+
+    const cards = sec.locator("[data-answer-card]");
+    if ((await cards.count()) < 3) {
+      // 3択しか無い問では確かめられない。**確かめられないことを落とさない**
+      await ctx.close();
+      return;
+    }
+
+    await clickSafely(cards.nth(0));
+    await clickSafely(cards.nth(1));
+    assert(
+      (await sec.locator('[data-answer-card][data-tentative="1"]').count()) === 2,
+      "2語を選べていない",
+    );
+
+    await clickSafely(cards.nth(2));
+    const chosen = await sec.locator('[data-answer-card][data-tentative="1"]').count();
+    assert(chosen === 2, `3語目を押したら ${chosen} 語になった（2語のはず）`);
+    assert(
+      (await cards.nth(0).getAttribute("data-tentative")) === "0",
+      "押し出されるのが古いほうではない",
+    );
+
+    await ctx.close();
+  });
+
+  /* =====================================================================
+   * W. 回答が集まったあとの結果（P2）
+   * =====================================================================
+   *
+   * 【毎回まっさらな作品を作る】
+   *   ここは人数と当て方が答えそのものになる。他の節が答えた作品を使うと、
+   *   節を足したり順番を変えたりするたびに人数が変わって落ちる。
+   */
+
+  /** 3人が違う当て方で答えた作品を1件作る */
+  async function seedAnsweredWork(title) {
+    const { prompt_id: promptId } = await drawPrompt(db, seeded.author, {
+      timeLimit: 3600,
+    });
+    const workId = await postWork(db, seeded.author, promptId, title);
+
+    // 全問をビタ当てで当てた人（完全ビタ）
+    await answerWork(db, seeded.plainAnswerer, workId, { correct: true });
+    // 全問を複勝で当てた人（当ててはいるが完全ビタではない）
+    await answerWork(db, seeded.hintReader, workId, {
+      correct: true,
+      pair: "all",
+      pairCorrect: true,
+    });
+    // 全問外した人
+    await answerWork(db, await makeMember(db, `w-miss-${Date.now()}`), workId, {
+      wrong: true,
+    });
+
+    return workId;
+  }
+
+  await test("W", "作者が開くと、語の分布と重なりの図が主役として出る", async (t) => {
+    const workId = await seedAnsweredWork("結果の試験（作者）");
+    const { ctx, page } = await signedInPage(seeded.authorEmail);
+
+    t.stage("開く前は数字が出ていない");
+    await page.goto(`${base}/works/${workId}`);
+    await settledBody(page);
+    assert(
+      (await page.locator("[data-author-analysis]").count()) === 0,
+      "封を切る前から語の分布が出ている",
+    );
+    await assertBody(page, /3人が、あなたの絵を読み解きました/, "予告が出ていない");
+
+    t.stage("開く");
+    await page.goto(`${base}/works/${workId}?result=open`);
+    await settledBody(page);
+
+    const analysis = page.locator("[data-author-analysis]");
+    await analysis.waitFor({ state: "visible", timeout: 15000 });
+
+    const sections = await page.locator("[data-author-analysis] [data-word-ranking]").count();
+    assert(sections >= 3, `語の分布が ${sections} 項目`);
+
+    // 語ごとに、ビタ当て・複勝・提示回数を持っている
+    const first = page.locator("[data-author-analysis] [data-word]").first();
+    for (const attr of ["data-exact", "data-pair", "data-shown"]) {
+      const v = await first.getAttribute(attr);
+      assert(v !== null && v !== "", `${attr} が出ていない`);
+    }
+
+    t.stage("重なりの図");
+    const field = page.locator("[data-pattern-field]");
+    await field.waitFor({ timeout: 15000 });
+    const cells = await field.locator("[data-pattern]").count();
+    assert(cells === 2 ** sections, `区画が ${cells} マス（2^${sections} のはず）`);
+
+    // 全部外した区画に1人いる
+    const zero = field.locator(`[data-pattern="${"0".repeat(sections)}"]`);
+    assert(
+      (await zero.getAttribute("data-pattern-count")) === "1",
+      "全部外した区画の人数が違う",
+    );
+
+    t.stage("完全ビタの人数");
+    const perfect = await page
+      .locator("[data-perfect-exact-count]")
+      .getAttribute("data-perfect-exact-count");
+    assert(perfect === "1", `完全ビタが ${perfect}人（1人のはず）`);
+
+    t.stage("当てられた割合は、分布より後ろに置かれている");
+    const order = await page.evaluate(() => {
+      const a = document.querySelector("[data-author-analysis]");
+      const b = document.querySelector("[data-mode-stat]");
+      if (!a || !b) return null;
+      // 4 = DOCUMENT_POSITION_FOLLOWING
+      return (a.compareDocumentPosition(b) & 4) !== 0;
+    });
+    assert(order === true, "当てられた割合が、語の分布より前に出ている");
+
+    await ctx.close();
+  });
+
+  await test("W", "回答した人に、みんなの選んだ語と自分との似かたが出る", async (t) => {
+    const workId = await seedAnsweredWork("結果の試験（回答者）");
+    const { ctx, page } = await signedInPage(seeded.hintReaderEmail);
+
+    t.stage("回答済みの作品を開く");
+    await page.goto(`${base}/works/${workId}`);
+    await settledBody(page);
+
+    const analysis = page.locator("[data-answerer-analysis]");
+    await analysis.waitFor({ state: "visible", timeout: 15000 });
+
+    await assertBody(page, /他の人は、どう見たか/, "みんなの答えの見出しが無い");
+
+    const rows = await page.locator("[data-similarity-list] [data-at-least]").count();
+    assert(rows >= 3, `似かたの段が ${rows} 段`);
+
+    // いちばん上の1行に割合が出ている
+    const headline = (await page.locator("[data-similarity-headline]").innerText()).replace(
+      /\s+/g,
+      " ",
+    );
+    assert(/%/.test(headline), `割合が出ていない: ${headline}`);
+    assert(/項目以上/.test(headline), `一致の段が書かれていない: ${headline}`);
+
+    // 自分の答えに印が付いている
+    const mine = await page.locator('[data-answerer-analysis] [data-mine="1"]').count();
+    assert(mine > 0, "みんなの語の中で、自分の答えに印が付いていない");
+
+    // この人は複勝で当てたので完全ビタではない
+    assert(
+      (await page.locator('[data-perfect-exact="1"]').count()) === 0,
+      "複勝で当てた人に完全ビタが出ている",
+    );
+
+    await ctx.close();
+  });
+
+  await test("W", "全問をビタ当てで当てた人に、完全ビタと希少度が出る", async () => {
+    const workId = await seedAnsweredWork("結果の試験（完全ビタ）");
+    const { ctx, page } = await signedInPage(seeded.plainAnswererEmail);
+
+    await page.goto(`${base}/works/${workId}`);
+    await settledBody(page);
+
+    const badge = page.locator('[data-perfect-exact="1"]');
+    await badge.waitFor({ state: "visible", timeout: 15000 });
+    await assertBody(page, /完全ビタ/, "完全ビタの表示が無い");
+
+    const rarity = await page.locator("[data-rarity]").getAttribute("data-rarity");
+    assert(
+      /^1 \/ [\d,]+$/.test(rarity ?? ""),
+      `希少度の書き方が違う: ${rarity}`,
+    );
+    // 4択の問だけなら 10 の問数乗になる。**数を決め打ちで確かめない**
+    const n = Number(rarity.replace(/[^\d]/g, ""));
+    assert(n >= 1000, `組み合わせが ${n} 通り（少なすぎる）`);
+
+    await ctx.close();
+  });
+
+  await test("W", "まだ答えていない人には、集計が1つも出ない", async () => {
+    const workId = await seedAnsweredWork("結果の試験（未回答）");
+    const ctx = await browser.newContext();
+    const p = await ctx.newPage();
+
+    await p.goto(`${base}/works/${workId}`);
+    await settledBody(p);
+
+    assert(
+      (await p.locator("[data-answerer-analysis]").count()) === 0,
+      "答えていない人に、みんなの答えが出ている",
     );
     assert(
       /断定して送ります/.test(await shown()),
@@ -1636,11 +2159,10 @@ async function main() {
     await p.evaluate(() => window.scrollTo(0, 0));
 
     await p
-      .locator("fieldset[data-question]")
-      .first()
-      .waitFor({ state: "attached", timeout: 15000 })
+      .locator("[data-answer-flow]")
+      .waitFor({ state: "visible", timeout: 20000 })
       .catch(() => null);
-    const questions = await p.locator("fieldset[data-question]").count();
+    const questions = await sectionTotal(p);
     assert(questions >= 5, `出題が ${questions} 問（5問以上のはず）`);
 
     const overflow = await p.evaluate(
@@ -1650,7 +2172,7 @@ async function main() {
 
     // 選択肢の当たり判定。**44px 未満のものが1つも無いこと**
     const small = await p.evaluate(() =>
-      [...document.querySelectorAll("fieldset[data-question] label")]
+      [...document.querySelectorAll("[data-answer-flow] [data-answer-card]")]
         .map((el) => {
           const r = el.getBoundingClientRect();
           return { text: (el.textContent ?? "").trim().slice(0, 12), h: Math.round(r.height) };
@@ -1664,7 +2186,7 @@ async function main() {
 
     // 選択肢どうしが重なっていないこと
     const overlapped = await p.evaluate(() => {
-      const rects = [...document.querySelectorAll("fieldset[data-question] label")].map((el) =>
+      const rects = [...document.querySelectorAll("[data-answer-flow] [data-answer-card]")].map((el) =>
         el.getBoundingClientRect(),
       );
       let n = 0;
@@ -1724,14 +2246,7 @@ async function main() {
   async function answerThroughUi(p, workId) {
     act(`作品 ${workId} に画面から答える`);
     await p.goto(`${base}/works/${workId}`);
-    const groups = p.locator("fieldset[data-question]");
-    await groups.first().waitFor({ state: "attached", timeout: 15000 });
-    const n = await groups.count();
-    assert(n > 0, `作品 ${workId} に出題が出ていない`);
-    for (let i = 0; i < n; i += 1) {
-      await groups.nth(i).locator("input[type=checkbox]").first().check();
-    }
-    await submitAndSettle(p, p.getByRole("button", { name: "回答する" }));
+    await answerAllSections(p);
   }
 
   /** 「次の作品に答える」を押して、移った先のURLを返す */
@@ -1984,7 +2499,7 @@ async function main() {
       const opened = seeded.divisionWorks.original[3];
       t.stage("別の1件を開くだけ（答えない）");
       await p.goto(`${base}/works/${opened}`);
-      await p.waitForSelector("fieldset[data-question]", { timeout: 15000 });
+      await p.waitForSelector("[data-answer-flow]", { timeout: 15000 });
 
       t.stage("一覧に戻る");
       const ids = await listedIds(p, "?unanswered=1");

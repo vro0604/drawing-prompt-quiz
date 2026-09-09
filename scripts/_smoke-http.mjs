@@ -958,16 +958,34 @@ export function hasQuizForm(html) {
 }
 
 /**
- * 出題部分（fieldset）を取り除いた本文。
+ * 出題部分を取り除いた本文。
  *
  * 【なぜ必要か】
  *   正解のタグは4択のうちの1つとして必ず HTML に出る。だから
  *   「答えの文字が page に無いこと」では漏洩を確かめられない。
  *   要件は **どれが正解か分からないこと** なので、
  *   選択肢の外に答えが出ていないかを見る。
+ *
+ * 【2つ取り除く理由（2026-09-08）】
+ *   回答の画面が作り直され、選択肢の入れ物が変わった。
+ *
+ *     いま … <section data-answer-flow>（1セクションずつ長押しで答える）
+ *     以前 … <fieldset data-question>（問を全部並べる）
+ *
+ *   以前の形は JavaScript が動かないときのために noscript の中へ残っている。
+ *   **どちらも取り除く。**片方だけにすると、いまの選択肢が
+ *   「出題の外」に数えられて、漏れていないのに漏れたと出る（実測）。
+ *
+ *   集計の面（data-author-analysis / data-answerer-analysis）は取り除かない。
+ *   あそこには正解が出るが、出る相手は作者と回答済みの本人だけ。
+ *   取り除くと、**間違った相手に出たときに気づけなくなる。**
  */
 export function textOutsideQuiz(html) {
-  return textOf(clean(html).replace(/<fieldset[^>]*\sdata-question[\s\S]*?<\/fieldset>/g, ""));
+  return textOf(
+    clean(html)
+      .replace(/<section[^>]*\sdata-answer-flow[\s\S]*?<\/section>/g, "")
+      .replace(/<fieldset[^>]*\sdata-question[\s\S]*?<\/fieldset>/g, ""),
+  );
 }
 
 /** /account に出ている「ID: ...」を取り出す。昇格で変わらないことの確認に使う */
