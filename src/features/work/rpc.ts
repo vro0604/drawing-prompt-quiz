@@ -177,6 +177,34 @@ export async function fetchMyWorkResult(workId: string): Promise<MyWorkResult | 
   return (data as MyWorkResult | null) ?? null;
 }
 
+/**
+ * 自分の作品の結果を**開く。**返るものは上の fetchMyWorkResult と同じ。
+ *
+ * 違いは1つだけで、こちらは「最後に結果を開いた時刻」を記録する（D192）。
+ * 記録すると、その時刻より前に来ていた回答は未確認でなくなり、
+ * 知らせから消える。
+ *
+ * 【なぜ読むほうと分けるか】
+ *   作品ページは、結果を閉じた状態でも開かれる。そこで記録すると、
+ *   中身を見ていないのに確認したことになる。
+ *   出所: ユーザー指示（2026-09-10）「単に通知一覧を開いただけでは
+ *   確認済みにしない。作者本人が対象作品の結果を実際に開いた時点、
+ *   すなわち既存の result=open の結果表示が成立した時点で
+ *   『最後に結果を確認した時刻』を更新する。」
+ *
+ * 【見る権利の判定はここに無い】
+ *   他人の作品を渡しても、DB 側が1行も更新せず null を返す。
+ */
+export async function openMyWorkResult(workId: string): Promise<MyWorkResult | null> {
+  const supabase = await createSupabaseServerClient();
+  const { data, error } = await supabase.rpc("open_my_work_result", {
+    p_work_id: workId,
+  });
+
+  if (error) throw new Error(readableRpcError(error.message));
+  return (data as MyWorkResult | null) ?? null;
+}
+
 /** 下書きを公開する（update_work のうち、画面から使うのはこれだけ） */
 export async function callPublishWork(workId: string): Promise<WorkWriteResult> {
   const supabase = await createSupabaseServerClient();

@@ -3431,6 +3431,225 @@ async function main() {
     }
   });
 
+  /* =====================================================================
+   * T. 回答の知らせ（D192）
+   *
+   * 作品に回答が来たことを作者へ伝える道が、画面として通っているか。
+   * 見るのは4つ。ヘッダーに行き先があること、そこに数字が1つも無いこと、
+   * 一覧を見ただけでは消えないこと、結果を開くと消えること。
+   * ===================================================================== */
+
+  /**
+   * この群だけで使う作品を1つ用意して、別の人に1回答えてもらう。
+   *
+   * **他の群の作品を使わない。**種データの作品には他の群が答えていることが
+   * あり、同じ人が2回答えられないので（ALREADY_ANSWERED）、
+   * 通しで流したときだけ落ちる形になる。ここは自分の作品と
+   * 自分の回答者を毎回作って閉じる。
+   */
+  async function makeAnsweredWork(label) {
+    const p = await drawPrompt(db, seeded.author, 3600);
+    const workId = await postWork(db, seeded.author, p.prompt_id, label);
+    const answerer = await makeMember(db, `nt-${label}`);
+    await answerWork(db, answerer, workId);
+    return workId;
+  }
+
+  /** その人の作品に、まだ確認していない回答があるか（DBに直接きく） */
+  async function unseenInDb(userId) {
+    const r = await db.query(
+      `select exists (
+         select 1 from public.works w
+          where w.user_id = $1 and w.deleted_at is null
+            and exists (select 1 from public.answers a
+                         where a.work_id = w.id
+                           and (w.result_seen_at is null or a.created_at > w.result_seen_at))
+       ) as yes`,
+      [userId],
+    );
+    return r.rows[0].yes;
+  }
+
+  await test("T", "知らせの入口がヘッダーにあり、数字を1つも出していない", async (t) => {
+    const { ctx, page } = await signedInPage(seeded.authorEmail);
+
+    t.stage("入口が出ている");
+    const entry = page.locator('[data-testid="notice-entry"]');
+    await entry.waitFor({ state: "visible", timeout: 20000 });
+
+    t.stage("数字も丸も付いていない");
+    const label = await entry.innerText();
+    assert(!/[0-9０-９]/.test(label), `入口に数字が出ている: ${label}`);
+
+    // 読み上げでは、あるかないかが言葉で分かる。**数は言わない。**
+    // ここでは「入口がある」ことだけを見ているので、
+    // あり／なしのどちらであってもよい。
+    const aria = await entry.getAttribute("aria-label");
+    assert(!/[0-9０-９]/.test(aria ?? ""), `読み上げに数字が出ている: ${aria}`);
+    assert(
+      /未確認の回答(があります|はありません)/.test(aria ?? ""),
+      `読み上げが伝わらない: ${aria}`,
+    );
+
+    await ctx.close();
+  });
+
+  await test("T", "回答が来ると入口の見た目が変わり、一覧にその作品が出る", async (t) => {
+    t.stage("この群のための作品を1つ用意して、別の人に答えてもらう");
+    await makeAnsweredWork("notice-a");
+
+    const { ctx, page } = await signedInPage(seeded.authorEmail);
+    assert(await unseenInDb(seeded.author), "回答したのに未確認にならない");
+
+    await page.goto(`${base}/account`);
+    const entry = page.locator('[data-testid="notice-entry"]');
+    const state = await entry.getAttribute("data-unseen");
+    assert(state === "yes", `入口の状態が ${state}（yes のはず）`);
+
+    const aria = await entry.getAttribute("aria-label");
+    assert(
+      /未確認の回答があります/.test(aria ?? ""),
+      `未確認があるのに読み上げがそう言わない: ${aria}`,
+    );
+    assert(!/[0-9０-９]/.test(aria ?? ""), `読み上げに数字が出ている: ${aria}`);
+
+    t.stage("一覧に作品が並ぶ");
+    await page.goto(`${base}/notices`);
+    await settledBody(page);
+    const list = page.locator('[data-testid="notice-list"] [data-notice-work]');
+    const n = await list.count();
+    assert(n > 0, "知らせの一覧が空");
+
+    t.stage("一覧に件数も回答者も出ていない");
+    const text = await page.locator("main").innerText();
+    assert(!/[0-9０-９]+\s*(件|人)/.test(text), `一覧に件数が出ている: ${text.slice(0, 200)}`);
+    assert(/あなたの作品に回答が届いています/.test(text), "知らせの文言が出ていない");
+
+    await ctx.close();
+  });
+
+  await test("T", "一覧を開いただけでは、確認済みにならない", async (t) => {
+    await makeAnsweredWork("notice-b");
+    const { ctx, page } = await signedInPage(seeded.authorEmail);
+
+    t.stage("一覧を2回開く");
+    await page.goto(`${base}/notices`);
+    await settledBody(page);
+    await page.goto(`${base}/notices`);
+    await settledBody(page);
+
+    t.stage("まだ未確認のまま");
+    assert(await unseenInDb(seeded.author), "一覧を見ただけで確認済みになった");
+
+    const state = await page
+      .locator('[data-testid="notice-entry"]')
+      .getAttribute("data-unseen");
+    assert(state === "yes", `入口の状態が ${state}（yes のはず）`);
+
+    await ctx.close();
+  });
+
+  await test("T", "知らせから結果を開くと、その作品だけが消える", async (t) => {
+    await makeAnsweredWork("notice-c");
+    const { ctx, page } = await signedInPage(seeded.authorEmail);
+
+    await page.goto(`${base}/notices`);
+    await settledBody(page);
+
+    const before = await page
+      .locator('[data-testid="notice-list"] [data-notice-work]')
+      .count();
+    assert(before > 0, "知らせが1件も無い");
+
+    t.stage("いちばん上の作品の結果を開く");
+    const first = page.locator('[data-testid="notice-list"] [data-notice-work]').first();
+    const workId = await first.getAttribute("data-notice-work");
+    await clickSafely(first.locator("a"));
+    await page.waitForURL("**/works/**result=open**", { timeout: 20000 });
+    await settledBody(page);
+
+    t.stage("結果が開いている");
+    const opened = await page.locator("main").innerText();
+    assert(
+      /あなたの絵を読み解きました|正解|伝わ/.test(opened),
+      `結果が開いていない: ${opened.slice(0, 200)}`,
+    );
+
+    t.stage("その作品は知らせから消えている");
+    await page.goto(`${base}/notices`);
+    await settledBody(page);
+    const stillThere = await page
+      .locator(`[data-notice-work="${workId}"]`)
+      .count();
+    assert(stillThere === 0, "結果を開いたのに知らせに残っている");
+
+    await ctx.close();
+  });
+
+  await test("T", "作品ページを閉じたまま見ても、確認済みにならない", async (t) => {
+    await makeAnsweredWork("notice-d");
+    const { ctx, page } = await signedInPage(seeded.authorEmail);
+
+    t.stage("まだ知らせが残っている作品を1つ選ぶ");
+    await page.goto(`${base}/notices`);
+    await settledBody(page);
+    const target = await page
+      .locator('[data-testid="notice-list"] [data-notice-work]')
+      .first()
+      .getAttribute("data-notice-work");
+    assert(target, "知らせが1件も無い");
+
+    t.stage("封を開けずに作品ページだけを見る");
+    await page.goto(`${base}/works/${target}`);
+    await settledBody(page);
+
+    t.stage("知らせは残っている");
+    await page.goto(`${base}/notices`);
+    await settledBody(page);
+    const stillThere = await page.locator(`[data-notice-work="${target}"]`).count();
+    assert(stillThere === 1, "封を開けていないのに知らせが消えた");
+
+    await ctx.close();
+  });
+
+  await test("T", "回答しただけの人には、知らせが出ない", async (t) => {
+    t.stage("作品を持たない登録利用者で開く");
+    const { ctx, page } = await signedInPage(seeded.memberEmail);
+    await page.goto(`${base}/notices`);
+    await settledBody(page);
+    const text = await page.locator("main").innerText();
+
+    // この人は回答する側で、自分の作品には回答が来ていない
+    assert(
+      /まだ確認していない回答はありません/.test(text),
+      `回答した側に知らせが出ている: ${text.slice(0, 200)}`,
+    );
+
+    t.stage("入口の見た目も変わっていない");
+    const state = await page
+      .locator('[data-testid="notice-entry"]')
+      .getAttribute("data-unseen");
+    assert(state === "no", `入口の状態が ${state}（no のはず）`);
+
+    await ctx.close();
+  });
+
+  await test("T", "ゲストの画面では、知らせが空のまま出る", async (t) => {
+    t.stage("ゲストで開く");
+    await g.goto(`${base}/notices`);
+    await settledBody(g);
+    const text = await g.locator("main").innerText();
+
+    assert(!/あなたの作品に回答が届いています/.test(text), "ゲストに他人の知らせが出ている");
+
+    t.stage("入口に印が付いていない");
+    const state = await g
+      .locator('[data-testid="notice-entry"]')
+      .getAttribute("data-unseen");
+    assert(state === "no", `ゲストの入口の状態が ${state}（no のはず）`);
+  });
+
+
 
   /* =====================================================================
    * !. 記録の自己試験（E2E_FORCE_FAIL=1 のときだけ動く）

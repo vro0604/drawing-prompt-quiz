@@ -11,6 +11,7 @@ import {
   fetchMyWork,
   fetchMyWorkResult,
   fetchWorkDetail,
+  openMyWorkResult,
   workImageUrl,
 } from "@/features/work/rpc";
 import {
@@ -629,14 +630,25 @@ export default async function WorkPage({
     if (quiz?.answered_by_me) myAnswer = await fetchMyAnswer(id);
   }
 
-  // 自分の作品の結果。他人と未サインインには null が返る（DB 側で判定）。
-  // **画面で捨てる形にしない。**捨てても通信には数字が乗ってしまう。
-  const result =
-    publicWork?.is_author && user ? await fetchMyWorkResult(id) : null;
-
   // 封を開けたかどうかは URL で持つ。Client Component にしないので、
   // JavaScript が無効でも開ける
   const resultOpen = rawResult === "open";
+
+  // 自分の作品の結果。他人と未サインインには null が返る（DB 側で判定）。
+  // **画面で捨てる形にしない。**捨てても通信には数字が乗ってしまう。
+  //
+  // 【開いたときだけ、開いた時刻を記録する】
+  //   閉じたまま作品ページを見ただけでは記録しない。記録すると、
+  //   中身を見ていないのに「結果を確認した」ことになり、
+  //   知らせが消えてしまう（D192）。
+  //   だから封が開いているときだけ、記録するほうの関数を呼ぶ。
+  //   返る中身は同じで、記録するかどうかだけが違う。
+  const result =
+    publicWork?.is_author && user
+      ? resultOpen
+        ? await openMyWorkResult(id)
+        : await fetchMyWorkResult(id)
+      : null;
 
   // --- 回答の前後で出すもの --------------------------------------------
   //

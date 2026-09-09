@@ -16,6 +16,9 @@
  *                       一覧・救済・ランキング・時間の扱い
  *   U. 形状アシスト     お題ではない発想補助（D191）。出題・正解・伝達率・
  *                       配給・回答者の画面へ1歩も漏れていないこと
+ *   T. 回答の知らせ     作品に回答が来たことを作者へ伝える（D192）。表を
+ *                       増やさず「最後に結果を開いた時刻」との差で出す。
+ *                       件数と回答者を運んでいないことも数える
  *
  * 【この試験が届かないところ】
  *   ・画面（HTML）の見た目と操作。ここは DB と RPC だけを通す
@@ -5184,6 +5187,294 @@ async function main() {
       "permission denied",
     );
   });
+
+  // =========================================================================
+  // T. 回答の知らせ（D192）
+  //
+  //    作品に回答が来たことを作者へ伝えるしくみ。**表は増やしていない。**
+  //    「その作品の結果を最後に開いた時刻」と「回答が来た時刻」の差だけで、
+  //    未確認かどうかを出している。
+  //
+  //    ここで確かめるのは4つ。回答が成立したときだけ知らせになること、
+  //    他人の作品と混ざらないこと、回答者が誰かを1文字も返さないこと、
+  //    そして結果を実際に開くまで消えないこと。
+  // =========================================================================
+
+  /** その人から見て、未確認の回答があるか */
+  async function hasUnseen(uid) {
+    return value(db, asMember(uid), `select public.has_unseen_results()`);
+  }
+
+  /** その人の、未確認の回答がある作品の一覧 */
+  async function unseenWorks(uid) {
+    return asRole(db, asMember(uid), async (c) => {
+      const r = await c.query(`select * from public.list_unseen_result_works(50)`);
+      return r.rows;
+    });
+  }
+
+  /** 作者として結果を開く（開いた時刻が記録される） */
+  async function openResult(uid, workId) {
+    return value(db, asMember(uid), `select public.open_my_work_result($1::uuid)`, [workId]);
+  }
+
+  /** 作品を1件出して、別の人に1回答えてもらう */
+  async function workWithOneAnswer(authorHandle, viewerHandle) {
+    const author = await makeMember(db, authorHandle);
+    const viewer = await makeMember(db, viewerHandle);
+    const p = await drawPrompt(db, author);
+    const workId = await postWork(db, author, p.prompt_id);
+    await answerWork(db, viewer, workId);
+    return { author, viewer, workId };
+  }
+
+  await test("T", "回答が来ると、作者に未確認として出る", async () => {
+    const author = await makeMember(db, "nt-a1");
+    const viewer = await makeMember(db, "nt-v1");
+    const p = await drawPrompt(db, author);
+    const workId = await postWork(db, author, p.prompt_id);
+
+    assert((await hasUnseen(author)) === false, "誰も答えていないのに未確認になっている");
+    assert((await unseenWorks(author)).length === 0, "答えが無いのに一覧に出ている");
+
+    await answerWork(db, viewer, workId);
+
+    assert((await hasUnseen(author)) === true, "回答が来たのに未確認にならない");
+    const list = await unseenWorks(author);
+    assert(list.length === 1, `一覧が ${list.length} 件（1件のはず）`);
+    assert(list[0].work_id === workId, "別の作品が出ている");
+  });
+
+  await test("T", "回答が失敗したときは、知らせにならない", async () => {
+    const author = await makeMember(db, "nt-a2");
+    const viewer = await makeMember(db, "nt-v2");
+    const p = await drawPrompt(db, author);
+    const workId = await postWork(db, author, p.prompt_id);
+
+    // 全問そろっていない回答。submit_answer が例外で止める。
+    // **止まった以上、answers に行は残らない。**だから知らせにもならない。
+    await expectFailure(
+      () =>
+        value(db, asMember(viewer), `select public.submit_answer($1, '[]'::jsonb)`, [workId]),
+      "INCOMPLETE_ANSWER",
+    );
+
+    assert((await hasUnseen(author)) === false, "失敗した回答で未確認になっている");
+    assert((await unseenWorks(author)).length === 0, "失敗した回答が一覧に出ている");
+  });
+
+  await test("T", "自分の作品に自分で答えることはできない（知らせも出ない）", async () => {
+    const author = await makeMember(db, "nt-a3");
+    const p = await drawPrompt(db, author);
+    const workId = await postWork(db, author, p.prompt_id);
+
+    await expectFailure(
+      () => answerWork(db, author, workId),
+      "AUTHOR_CANNOT_ANSWER",
+    );
+
+    assert((await hasUnseen(author)) === false, "自分の回答で未確認になっている");
+  });
+
+  await test("T", "他の作者の知らせに混ざらない", async () => {
+    const first = await workWithOneAnswer("nt-a4", "nt-v4");
+    const other = await makeMember(db, "nt-a5");
+    const p = await drawPrompt(db, other);
+    await postWork(db, other, p.prompt_id);
+
+    assert((await hasUnseen(first.author)) === true, "回答を受けた側が未確認でない");
+    assert((await hasUnseen(other)) === false, "関係のない作者が未確認になっている");
+
+    const list = await unseenWorks(other);
+    assert(list.length === 0, `他人の作品が ${list.length} 件出ている`);
+  });
+
+  await test("T", "同じ作品に何人が答えても、知らせは1件にまとまる", async () => {
+    const author = await makeMember(db, "nt-a6");
+    const p = await drawPrompt(db, author);
+    const workId = await postWork(db, author, p.prompt_id);
+
+    for (const handle of ["nt-v6a", "nt-v6b", "nt-v6c"]) {
+      const viewer = await makeMember(db, handle);
+      await answerWork(db, viewer, workId);
+    }
+
+    // 数えるのは所有者の立場（役を通さない）。ここは試験の準備であって、
+    // アプリがこの経路を持っているわけではない。
+    const answers = (
+      await db.query(`select count(*)::int as n from public.answers where work_id = $1`, [workId])
+    ).rows[0].n;
+    assert(answers === 3, `回答が ${answers} 件（3件のはず）`);
+
+    const list = await unseenWorks(author);
+    assert(list.length === 1, `知らせが ${list.length} 件（作品ごとに1件のはず）`);
+  });
+
+  await test("T", "知らせに、回答者も件数も出てこない", async () => {
+    const { author, viewer, workId } = await workWithOneAnswer("nt-a7", "nt-v7");
+    const list = await unseenWorks(author);
+    const dump = JSON.stringify(list);
+
+    assert(!dump.includes(viewer), "回答者のIDが知らせに入っている");
+
+    const columns = Object.keys(list[0]);
+    for (const bad of ["user_id", "answer_id", "answers_count", "unseen_count", "count"]) {
+      assert(!columns.includes(bad), `知らせに ${bad} が入っている`);
+    }
+    assert(list[0].work_id === workId, "作品が違う");
+  });
+
+  await test("T", "一覧を見ただけでは、確認済みにならない", async () => {
+    const { author } = await workWithOneAnswer("nt-a8", "nt-v8");
+
+    await unseenWorks(author);
+    await unseenWorks(author);
+
+    assert((await hasUnseen(author)) === true, "一覧を見ただけで消えている");
+  });
+
+  await test("T", "結果を開くと消え、次の回答でまた出る", async () => {
+    const author = await makeMember(db, "nt-a9");
+    const p = await drawPrompt(db, author);
+    const workId = await postWork(db, author, p.prompt_id);
+
+    const first = await makeMember(db, "nt-v9a");
+    await answerWork(db, first, workId);
+    assert((await hasUnseen(author)) === true, "1人目の回答が知らせにならない");
+
+    const opened = await openResult(author, workId);
+    assert(opened !== null, "結果が返ってこない");
+    assert((await hasUnseen(author)) === false, "結果を開いても消えない");
+
+    // **開いたあとに来た回答は、また未確認になる。**
+    const second = await makeMember(db, "nt-v9b");
+    await answerWork(db, second, workId);
+    assert((await hasUnseen(author)) === true, "開いたあとの回答が知らせにならない");
+  });
+
+  await test("T", "他人の作品の結果は開けないし、時刻も動かない", async () => {
+    const { author, viewer, workId } = await workWithOneAnswer("nt-a10", "nt-v10");
+
+    const stolen = await openResult(viewer, workId);
+    assert(stolen === null, "他人が結果を読めている");
+
+    const seenAt = (
+      await db.query(`select result_seen_at from public.works where id = $1`, [workId])
+    ).rows[0].result_seen_at;
+    assert(seenAt === null, "他人が開いたのに時刻が入っている");
+    assert((await hasUnseen(author)) === true, "他人の操作で作者の知らせが消えた");
+  });
+
+  await test("T", "持ち込み（art_first）の作品でも知らせが出る", async () => {
+    const author = await makeMember(db, "nt-a11");
+    const viewer = await makeMember(db, "nt-v11");
+    const ids = [];
+    for (const category of ["morph", "emotion", "color"]) {
+      const picked = await pickTags(db, category, 1);
+      ids.push(picked[0].id);
+    }
+    const { workId } = await postArtFirstWork(db, author, ids);
+
+    await answerWork(db, viewer, workId);
+
+    assert((await hasUnseen(author)) === true, "持ち込みだと知らせが出ない");
+    const list = await unseenWorks(author);
+    assert(list.length === 1, `一覧が ${list.length} 件`);
+    assert(list[0].work_id === workId, "別の作品が出ている");
+  });
+
+  await test("T", "消した作品は知らせに出ない", async () => {
+    const { author, workId } = await workWithOneAnswer("nt-a12", "nt-v12");
+    assert((await hasUnseen(author)) === true, "消す前から知らせが出ていない");
+
+    await value(db, asMember(author), `select public.delete_work($1::uuid)`, [workId]);
+
+    assert((await hasUnseen(author)) === false, "消した作品の知らせが残っている");
+    assert((await unseenWorks(author)).length === 0, "消した作品が一覧に出ている");
+  });
+
+  await test("T", "知らせの3本は、サインインしていない人には配られていない", async () => {
+    const granted = (
+      await db.query(
+        `select p.proname
+           from pg_proc p join pg_namespace ns on ns.oid = p.pronamespace
+          where ns.nspname = 'public'
+            and p.proname in ('has_unseen_results','list_unseen_result_works','open_my_work_result')
+            and has_function_privilege('anon', p.oid, 'EXECUTE')`,
+      )
+    ).rows;
+    assert(granted.length === 0, `anon が呼べる: ${granted.map((r) => r.proname).join(", ")}`);
+
+    const ok = (
+      await db.query(
+        `select count(*)::int as n
+           from pg_proc p join pg_namespace ns on ns.oid = p.pronamespace
+          where ns.nspname = 'public'
+            and p.proname in ('has_unseen_results','list_unseen_result_works','open_my_work_result')
+            and has_function_privilege('authenticated', p.oid, 'EXECUTE')`,
+      )
+    ).rows[0].n;
+    assert(ok === 3, `authenticated が呼べるのが ${ok} 本（3本のはず）`);
+  });
+
+  await test("T", "足した列は、利用者から直接読み書きできない", async () => {
+    const granted = (
+      await db.query(
+        `select count(*)::int as n
+           from information_schema.column_privileges
+          where table_schema = 'public'
+            and table_name   = 'works'
+            and column_name  = 'result_seen_at'
+            and grantee in ('anon','authenticated','PUBLIC')`,
+      )
+    ).rows[0].n;
+    assert(granted === 0, `列に権限が ${granted} 件ある`);
+
+    const { author, workId } = await workWithOneAnswer("nt-a13", "nt-v13");
+    await expectFailure(
+      () =>
+        value(
+          db,
+          asMember(author),
+          `update public.works set result_seen_at = now() where id = $1`,
+          [workId],
+        ),
+      "permission denied",
+    );
+  });
+
+  await test("T", "回答・出題・配給・順位の関数は、知らせの列を1文字も見ていない", async () => {
+    const rows = (
+      await db.query(
+        `select p.proname
+           from pg_proc p join pg_namespace ns on ns.oid = p.pronamespace
+          where ns.nspname = 'public' and p.prokind = 'f'
+            and p.proname in ('submit_answer','build_quiz_for_prompt','get_work_quiz',
+                              'get_next_work','next_work_candidates','get_rankings',
+                              'get_work_detail','get_public_works')
+            and pg_get_functiondef(p.oid) like '%result_seen_at%'`,
+      )
+    ).rows;
+    assert(rows.length === 0, `混ざっている: ${rows.map((r) => r.proname).join(", ")}`);
+  });
+
+  await test("T", "回答者の画面には、知らせも確認時刻も出てこない", async () => {
+    const { viewer, workId } = await workWithOneAnswer("nt-a14", "nt-v14");
+
+    const detail = await value(db, asMember(viewer), `select public.get_work_detail($1::uuid)`, [
+      workId,
+    ]);
+    const dump = JSON.stringify(detail);
+    assert(!dump.includes("result_seen"), "作品の詳細に確認時刻が入っている");
+    assert(!dump.includes("unseen"), "作品の詳細に知らせが入っている");
+
+    const quiz = await value(db, asMember(viewer), `select public.get_work_quiz($1::uuid)`, [
+      workId,
+    ]);
+    const quizDump = JSON.stringify(quiz);
+    assert(!quizDump.includes("result_seen"), "出題に確認時刻が入っている");
+  });
+
 
 }
 

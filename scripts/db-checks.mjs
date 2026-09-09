@@ -2815,6 +2815,45 @@ export const diagnostics = [
              and column_name  = 'shape_assist_key'
              and grantee in ('anon','authenticated','PUBLIC')`,
   },
+  {
+    // 回答の知らせ（D192）は、回答・出題・配給・順位のどこにも入らない。
+    // 知らせは「最後に結果を開いた時刻」と回答が来た時刻の差から出しており、
+    // 回答の側には1行も足していない。それを毎回数える。
+    id: "A42",
+    label: "回答の知らせを読んでしまっている、回答・出題・配給・順位の関数",
+    sql: `select p.proname
+            from pg_proc p join pg_namespace n on n.oid = p.pronamespace
+           where n.nspname = 'public' and p.prokind = 'f'
+             and p.proname in ('submit_answer','build_quiz_for_prompt','get_work_quiz',
+                               'get_next_work','next_work_candidates','get_rankings',
+                               'get_work_detail','get_public_works')
+             and pg_get_functiondef(p.oid) like '%result_seen_at%'`,
+  },
+  {
+    // 知らせの列も、利用者から直接読み書きできない。
+    // 動くのは open_my_work_result を通したときだけで、
+    // あの関数は自分の作品の行しか更新しない。
+    id: "A43",
+    label: "回答の知らせの列に、利用者の権限が付いている",
+    sql: `select (grantee || ' ' || privilege_type) as id
+            from information_schema.column_privileges
+           where table_schema = 'public'
+             and table_name   = 'works'
+             and column_name  = 'result_seen_at'
+             and grantee in ('anon','authenticated','PUBLIC')`,
+  },
+  {
+    // 知らせの3本を、サインインしていない人が呼べていないこと。
+    // 2026-09-09 にプロフィールの4本で実際に漏れた形なので、毎回数える。
+    id: "A44",
+    label: "サインインしていない人が呼べてしまう、回答の知らせの関数",
+    sql: `select p.proname
+            from pg_proc p join pg_namespace n on n.oid = p.pronamespace
+           where n.nspname = 'public'
+             and p.proname in ('has_unseen_results','list_unseen_result_works',
+                               'open_my_work_result')
+             and has_function_privilege('anon', p.oid, 'EXECUTE')`,
+  },
 ];
 
 /**

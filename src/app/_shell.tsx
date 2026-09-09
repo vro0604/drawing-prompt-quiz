@@ -1,5 +1,7 @@
 import Link from "next/link";
 
+import { fetchHasUnseenResults } from "@/features/notice/rpc";
+
 /**
  * 全ページの上と下に付く枠（ヘッダーとフッター）。
  *
@@ -18,9 +20,19 @@ import Link from "next/link";
  *   **ヘッダーはいちばん目に入る回数が多い場所**だから、ここに数字を置くと
  *   フィードのカードから数字を落とした意味が消える。
  *
- *   サインインしているかどうかも出していない。出すには全ページで
- *   認証を読むことになり、**この枠を「状態を持つもの」に変えてしまう。**
- *   いまの状態は /account が受け持っている。
+ * 【2026-09-10 に1つだけ足した：回答の知らせ（D192）】
+ *   「知らせ」の行き先を1つ置いた。**数字はここでも置いていない。**
+ *   出すのは「未確認の回答があるかどうか」だけで、何件あるかは
+ *   運んでもいない（has_unseen_results は真偽値しか返さない）。
+ *   見た目の違いも、文字の太さが変わるだけにしてある。
+ *   出所: ユーザー指示（2026-09-10）「ヘッダーに通知入口を追加する。
+ *   ただしD112を維持する。絶対に表示しない：回答件数 / 通知件数 /
+ *   数字badge / 未読を示す丸badge / いいね型カウンター」。
+ *
+ *   このために、この枠は**状態を持つものになった。**全ページで
+ *   「未確認があるか」を1回聞く。聞くのは真偽値1つで、
+ *   失敗しても知らせが出ないだけ（fetchHasUnseenResults が握りつぶす）。
+ *   サインインしているかどうかは、これまでどおり出していない。
  *
  * 【並び順】
  *   ゲストのままできること（お題を引く・作品を見る）を先に置く。
@@ -39,7 +51,11 @@ const NAV = [
   { href: "/rankings", label: "ランキング" },
 ];
 
-export function SiteHeader() {
+export async function SiteHeader() {
+  // 未確認の回答があるか。**件数は聞いていない。**
+  // 未サインインなら DB 側が false を返すので、ここで場合分けはしない。
+  const hasUnseen = await fetchHasUnseenResults();
+
   return (
     <header data-site-nav="" className="border-b border-line">
       {/*
@@ -69,10 +85,29 @@ export function SiteHeader() {
           ))}
         </nav>
 
+        {/*
+          知らせ（D192）。行き先は常に同じで、**出ているかどうかは変わらない。**
+          変わるのは太さだけ。丸も数字も付けない。
+          読み上げには「未確認の回答があります」と伝わるようにしてある。
+        */}
+        <Link
+          href="/notices"
+          data-testid="notice-entry"
+          data-unseen={hasUnseen ? "yes" : "no"}
+          aria-label={
+            hasUnseen ? "知らせ。未確認の回答があります" : "知らせ。未確認の回答はありません"
+          }
+          className={`ml-auto inline-flex min-h-11 items-center text-sm hover:underline ${
+            hasUnseen ? "font-bold text-ink" : "text-muted"
+          }`}
+        >
+          知らせ
+        </Link>
+
         {/* アカウントは右端へ。ゲストのままでも押せるが、主動線ではない */}
         <Link
           href="/account"
-          className="ml-auto inline-flex min-h-11 items-center text-sm text-muted hover:underline"
+          className="inline-flex min-h-11 items-center text-sm text-muted hover:underline"
         >
           アカウント
         </Link>
