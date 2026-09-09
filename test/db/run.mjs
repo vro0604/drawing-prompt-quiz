@@ -4306,6 +4306,208 @@ async function main() {
     return { author, workId };
   }
 
+  await test("X", "分析から外すと作者の集計から消え、戻すと戻る", async () => {
+    const author = await makeMember(db, "ex-author");
+    const { prompt_id: promptId } = await drawPrompt(db, author, { timeLimit: 3600 });
+    const workId = await postWork(db, author, promptId, "外す試験");
+
+    // 3人。1人目は全問ビタで正解（完全ビタ）、2人目も全問正解、3人目は全問外し
+    const a = await makeMember(db, "ex-1");
+    const b = await makeMember(db, "ex-2");
+    const c = await makeMember(db, "ex-3");
+    await answerWith(db, a, workId, (q) => ({ tag_id: q.correct }));
+    await answerWith(db, b, workId, (q) => ({ tag_id: q.correct }));
+    await answerWith(db, c, workId, (q) => ({ tag_id: q.others[0] }));
+
+    // 枠を足して全部取り込む（外すことで高度分析の対象が減るのを見るため）
+    await db.query(`select public.grant_import_capacity($1, 10, 'test', null)`, [workId]);
+    await value(db, asMember(author), `select public.import_answers($1)`, [workId]);
+
+    const before = await authorView(db, author, workId);
+    assert(before.answers_count === 3, `外す前が ${before.answers_count}件`);
+    assert(before.excluded_count === 0, `外す前に ${before.excluded_count}件外れている`);
+    assert(before.perfect_exact_count === 2, `完全ビタが ${before.perfect_exact_count}人`);
+    assert(before.imported_count === 3, `取り込み済みが ${before.imported_count}件`);
+    assert(before.advanced_count === 3, `高度分析の対象が ${before.advanced_count}件`);
+
+    // 一覧を読む。**誰が答えたかは入っていない**
+    const list = await value(db, asMember(author), `select public.get_work_answer_list($1)`, [
+      workId,
+    ]);
+    assert(list.total === 3, `一覧が ${list.total}件`);
+    const row = list.answers[0];
+    assert(row.no === 1, `通し番号が ${row.no}`);
+    assert(!("user_id" in row), "一覧に回答者の ID が入っている");
+    assert(!("pattern" in row), "一覧に当て方の並びが入っている");
+    assert(typeof row.correct_sections === "number", "含んだ項目数が入っていない");
+
+    // 1件外す
+    const done = await value(
+      db,
+      asMember(author),
+      `select public.set_answer_excluded($1, $2::int[], true)`,
+      [workId, "{1}"],
+    );
+    assert(done.changed === 1, `${done.changed}件が変わった`);
+    assert(done.analysed_count === 2, `高度分析の対象が ${done.analysed_count}件`);
+    // **外しても枠は戻らない**（2026-09-09 のユーザー確定）
+    assert(
+      done.remaining_capacity === 7,
+      `外したあとの残り枠が ${done.remaining_capacity}（7のはず。10足して3取り込んだ）`,
+    );
+
+    const after = await authorView(db, author, workId);
+
+    // 無料の集計は全部の回答で出る。**外しても減らない**（P4 の分け方）
+    assert(after.answers_count === 3, `無料の集計の母数が ${after.answers_count}件（3件のはず）`);
+    assert(after.perfect_exact_count === 2, `無料の完全ビタが ${after.perfect_exact_count}人`);
+    const patternTotal = after.patterns.reduce((n, p) => n + p.count, 0);
+    assert(patternTotal === 3, `当て方の並びの合計が ${patternTotal}人`);
+
+    // 減るのは高度分析の対象のほう
+    assert(after.excluded_count === 1, `外した件数が ${after.excluded_count}`);
+    assert(after.advanced_count === 2, `高度分析の対象が ${after.advanced_count}件`);
+
+    // 戻す
+    const restored = await value(
+      db,
+      asMember(author),
+      `select public.set_answer_excluded($1, $2::int[], false)`,
+      [workId, "{1}"],
+    );
+    assert(restored.analysed_count === 3, `戻したあとの対象が ${restored.analysed_count}件`);
+    assert(
+      restored.remaining_capacity === 7,
+      `戻しても枠は動かないはず（${restored.remaining_capacity}）`,
+    );
+
+    const back = await authorView(db, author, workId);
+    assert(back.advanced_count === 3, `戻したあとの高度分析対象が ${back.advanced_count}件`);
+    assert(back.imported_count === 3, `取り込み済みは変わらないはず（${back.imported_count}）`);
+  });
+
+  await test("X", "まとめて外せる。回答そのものと本人の結果は変わらない", async () => {
+    const author = await makeMember(db, "exb-author");
+    const { prompt_id: promptId } = await drawPrompt(db, author, { timeLimit: 3600 });
+    const workId = await postWork(db, author, promptId, "まとめて外す");
+
+    const people = [];
+    for (let i = 0; i < 4; i += 1) {
+      const u = await makeMember(db, `exb-${i}`);
+      await answerWith(db, u, workId, (q) => ({ tag_id: q.correct }));
+      people.push(u);
+    }
+
+    await db.query(`select public.grant_import_capacity($1, 10, 'test', null)`, [workId]);
+    await value(db, asMember(author), `select public.import_answers($1)`, [workId]);
+
+    await value(db, asMember(author), `select public.set_answer_excluded($1, $2::int[], true)`, [
+      workId,
+      "{1,2}",
+    ]);
+
+    const view = await authorView(db, author, workId);
+    // 無料の集計は全部の回答のまま
+    assert(view.answers_count === 4, `無料の集計の母数が ${view.answers_count}件（4件のはず）`);
+    assert(view.excluded_count === 2, `外した件数が ${view.excluded_count}`);
+    // 高度分析の対象だけが減る
+    assert(view.advanced_count === 2, `高度分析の対象が ${view.advanced_count}件`);
+    assert(view.imported_count === 4, `取り込み済みは変わらないはず（${view.imported_count}）`);
+
+    // 回答そのものは残っている
+    const rows = await db.query(
+      `select count(*)::int as n from public.answers where work_id = $1`,
+      [workId],
+    );
+    assert(rows.rows[0].n === 4, `回答の行が ${rows.rows[0].n}件（4件のはず）`);
+
+    const items = await db.query(
+      `select count(*)::int as n from public.answer_items ai
+         join public.answers a on a.id = ai.answer_id where a.work_id = $1`,
+      [workId],
+    );
+    assert(items.rows[0].n > 0, "回答の内訳まで消えている");
+
+    // 外された本人の結果も、外していない人の結果も変わらない
+    for (const u of people) {
+      const mine = await value(db, asMember(u), `select public.get_my_answer($1)`, [workId]);
+      assert(mine !== null, "外された人の回答が読めなくなっている");
+      const analysis = await answererView(db, u, workId);
+      assert(
+        analysis.answers_count === 4,
+        `回答者から見た人数が ${analysis.answers_count}（4のはず。作者の都合で変えない）`,
+      );
+      assert(
+        analysis.others_count === 3,
+        `回答者から見た自分以外が ${analysis.others_count}`,
+      );
+    }
+  });
+
+  await test("X", "他人の作品の分析は変えられない", async () => {
+    const author = await makeMember(db, "exo-author");
+    const { prompt_id: promptId } = await drawPrompt(db, author, { timeLimit: 3600 });
+    const workId = await postWork(db, author, promptId, "他人は変えられない");
+
+    const reader = await makeMember(db, "exo-reader");
+    await answerWith(db, reader, workId, (q) => ({ tag_id: q.correct }));
+
+    const stranger = await makeMember(db, "exo-stranger");
+
+    await expectFailure(
+      () =>
+        value(db, asMember(stranger), `select public.set_answer_excluded($1, $2::int[], true)`, [
+          workId,
+          "{1}",
+        ]),
+      "NOT_WORK_OWNER",
+    );
+    await expectFailure(
+      () =>
+        value(db, asMember(reader), `select public.set_answer_excluded($1, $2::int[], true)`, [
+          workId,
+          "{1}",
+        ]),
+      "NOT_WORK_OWNER",
+    );
+    assert(
+      (await value(db, asMember(stranger), `select public.get_work_answer_list($1)`, [workId]))
+        === null,
+      "他人に回答一覧が返っている",
+    );
+    await expectFailure(
+      () =>
+        value(db, ANON, `select public.set_answer_excluded($1, $2::int[], true)`, [
+          workId,
+          "{1}",
+        ]),
+      "permission denied",
+    );
+  });
+
+  await test("X", "外した回答は掘り下げの集団からも抜ける", async () => {
+    const { author, workId, questions } = await seedDrilldownWork("excl");
+    const n = questions.length;
+    const pattern = "1" + "0".repeat(n - 1);
+
+    const before = await drill(db, author, workId, pattern);
+    assert(before.subgroup_count === 12, `外す前が ${before.subgroup_count}人`);
+
+    await value(db, asMember(author), `select public.set_answer_excluded($1, $2::int[], true)`, [
+      workId,
+      "{1,2,3}",
+    ]);
+
+    const after = await drill(db, author, workId, pattern);
+    assert(after.subgroup_count === 9, `外したあとが ${after.subgroup_count}人`);
+
+    // 先頭3人を外したので、先頭10人の語で絞ると 10 → 7 になる
+    const step = await drill(db, author, workId, pattern, [
+      { question_id: questions[1].question_id, tag_id: questions[1].others[0] },
+    ]);
+    assert(step.subgroup_count === 7, `絞ったあとが ${step.subgroup_count}人`);
+  });
+
   await test("U", "候補の配り方は、全枠同じ枚数に固定されていない", async () => {
     /*
       【1回引いて確かめない】
@@ -4610,6 +4812,266 @@ async function main() {
    * 先頭から数えているので、条件を重ねるほど 10 → 6 → 5 → 4 と減る。
    * 5人で止まり、4人で止まらないことを、同じ作品の中で見られる。
    */
+  async function seedDrilldownWork(tag) {
+    const author = await makeMember(db, `dd-author-${tag}`);
+    const { prompt_id: promptId } = await drawPrompt(db, author, {
+      mode: "hard",
+      timeLimit: 3600,
+    });
+    const workId = await postWork(db, author, promptId, `掘り下げ ${tag}`);
+
+    // 先頭から何人が「同じ語」を選ぶか。問の順に対応する（1問目は当てる）
+    const share = [null, 10, 6, 5, 4];
+
+    for (let person = 0; person < 12; person += 1) {
+      const who = await makeMember(db, `dd-${tag}-${person}`);
+      await answerWith(db, who, workId, (q, i) => {
+        if (i === 0) return { tag_id: q.correct };
+        const n = share[i] ?? 6;
+        return { tag_id: person < n ? q.others[0] : q.others[1] };
+      });
+    }
+
+    // **枠を足して、全部取り込む。**P4 から、掘り下げが数えるのは
+    // 取り込み済みの回答だけになった。取り込まないと1件も掘れない
+    await db.query(`select public.grant_import_capacity($1, 100, 'test', null)`, [workId]);
+    await value(db, asMember(author), `select public.import_answers($1)`, [workId]);
+
+    const questions = await quizWithAnswers(db, author, workId);
+    return { author, workId, questions };
+  }
+
+  /** 掘り下げを読む */
+  function drill(db, uid, workId, pattern, filters = []) {
+    return value(
+      db,
+      asMember(uid),
+      `select public.get_work_drilldown($1, $2, $3::jsonb)`,
+      [workId, pattern, JSON.stringify(filters)],
+    );
+  }
+
+  await test("X", "区画を選ぶと、正解を含まなかった項目だけが返る", async () => {
+    const { author, workId, questions } = await seedDrilldownWork("only-miss");
+    const n = questions.length;
+    const pattern = "1" + "0".repeat(n - 1);
+
+    const view = await drill(db, author, workId, pattern);
+    assert(view !== null, "作者に掘り下げが返らない");
+    assert(view.below_threshold === false, "12人なのに少人数扱いになった");
+    assert(view.subgroup_count === 12, `集団が ${view.subgroup_count}人`);
+
+    const ids = view.sections.map((x) => x.question_id).sort((a, b) => a - b);
+    const want = questions.slice(1).map((q) => q.question_id).sort((a, b) => a - b);
+    assert(
+      JSON.stringify(ids) === JSON.stringify(want),
+      `返った項目が違う: ${ids.join(",")} / ${want.join(",")}`,
+    );
+    assert(
+      view.sections.every((x) => typeof x.correct_label === "string" && x.correct_label !== ""),
+      "各項目に正解の語が添えられていない",
+    );
+  });
+
+  await test("X", "語で絞ると人数が減り、語の数え直しが起きる", async () => {
+    const { author, workId, questions } = await seedDrilldownWork("narrow");
+    const n = questions.length;
+    const pattern = "1" + "0".repeat(n - 1);
+
+    const all = await drill(db, author, workId, pattern);
+    const second = all.sections.find((x) => x.question_id === questions[1].question_id);
+    const major = second.words.find((w) => w.tag_id === questions[1].others[0]);
+    assert(major.exact_count === 10, `先頭の語を選んだ人が ${major.exact_count}人`);
+
+    // 1段
+    const step1 = await drill(db, author, workId, pattern, [
+      { question_id: questions[1].question_id, tag_id: questions[1].others[0] },
+    ]);
+    assert(step1.subgroup_count === 10, `1段で ${step1.subgroup_count}人`);
+
+    // 絞ったあとは、その集団の中だけで数え直す
+    const third = step1.sections.find((x) => x.question_id === questions[2].question_id);
+    const thirdMajor = third.words.find((w) => w.tag_id === questions[2].others[0]);
+    assert(
+      thirdMajor.exact_count === 6,
+      `絞ったあとの3問目の数が ${thirdMajor.exact_count}（6のはず）`,
+    );
+    assert(
+      thirdMajor.shown_times === 10,
+      `絞ったあとの提示回数が ${thirdMajor.shown_times}（10のはず）`,
+    );
+  });
+
+  await test("X", "2段・3段と重ねられ、人数は10→6→5と減る", async () => {
+    const { author, workId, questions } = await seedDrilldownWork("multi");
+    const n = questions.length;
+    assert(n >= 5, `問が ${n} 問（5問以上のはず）`);
+    const pattern = "1" + "0".repeat(n - 1);
+    const f = (i) => ({
+      question_id: questions[i].question_id,
+      tag_id: questions[i].others[0],
+    });
+
+    const step1 = await drill(db, author, workId, pattern, [f(1)]);
+    const step2 = await drill(db, author, workId, pattern, [f(1), f(2)]);
+    const step3 = await drill(db, author, workId, pattern, [f(1), f(2), f(3)]);
+
+    assert(step1.subgroup_count === 10, `1段 ${step1.subgroup_count}人`);
+    assert(step2.subgroup_count === 6, `2段 ${step2.subgroup_count}人`);
+    assert(step3.subgroup_count === 5, `3段 ${step3.subgroup_count}人`);
+    assert(step3.below_threshold === false, "ちょうど5人で止まっている");
+  });
+
+  await test("X", "5人未満になると、人数も語も返らない", async () => {
+    const { author, workId, questions } = await seedDrilldownWork("stop");
+    const n = questions.length;
+    const pattern = "1" + "0".repeat(n - 1);
+    const f = (i) => ({
+      question_id: questions[i].question_id,
+      tag_id: questions[i].others[0],
+    });
+
+    const step4 = await drill(db, author, workId, pattern, [f(1), f(2), f(3), f(4)]);
+
+    assert(step4.below_threshold === true, "4人なのに詳細が返っている");
+    assert(step4.subgroup_count === null, `人数が ${step4.subgroup_count} で返っている`);
+    assert(
+      Array.isArray(step4.sections) && step4.sections.length === 0,
+      "少人数なのに語の内訳が返っている",
+    );
+    assert(step4.min_subgroup === 5, `最少人数が ${step4.min_subgroup}`);
+
+    // 少ない側の語で絞っても同じ（2人）
+    const few = await drill(db, author, workId, pattern, [
+      { question_id: questions[1].question_id, tag_id: questions[1].others[1] },
+    ]);
+    assert(few.below_threshold === true, "2人なのに詳細が返っている");
+    assert(few.subgroup_count === null, "2人の人数が返っている");
+  });
+
+  await test("X", "同じ項目に2つの条件は重ねられない／この作品に無い語も断る", async () => {
+    const { author, workId, questions } = await seedDrilldownWork("bad");
+    const n = questions.length;
+    const pattern = "1" + "0".repeat(n - 1);
+
+    await expectFailure(
+      () =>
+        drill(db, author, workId, pattern, [
+          { question_id: questions[1].question_id, tag_id: questions[1].others[0] },
+          { question_id: questions[1].question_id, tag_id: questions[1].others[1] },
+        ]),
+      "DUPLICATE_FILTER_SECTION",
+    );
+
+    await expectFailure(
+      () =>
+        drill(db, author, workId, pattern, [
+          { question_id: questions[1].question_id, tag_id: -1 },
+        ]),
+      "BAD_FILTER_TARGET",
+    );
+
+    await expectFailure(
+      () => drill(db, author, workId, "9".repeat(n)),
+      "BAD_PATTERN",
+    );
+    await expectFailure(() => drill(db, author, workId, "1"), "BAD_PATTERN");
+  });
+
+  await test("X", "複勝で選んだ2語のどちらでも、語の条件に一致する", async () => {
+    const author = await makeMember(db, "dd-pair-author");
+    const { prompt_id: promptId } = await drawPrompt(db, author, { timeLimit: 3600 });
+    const workId = await postWork(db, author, promptId, "複勝の条件");
+
+    const questions = await quizWithAnswers(db, author, workId);
+    const n = questions.length;
+
+    // 6人。全問を外す。1問目で選ぶ2語を、ビタ当てと複勝で分ける
+    //   3人 … ビタ当てで others[0]
+    //   3人 … 複勝で others[0] と others[1]
+    for (let i = 0; i < 6; i += 1) {
+      const who = await makeMember(db, `dd-pair-${i}`);
+      await answerWith(db, who, workId, (q, idx) => {
+        if (idx !== 0) return { tag_id: q.others[0] };
+        return i < 3
+          ? { tag_id: q.others[0] }
+          : { tag_id: q.others[0], tag_id_2: q.others[1] };
+      });
+    }
+
+    // 掘り下げが数えるのは取り込み済みだけ。枠を足して取り込む
+    await db.query(`select public.grant_import_capacity($1, 100, 'test', null)`, [workId]);
+    await value(db, asMember(author), `select public.import_answers($1)`, [workId]);
+
+    const pattern = "0".repeat(n);
+    const first = questions[0];
+
+    // 1語目は6人全員が選んでいる（ビタ当ての3人と、複勝の3人の1語目）
+    const both = await drill(db, author, workId, pattern, [
+      { question_id: first.question_id, tag_id: first.others[0] },
+    ]);
+    assert(both.subgroup_count === 6, `1語目で ${both.subgroup_count}人（6人のはず）`);
+
+    // 2語目は複勝の3人だけ。**2語目でも「選んだ」として数える**
+    const onlyPair = await drill(db, author, workId, pattern, [
+      { question_id: first.question_id, tag_id: first.others[1] },
+    ]);
+    assert(
+      onlyPair.below_threshold === true,
+      `2語目で ${onlyPair.subgroup_count}人（3人なので止まるはず）`,
+    );
+
+    // 止まらない大きさで確かめ直す。3人を足して6人にする
+    for (let i = 0; i < 3; i += 1) {
+      const who = await makeMember(db, `dd-pair-more-${i}`);
+      await answerWith(db, who, workId, (q, idx) =>
+        idx === 0
+          ? { tag_id: q.others[0], tag_id_2: q.others[1] }
+          : { tag_id: q.others[0] },
+      );
+    }
+    // 足した3人も取り込む
+    await value(db, asMember(author), `select public.import_answers($1)`, [workId]);
+
+    const enough = await drill(db, author, workId, pattern, [
+      { question_id: first.question_id, tag_id: first.others[1] },
+    ]);
+    assert(
+      enough.subgroup_count === 6,
+      `2語目で ${enough.subgroup_count}人（複勝の6人のはず）`,
+    );
+  });
+
+  await test("X", "掘り下げは作者だけ。他人にも未サインインにも返らない", async () => {
+    const { workId, questions } = await seedDrilldownWork("priv");
+    const n = questions.length;
+    const pattern = "1" + "0".repeat(n - 1);
+
+    const stranger = await makeMember(db, "dd-stranger");
+    assert(
+      (await drill(db, stranger, workId, pattern)) === null,
+      "他人に掘り下げが返っている",
+    );
+
+    // 答えた人でも作者でなければ返らない
+    const answerer = await makeMember(db, "dd-answerer");
+    await answerWith(db, answerer, workId, (q) => ({ tag_id: q.correct }));
+    assert(
+      (await drill(db, answerer, workId, pattern)) === null,
+      "回答者に掘り下げが返っている",
+    );
+
+    await expectFailure(
+      () =>
+        value(db, ANON, `select public.get_work_drilldown($1, $2, $3::jsonb)`, [
+          workId,
+          pattern,
+          "[]",
+        ]),
+      "permission denied",
+    );
+  });
+
   await test("V", "古い形の回答が混ざっていても、集計が落ちない", async () => {
     const author = await makeMember(db, "an-legacy");
     const { prompt_id: promptId } = await drawPrompt(db, author, { timeLimit: 3600 });

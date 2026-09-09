@@ -624,6 +624,22 @@ type AfterAnswerData = {
   flavorVocab: FlavorVocabSet | null;
   /** ヒント使用別の集計。作者にだけ入る */
   hintResult: WorkHintResult | null;
+  /** 答え終わった本人だけが見る集計。未回答なら null */
+  analysis: MyAnswerAnalysis | null;
+  /** 作者だけが見る集計。作者以外なら null */
+  workAnalysis: WorkAnswerAnalysis | null;
+  /** いま選んでいる区画（当て方の並び）。URL の pattern */
+  pattern: string | null;
+  /** 掘り下げの条件。URL の f=<問のID>:<語のID> */
+  filters: AnswerFilter[];
+  /** 区画を選んでいるときだけ入る。作者以外なら null */
+  drilldown: Drilldown | null;
+  /** 分析から外す相手を選ぶ一覧。作者以外なら null */
+  answerList: WorkAnswerList | null;
+  /** その一覧を開いているか */
+  manageOpen: boolean;
+  /** 取り込み枠の状態。作者以外なら null */
+  importState: WorkImportState | null;
   shareOpen: boolean;
   replyOpen: boolean;
 };
@@ -640,6 +656,12 @@ export default async function WorkPage({
     share?: string;
     hint?: string;
     reply?: string;
+    /** 掘り下げで選んだ区画（"11010" のような0と1の並び） */
+    pattern?: string;
+    /** 掘り下げの条件。`f=<問のID>:<語のID>` を重ねられるので配列も来る */
+    f?: string | string[];
+    /** 分析から外す相手を選ぶ一覧を開いているか */
+    manage?: string;
   }>;
 }) {
   const { id } = await params;
@@ -717,6 +739,33 @@ export default async function WorkPage({
         ? await openMyWorkResult(id)
         : await fetchMyWorkResult(id)
       : null;
+  /* --- 掘り下げ（作者だけ）------------------------------------------------
+   *
+   * 選んだ区画と条件は URL に載っている。**手で書き換えても構わない。**
+   * 返す・返さないを決めるのは DB 側で、作者でなければ null、
+   * 集団が少人数なら人数も内訳も返ってこない。ここは呼ぶだけ。
+   */
+  const isWorkAuthor = Boolean(publicWork?.is_author && user);
+  const pattern =
+    isWorkAuthor && typeof rawPattern === "string" && /^[01]+$/.test(rawPattern)
+      ? rawPattern
+      : null;
+  const filters = isWorkAuthor ? parseFilters(rawFilters) : [];
+  const manageOpen = isWorkAuthor && rawManage === "open";
+
+  const [drilldown, answerList, importState] = await Promise.all([
+    pattern
+      ? fetchWorkDrilldown(id, pattern, filters)
+      : Promise.resolve<Drilldown | null>(null),
+    isWorkAuthor && resultOpen
+      ? fetchWorkAnswerList(id)
+      : Promise.resolve<WorkAnswerList | null>(null),
+    // 取り込み枠は、下書きでも削除済みでも作者に返る。
+    // 公開の経路で取れなかったときも本人用の経路で作品が取れていれば読む
+    (publicWork?.is_author || myWork) && user
+      ? fetchWorkImportState(id)
+      : Promise.resolve<WorkImportState | null>(null),
+  ]);
 
   // --- 回答の前後で出すもの --------------------------------------------
   //

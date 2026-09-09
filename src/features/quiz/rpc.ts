@@ -103,3 +103,55 @@ export async function fetchMyAnswerAnalysis(
   if (error) throw new Error(readableRpcError(error.message));
   return (data as MyAnswerAnalysis | null) ?? null;
 }
+
+/**
+ * 条件で絞った集団の語の分布（作者だけ）。
+ *
+ * 絞り込みは「問のIDと語のIDの組」だけを渡す。SQL の断片は渡さない。
+ * 集団が少人数のときは、DB 側が人数も内訳も返さない。
+ */
+export async function fetchWorkDrilldown(
+  workId: string,
+  pattern: string | null,
+  filters: AnswerFilter[],
+): Promise<Drilldown | null> {
+  const supabase = await createSupabaseServerClient();
+  const { data, error } = await supabase.rpc("get_work_drilldown", {
+    p_work_id: workId,
+    p_pattern: pattern,
+    p_filters: filters,
+  });
+
+  if (error) throw new Error(readableRpcError(error.message));
+  return (data as Drilldown | null) ?? null;
+}
+
+/** 作者向けの回答一覧。誰が答えたかは入っていない */
+export async function fetchWorkAnswerList(
+  workId: string,
+): Promise<WorkAnswerList | null> {
+  const supabase = await createSupabaseServerClient();
+  const { data, error } = await supabase.rpc("get_work_answer_list", {
+    p_work_id: workId,
+  });
+
+  if (error) throw new Error(readableRpcError(error.message));
+  return (data as WorkAnswerList | null) ?? null;
+}
+
+/** 回答を作者の分析から外す／戻す。回答そのものは消えない */
+export async function callSetAnswerExcluded(
+  workId: string,
+  answerNos: number[],
+  excluded: boolean,
+): Promise<{ changed: number; excluded_count: number; analysed_count: number }> {
+  const supabase = await createSupabaseServerClient();
+  const { data, error } = await supabase.rpc("set_answer_excluded", {
+    p_work_id: workId,
+    p_answer_nos: answerNos,
+    p_excluded: excluded,
+  });
+
+  if (error) throw new Error(readableRpcError(error.message));
+  return data as { changed: number; excluded_count: number; analysed_count: number };
+}

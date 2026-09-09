@@ -4,17 +4,105 @@ import {
   cumulativeMatches,
   countOnes,
   formatRate,
+  filtersUpTo,
   patternTable,
   rankWords,
   rarityLabel,
   scoreRate,
+  serializeFilters,
   sharePercent,
+  withFilter,
+  type AnswerFilter,
+  type Drilldown,
   type MyAnswerAnalysis,
   type SectionWords,
   type WorkAnswerAnalysis,
+  type WorkAnswerList,
 } from "@/features/quiz/results";
 import { btnPrimary, btnQuiet, btnSecondary, surface } from "@/app/_surface";
 import { SubmitButton } from "@/app/_pending";
+
+import { setAnswerExcludedAction } from "./actions";
+
+/* ===========================================================================
+ * 押すと画面が変わる部品（JavaScript を使わない）
+ * ===========================================================================
+ *
+ * 【なぜ form なのか】
+ *   掘り下げは「押す → 条件が増える → 数え直す」の繰り返しで、
+ *   数えるのは DB。押した結果はURLに残したい（戻る・進む・共有・読み込み直しが
+ *   そのまま効く）。
+ *
+ *   リンクでもURLは作れるが、仕様は**押せる部品であること**を求めている。
+ *   `<a>` は押せる部品ではない。GET の form なら、中身は本物の button で、
+ *   押すと URL が組み立てられて画面が変わる。JavaScript は要らない。
+ *
+ * 【条件をURLに置いても安全な理由】
+ *   URL を手で書き換えても、返す・返さないを決めるのは DB 側。
+ *   作品の持ち主でなければ null、集団が少人数なら内訳も人数も返らない。
+ */
+
+/** URL に載せる名前と値の組 */
+type Param = [name: string, value: string];
+
+function AnalysisButton({
+  workId,
+  params,
+  className,
+  data,
+  children,
+  disabled = false,
+}: {
+  workId: string;
+  params: Param[];
+  className?: string;
+  data?: Record<`data-${string}`, string>;
+  children: React.ReactNode;
+  disabled?: boolean;
+}) {
+  return (
+    // contents にしているのは、この form が並びの箱として数えられないようにするため
+    <form method="get" action={`/works/${workId}`} className="contents">
+      {params.map(([name, value], i) => (
+        <input key={`${name}-${i}`} type="hidden" name={name} value={value} />
+      ))}
+      <button type="submit" disabled={disabled} {...data} className={className}>
+        {children}
+      </button>
+    </form>
+  );
+}
+
+/** 掘り下げの状態をURLへ戻す。result=open は必ず付ける（開いた状態を保つ） */
+function analysisParams(
+  pattern: string | null,
+  filters: AnswerFilter[],
+  extra: Param[] = [],
+): Param[] {
+  const out: Param[] = [["result", "open"]];
+  if (pattern) out.push(["pattern", pattern]);
+  for (const f of serializeFilters(filters)) out.push(["f", f]);
+  return [...out, ...extra];
+}
+
+/**
+ * 回答が集まったあとの結果。作者向けと回答者向けの2つ。
+ *
+ * 【何が主役か】
+ *   これまでの主役は「67% 2/3」のような正解の割合だった。
+ *   その数は「当たったかどうか」しか言わないので、
+ *   **どう見えたか**は何も分からない。
+ *
+ *   いまの主役は、作者側が「どの語が選ばれたか」と
+ *   「どの項目が伝わった人がどれだけ重なっているか」、
+ *   回答者側が「自分がどう見て、他の人はどう見たか」。
+ *
+ * 【正解がここに出てよい理由】
+ *   この2つの部品を出す相手は、作者本人か、答え終わった人だけ。
+ *   どちらも既に正解を知っている。まだ答えていない人には
+ *   DB 側（get_work_answer_analysis / get_my_answer_analysis）が
+ *   null を返すので、そもそも中身が届かない。
+ */
 
 /* ===========================================================================
  * 語ランキング
@@ -320,6 +408,282 @@ function PatternField({
         );
       })}
     </div>
+  );
+}
+
+/* ===========================================================================
+ * 掘り下げ
+ * ===========================================================================
+ *
+ * 【何をする面か】
+ *   「この組み合わせで伝わった人たちは、伝わらなかった部分を何だと思ったのか」
+ *   を見る。だから並べるのは、選んだ区画で**正解を含まなかった項目だけ。**
+ *   当たった項目の内訳は、その問いに答えない。
+ *
+ * 【少人数のときに何も出さない】
+ *   人数も語も出さない。「4人です」と出すだけでも、条件を少しずつ変えれば
+ *   誰か1人を言い当てられる。**画面で隠すのではなく、DB が返さない。**
+ */
+function Trail({
+  workId,
+  pattern,
+  filters,
+  sections,
+}: {
+  workId: string;
+  pattern: string;
+  filters: AnswerFilter[];
+  sections: SectionWords[];
+}) {
+  const labelOf = (f: AnswerFilter) => {
+    const sec = sections.find((x) => x.question_id === f.question_id);
+    const word = sec?.words.find((w) => w.tag_id === f.tag_id);
+    return `${sec?.card_slot_label ?? "項目"}：${word?.label ?? f.tag_id}`;
+  };
+
+  return (
+    <div className="flex flex-wrap items-center gap-2" data-trail>
+      <AnalysisButton
+        workId={workId}
+        params={analysisParams(pattern, [])}
+        data={{ "data-trail-step": "0" }}
+        className={`${btnSecondary} min-h-11 px-3 py-1 text-xs`}
+      >
+        {pattern}
+      </AnalysisButton>
+
+      {filters.map((f, i) => (
+        <span key={`${f.question_id}-${f.tag_id}`} className="flex items-center gap-2">
+          <span aria-hidden className="text-faint">
+            ›
+          </span>
+          <AnalysisButton
+            workId={workId}
+            params={analysisParams(pattern, filtersUpTo(filters, i + 1))}
+            data={{ "data-trail-step": String(i + 1) }}
+            className={`${btnSecondary} min-h-11 px-3 py-1 text-xs`}
+          >
+            {labelOf(f)}
+          </AnalysisButton>
+        </span>
+      ))}
+
+      <AnalysisButton
+        workId={workId}
+        params={[["result", "open"]]}
+        data={{ "data-trail-clear": "1" }}
+        className={`${btnQuiet} min-h-11 px-3 py-1 text-xs`}
+      >
+        全部解除
+      </AnalysisButton>
+    </div>
+  );
+}
+
+function DrilldownPanel({
+  workId,
+  pattern,
+  filters,
+  drilldown,
+  allSections,
+}: {
+  workId: string;
+  pattern: string;
+  filters: AnswerFilter[];
+  drilldown: Drilldown;
+  /** 語の名前を引くための、絞り込む前の一覧 */
+  allSections: SectionWords[];
+}) {
+  return (
+    <section
+      className="space-y-4 rounded-xl border border-line-firm p-4"
+      data-drilldown
+      data-below-threshold={drilldown.below_threshold ? "1" : "0"}
+    >
+      <Trail
+        workId={workId}
+        pattern={pattern}
+        filters={filters}
+        sections={allSections}
+      />
+
+      {drilldown.not_imported ? (
+        <div className="space-y-1" data-drilldown-blocked>
+          <p className="text-sm font-bold">
+            取り込んだ回答がないので、掘り下げられません
+          </p>
+          <p className="text-xs text-faint">
+            下の「分析に使う回答の枠」から取り込んでください。
+          </p>
+        </div>
+      ) : drilldown.below_threshold ? (
+        <div className="space-y-1" data-drilldown-blocked>
+          <p className="text-sm font-bold">
+            少人数のため、これ以上の絞り込みはできません
+          </p>
+          <p className="text-xs text-faint">
+            この条件に当てはまる人が {drilldown.min_subgroup}
+            人に届いていません。人数も、選ばれた語も出しません。
+            誰が何と答えたかを言い当てられないようにするためです。
+            1つ前の条件へ戻ってください。
+          </p>
+        </div>
+      ) : (
+        <>
+          <p className="text-sm" data-subgroup-count={String(drilldown.subgroup_count)}>
+            この条件に当てはまる人 …{" "}
+            <span className="font-bold tabular-nums">
+              {drilldown.subgroup_count}人
+            </span>
+          </p>
+
+          {drilldown.sections.length === 0 ? (
+            <p className="text-xs text-faint">
+              この区画は全項目で正解を含んでいます。掘り下げる項目がありません。
+            </p>
+          ) : (
+            <>
+              <p className="text-xs text-faint">
+                この人たちが、正解を含まなかった項目で何を選んだか。
+                語を押すと、その語を選んだ人だけに絞り込めます。
+              </p>
+              <ul className="space-y-5">
+                {drilldown.sections.map((sec) => (
+                  <WordRanking
+                    key={sec.question_id}
+                    section={sec}
+                    pick={{
+                      workId,
+                      params: (tagId) =>
+                        analysisParams(
+                          pattern,
+                          withFilter(filters, sec.question_id, tagId),
+                        ),
+                    }}
+                  />
+                ))}
+              </ul>
+            </>
+          )}
+        </>
+      )}
+    </section>
+  );
+}
+
+/* ===========================================================================
+ * 分析から外す
+ * =========================================================================== */
+
+function ExclusionPanel({
+  workId,
+  list,
+  open,
+}: {
+  workId: string;
+  list: WorkAnswerList;
+  open: boolean;
+}) {
+  if (!open) {
+    return (
+      <div className="border-t border-ink/10 pt-5">
+        <AnalysisButton
+          workId={workId}
+          params={[
+            ["result", "open"],
+            ["manage", "open"],
+          ]}
+          data={{ "data-open-manage": "1" }}
+          className={btnSecondary}
+        >
+          分析に使う回答を選ぶ（{list.excluded_count}件を外しています）
+        </AnalysisButton>
+      </div>
+    );
+  }
+
+  return (
+    <section className="space-y-4 border-t border-ink/10 pt-5" data-exclusion-panel>
+      <div className="space-y-1">
+        <h3 className="text-sm font-bold">分析に使う回答</h3>
+        <p className="text-xs text-faint">
+          外した回答は、上の集計と掘り下げから抜けます。
+          <span className="font-bold">回答そのものは消えません。</span>
+          答えた本人の画面も、公開の集計も変わりません。いつでも戻せます。
+        </p>
+        <p className="text-xs text-faint">
+          誰が答えたかは出していません。番号は、この作品の中だけの通し番号です。
+        </p>
+      </div>
+
+      <form action={setAnswerExcludedAction} className="space-y-3">
+        <input type="hidden" name="workId" value={workId} />
+
+        <ul className="space-y-1">
+          {list.answers.map((row) => (
+            <li
+              key={row.no}
+              data-answer-row={String(row.no)}
+              data-excluded={row.is_excluded ? "1" : "0"}
+              className={[
+                "flex flex-wrap items-center gap-x-3 gap-y-1 rounded-xl border px-3 py-2 text-xs",
+                row.is_excluded ? "border-line-faint text-faint" : "border-line",
+              ].join(" ")}
+            >
+              <label className="flex min-h-11 items-center gap-2">
+                <input type="checkbox" name="no" value={row.no} />
+                <span className="font-bold tabular-nums">#{row.no}</span>
+              </label>
+              <span className="tabular-nums">
+                {new Date(row.answered_at).toLocaleString("ja-JP", {
+                  timeZone: "Asia/Tokyo",
+                  dateStyle: "short",
+                  timeStyle: "short",
+                })}
+              </span>
+              <span className="tabular-nums">
+                {row.correct_sections} / {row.question_count} 項目で正解を含む
+              </span>
+              {row.is_perfect_exact ? (
+                <span className="text-success">完全ビタ</span>
+              ) : null}
+              {row.is_excluded ? (
+                <span className="font-bold">外しています</span>
+              ) : null}
+            </li>
+          ))}
+        </ul>
+
+        <div className="flex flex-wrap gap-2">
+          <SubmitButton
+            name="mode"
+            value="exclude"
+            pendingLabel="外しています…"
+            className={btnPrimary}
+            data={{ "data-bulk-exclude": "1" }}
+          >
+            チェックした回答を分析から外す
+          </SubmitButton>
+          <SubmitButton
+            name="mode"
+            value="restore"
+            pendingLabel="戻しています…"
+            className={btnSecondary}
+            data={{ "data-bulk-restore": "1" }}
+          >
+            チェックした回答を戻す
+          </SubmitButton>
+        </div>
+      </form>
+
+      <AnalysisButton
+        workId={workId}
+        params={[["result", "open"]]}
+        className={btnQuiet}
+      >
+        閉じる
+      </AnalysisButton>
+    </section>
   );
 }
 

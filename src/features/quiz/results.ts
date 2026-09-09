@@ -283,3 +283,106 @@ export function rarityLabel(choiceCounts: number[]): string | null {
  * =========================================================================== */
 
 /** 絞り込みの1段。「この問で、この語を選んだ人」 */
+export type AnswerFilter = { question_id: number; tag_id: number };
+
+/** get_work_drilldown の戻り値 */
+export type Drilldown = {
+  /** 取り込んだ回答が1件も無く、掘り下げを始められないか */
+  not_imported: boolean;
+  /** 集団が少人数で、これ以上返せないか */
+  below_threshold: boolean;
+  /** 掘り下げに要る最少人数。**画面に数を直接書かず、ここから読む** */
+  min_subgroup: number;
+  /** 集団の人数。少人数のときは null（人数も返さない） */
+  subgroup_count: number | null;
+  question_count: number;
+  pattern: string | null;
+  /** 正解を含まなかった問だけ。少人数のときは空 */
+  sections: SectionWords[];
+};
+
+/** 作者向けの回答一覧の1行。**誰が答えたかは入っていない** */
+export type AnswerListRow = {
+  /** その作品の中だけの通し番号（古い順に1から） */
+  no: number;
+  answered_at: string;
+  /** いくつの項目で正解を含んだか。当て方の並びそのものは返らない */
+  correct_sections: number;
+  question_count: number;
+  is_perfect_exact: boolean;
+  is_excluded: boolean;
+};
+
+/** get_work_answer_list の戻り値 */
+export type WorkAnswerList = {
+  total: number;
+  excluded_count: number;
+  question_count: number;
+  answers: AnswerListRow[];
+};
+
+/**
+ * URL の `f=<問のID>:<語のID>` を読み取る。
+ *
+ * 読めない形は捨てる。同じ問に2つ来たら**先に来たほうだけ**を残す。
+ * DB 側は同じ問が重なると断るので、ここで整えてから渡す。
+ */
+export function parseFilters(raw: string | string[] | undefined): AnswerFilter[] {
+  const list = raw === undefined ? [] : Array.isArray(raw) ? raw : [raw];
+  const out: AnswerFilter[] = [];
+
+  for (const item of list) {
+    const [a, b] = item.split(":");
+    const question_id = Number.parseInt(a ?? "", 10);
+    const tag_id = Number.parseInt(b ?? "", 10);
+    if (!Number.isFinite(question_id) || !Number.isFinite(tag_id)) continue;
+    if (out.some((f) => f.question_id === question_id)) continue;
+    out.push({ question_id, tag_id });
+  }
+  return out;
+}
+
+/** URL へ戻す */
+export function serializeFilters(filters: AnswerFilter[]): string[] {
+  return filters.map((f) => `${f.question_id}:${f.tag_id}`);
+}
+
+/**
+ * 語を1つ選んだあとの絞り込みを作る。
+ *
+ * 【同じ項目に2つ重ねない】
+ *   同じ問に別の語を足すと、両方を選んだ人だけが残り、必ず0人になる。
+ *   0人になる操作を押させない。
+ *
+ *   その問に既に条件があるときは、**その条件を置き換え、それより後ろの
+ *   条件を落とす。**後ろを残すと、置き換えた条件と噛み合わない
+ *   組み合わせが残りうるため。前の段へ戻って選び直したのと同じ結果になる。
+ */
+export function withFilter(
+  filters: AnswerFilter[],
+  questionId: number,
+  tagId: number,
+): AnswerFilter[] {
+  const at = filters.findIndex((f) => f.question_id === questionId);
+  if (at === -1) return [...filters, { question_id: questionId, tag_id: tagId }];
+  return [...filters.slice(0, at), { question_id: questionId, tag_id: tagId }];
+}
+
+/** 「ここまで戻る」。0 を渡すと全部解除 */
+export function filtersUpTo(filters: AnswerFilter[], count: number): AnswerFilter[] {
+  return filters.slice(0, Math.max(0, Math.min(count, filters.length)));
+}
+
+/**
+ * 当て方の並びのうち、正解を含まなかった問だけを返す。
+ *
+ * 掘り下げの対象はここだけ。当たった問の内訳は
+ * 「伝わらなかった部分を何だと思ったか」に答えないので並べない。
+ */
+export function mismatchPositions(pattern: string): number[] {
+  const out: number[] = [];
+  [...pattern].forEach((c, i) => {
+    if (c === "0") out.push(i);
+  });
+  return out;
+}

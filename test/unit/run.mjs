@@ -475,6 +475,73 @@ test("希少度", "問数や選択肢が変わると数も変わる", () => {
 
 console.log("\n掘り下げの条件（P3）");
 
+test("条件", "URL から条件を読み取る。読めない形は捨てる", () => {
+  const f = parseFilters(["12:345", "こわれた", "13:", ":9", "14:678"]);
+  assert(f.length === 2, `${f.length} 件`);
+  assert(f[0].question_id === 12 && f[0].tag_id === 345, JSON.stringify(f[0]));
+  assert(f[1].question_id === 14 && f[1].tag_id === 678, JSON.stringify(f[1]));
+
+  assert(parseFilters(undefined).length === 0, "何も無いときに条件が出る");
+  assert(parseFilters("12:345").length === 1, "1件だけのときに読めない");
+});
+
+test("条件", "同じ項目に2つの条件は残らない（先に来たほうを残す）", () => {
+  const f = parseFilters(["12:345", "12:999", "13:1"]);
+  assert(f.length === 2, `${f.length} 件`);
+  assert(f[0].tag_id === 345, `残ったのが ${f[0].tag_id}`);
+});
+
+test("条件", "URL へ戻して、読み直すと同じになる", () => {
+  const f = [
+    { question_id: 12, tag_id: 345 },
+    { question_id: 13, tag_id: 678 },
+  ];
+  assert(JSON.stringify(parseFilters(serializeFilters(f))) === JSON.stringify(f), "往復で変わる");
+});
+
+test("条件", "新しい項目の語を選ぶと、条件が1段増える", () => {
+  const f = withFilter([{ question_id: 12, tag_id: 345 }], 13, 678);
+  assert(f.length === 2, `${f.length} 段`);
+  assert(f[1].question_id === 13 && f[1].tag_id === 678, JSON.stringify(f[1]));
+});
+
+test("条件", "同じ項目の別の語を選ぶと、その段を置き換えて後ろを落とす", () => {
+  const before = [
+    { question_id: 12, tag_id: 345 },
+    { question_id: 13, tag_id: 678 },
+    { question_id: 14, tag_id: 900 },
+  ];
+  const after = withFilter(before, 13, 111);
+
+  assert(after.length === 2, `${after.length} 段（2段のはず）`);
+  assert(after[0].tag_id === 345, "前の段まで消えている");
+  assert(after[1].question_id === 13 && after[1].tag_id === 111, JSON.stringify(after[1]));
+  // 同じ項目に2つ並ばない＝0人になる条件を作らない
+  assert(
+    new Set(after.map((x) => x.question_id)).size === after.length,
+    "同じ項目が2回入っている",
+  );
+});
+
+test("条件", "途中の段まで戻せる。0段まで戻すと全部解除", () => {
+  const f = [
+    { question_id: 12, tag_id: 1 },
+    { question_id: 13, tag_id: 2 },
+    { question_id: 14, tag_id: 3 },
+  ];
+  assert(filtersUpTo(f, 2).length === 2, "2段まで戻せない");
+  assert(filtersUpTo(f, 0).length === 0, "全部解除できない");
+  assert(filtersUpTo(f, 9).length === 3, "段数を超えて指定すると壊れる");
+});
+
+test("条件", "掘り下げる項目は、正解を含まなかったところだけ", () => {
+  assert(JSON.stringify(mismatchPositions("11100")) === "[3,4]", mismatchPositions("11100").join(","));
+  assert(mismatchPositions("11111").length === 0, "全部当てた並びに対象が出る");
+  assert(mismatchPositions("00000").length === 5, "全部外した並びの対象が5つでない");
+});
+
+console.log("\n取り込み枠（P4）");
+
 const passed = results.filter((r) => r.ok).length;
 const failed = results.filter((r) => !r.ok);
 

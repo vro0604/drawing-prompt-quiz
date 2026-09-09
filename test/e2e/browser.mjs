@@ -2208,28 +2208,458 @@ async function main() {
     t.stage("全部外した区画を押す");
     const cell = page.locator(`[data-pattern="${zero}"]`);
     assert(
-      /2択当て/.test(await shown()),
-      `2つ選んだときの表示が違う: ${await shown()}`,
+      (await cell.getAttribute("data-pattern-count")) === "11",
+      `区画の人数が ${await cell.getAttribute("data-pattern-count")}（11人のはず）`,
+    );
+    await clickSafely(cell);
+    await page.waitForURL((u) => u.toString().includes(`pattern=${zero}`), { timeout: 20000 });
+    await settledBody(page);
+
+    const panel = page.locator("[data-drilldown]");
+    await panel.waitFor({ state: "visible", timeout: 15000 });
+    assert(
+      (await panel.getAttribute("data-below-threshold")) === "0",
+      "11人なのに少人数の断りが出ている",
     );
     assert(
-      /2つまでしか絞れなかった/.test(await shown()),
-      "2つ選んだときに、記録の残り方が書かれていない",
+      (await page.locator("[data-subgroup-count]").getAttribute("data-subgroup-count")) === "11",
+      "集団の人数が違う",
     );
 
-    if ((await boxes.count()) >= 3) {
-      await boxes.nth(2).check();
-      assert(
-        /3つ以上は選べません/.test(await shown()),
-        `3つ選んだときの表示が違う: ${await shown()}`,
-      );
-      await boxes.nth(2).uncheck();
-    }
+    // 全部外した区画なので、掘り下げの対象は全項目
+    const drilled = await panel.locator("[data-word-ranking]").count();
+    assert(drilled === sections, `掘り下げの項目が ${drilled}（${sections} のはず）`);
 
-    // 外すと戻る（片道の表示になっていないこと）
-    await boxes.nth(1).uncheck();
-    assert(/ビタ当て/.test(await shown()), "2つ目を外してもビタ当てに戻らない");
-    await boxes.nth(0).uncheck();
-    assert(/回答を選んでください/.test(await shown()), "全部外しても未選択に戻らない");
+    // 選んだ区画が強調され、他が薄くなる
+    assert(
+      (await cell.getAttribute("data-pattern-selected")) === "1",
+      "押した区画が選択中になっていない",
+    );
+
+    // 掘り下げのあいだも絵が見えている
+    assert(
+      (await page.locator("[data-author-analysis] img").count()) >= 1,
+      "掘り下げの面に作品の絵が無い",
+    );
+
+    await ctx.close();
+  });
+
+  await test("Y", "語を押すと条件が増え、パンくずから戻れる", async (t) => {
+    const workId = await seedDrillWork("条件を重ねる試験");
+    const { ctx, page } = await signedInPage(seeded.authorEmail);
+
+    await page.goto(`${base}/works/${workId}?result=open`);
+    await settledBody(page);
+    const sections = await page.locator("[data-author-analysis] [data-word-ranking]").count();
+    const zero = "0".repeat(sections);
+
+    await clickSafely(page.locator(`[data-pattern="${zero}"]`));
+    await page.waitForURL((u) => u.toString().includes("pattern="), { timeout: 20000 });
+    await settledBody(page);
+
+    t.stage("11人全員が選んだ語で絞る");
+    const first = page.locator("[data-drilldown] [data-word-ranking]").first();
+    // 正解の語は押せないので、押せる語のうち先頭を取る
+    const word = first.locator("[data-pick-word]:not([disabled])").first();
+    await clickSafely(word);
+    await page.waitForURL((u) => u.toString().includes("f="), { timeout: 20000 });
+    await settledBody(page);
+
+    const count1 = await page
+      .locator("[data-subgroup-count]")
+      .getAttribute("data-subgroup-count");
+    assert(count1 === "11", `1段で ${count1}人（11人のはず）`);
+    assert(
+      (await page.locator("[data-trail] [data-trail-step]").count()) === 2,
+      "パンくずが1段ぶん増えていない",
+    );
+
+    t.stage("2段目");
+    const second = page.locator("[data-drilldown] [data-word-ranking]").nth(1);
+    await clickSafely(second.locator("[data-pick-word]:not([disabled])").first());
+    await settledBody(page);
+    assert(
+      (await page.locator("[data-trail] [data-trail-step]").count()) === 3,
+      "パンくずが2段ぶんになっていない",
+    );
+
+    t.stage("1段目へ戻る");
+    await clickSafely(page.locator('[data-trail-step="1"]'));
+    await settledBody(page);
+    assert(
+      (await page.locator("[data-trail] [data-trail-step]").count()) === 2,
+      "戻ったのにパンくずが減っていない",
+    );
+
+    t.stage("全部解除");
+    await clickSafely(page.locator("[data-trail-clear]"));
+    await settledBody(page);
+    assert(
+      (await page.locator("[data-drilldown]").count()) === 0,
+      "全部解除しても掘り下げが残っている",
+    );
+    assert(!page.url().includes("pattern="), `URL に条件が残っている: ${page.url()}`);
+
+    await ctx.close();
+  });
+
+  await test("Y", "少人数になると、人数も語も出さずに止まる", async (t) => {
+    const workId = await seedDrillWork("少人数の試験");
+    const { ctx, page } = await signedInPage(seeded.authorEmail);
+
+    await page.goto(`${base}/works/${workId}?result=open`);
+    await settledBody(page);
+    const sections = await page.locator("[data-author-analysis] [data-word-ranking]").count();
+    const zero = "0".repeat(sections);
+
+    await clickSafely(page.locator(`[data-pattern="${zero}"]`));
+    await page.waitForURL((u) => u.toString().includes("pattern="), { timeout: 20000 });
+    await settledBody(page);
+
+    t.stage("3人しか選んでいない語で絞る");
+    const first = page.locator("[data-drilldown] [data-word-ranking]").first();
+    const words = first.locator("[data-pick-word]:not([disabled])");
+    let target = null;
+    for (let i = 0; i < (await words.count()); i += 1) {
+      const row = words.nth(i);
+      const li = row.locator("xpath=ancestor::li[@data-word][1]");
+      if ((await li.getAttribute("data-pair")) === "3") target = row;
+    }
+    assert(target !== null, "3人だけが選んだ語が見つからない（準備の失敗）");
+
+    await clickSafely(target);
+    await page.waitForURL((u) => u.toString().includes("f="), { timeout: 20000 });
+    await settledBody(page);
+
+    const panel = page.locator("[data-drilldown]");
+    assert(
+      (await panel.getAttribute("data-below-threshold")) === "1",
+      "3人なのに詳細が出ている",
+    );
+    await assertBody(page, /少人数のため、これ以上の絞り込みはできません/, "断りが出ていない");
+    assert(
+      (await page.locator("[data-subgroup-count]").count()) === 0,
+      "少人数なのに人数が出ている",
+    );
+    assert(
+      (await panel.locator("[data-word]").count()) === 0,
+      "少人数なのに語の内訳が出ている",
+    );
+
+    // 画面のソースにも人数が乗っていないこと（隠しているだけにしない）
+    const html = await page.content();
+    assert(
+      !/data-subgroup-count="3"/.test(html),
+      "通信の中身に少人数の人数が乗っている",
+    );
+
+    await ctx.close();
+  });
+
+  await test("Y", "回答を外すと分析対象が減り、戻すと戻る", async (t) => {
+    const workId = await seedDrillWork("外す試験");
+    const { ctx, page } = await signedInPage(seeded.authorEmail);
+
+    await page.goto(`${base}/works/${workId}?result=open&manage=open`);
+    await settledBody(page);
+
+    const panel = page.locator("[data-exclusion-panel]");
+    await panel.waitFor({ state: "visible", timeout: 15000 });
+
+    assert(
+      (await panel.locator("[data-answer-row]").count()) === 11,
+      "回答一覧の件数が違う",
+    );
+    // 無料の集計の母数は全部の回答
+    assert(
+      (await page.locator("[data-analysed-count]").getAttribute("data-analysed-count")) === "11",
+      "無料の集計の母数が違う",
+    );
+    // 高度分析の対象も、いまは全部取り込んであるので11件
+    assert(
+      (await page.locator("[data-analysis-scope]").first().getAttribute("data-advanced")) === "11",
+      "高度分析の対象の件数が違う",
+    );
+
+    t.stage("2件にチェックを入れてまとめて外す");
+    await panel.locator('[data-answer-row="1"] input[type=checkbox]').check();
+    await panel.locator('[data-answer-row="2"] input[type=checkbox]').check();
+    await submitAndSettle(page, page.locator("[data-bulk-exclude]"));
+    await settledBody(page);
+
+    // まず DB に記録されたかを見る。画面の数と分けて確かめないと、
+    // 「書けていない」のか「描き直せていない」のか分からない
+    const wrote = (
+      await db.query(
+        `select count(*)::int as n from public.analysis_exclusions where work_id = $1`,
+        [workId],
+      )
+    ).rows[0].n;
+    assert(wrote === 2, `外した記録が ${wrote}件（2件のはず）／URL ${page.url()}`);
+
+    // 無料の集計は減らない。減るのは高度分析の対象のほう
+    assert(
+      (await page.locator("[data-analysed-count]").getAttribute("data-analysed-count")) === "11",
+      "外したら無料の集計の母数まで減っている",
+    );
+    assert(
+      (await page.locator("[data-analysis-scope]").first().getAttribute("data-advanced")) === "9",
+      `外したあとの高度分析の対象が ${await page.locator("[data-analysis-scope]").first().getAttribute("data-advanced")}`,
+    );
+    assert(
+      (await page.locator('[data-answer-row="1"]').getAttribute("data-excluded")) === "1",
+      "外した印が付いていない",
+    );
+    // 母数の内訳に、外している件数が数字で出ている
+    // （P4 で「分析対象：N件 ／ 外している回答：M件」の1行から、
+    //   全回答・取り込み済み・未インポート・外している・高度分析対象の
+    //   5つを並べる形に変えた）
+    await assertBody(page, /分析から外している/, "外している件数の見出しが出ていない");
+    const scope = page.locator("[data-analysis-scope]").first();
+    assert(
+      (await scope.getAttribute("data-answers-total")) === "11",
+      "全回答の数が変わっている",
+    );
+
+    t.stage("戻す");
+    await page.locator('[data-answer-row="1"] input[type=checkbox]').check();
+    await page.locator('[data-answer-row="2"] input[type=checkbox]').check();
+    await submitAndSettle(page, page.locator("[data-bulk-restore]"));
+    await settledBody(page);
+
+    assert(
+      (await page.locator("[data-analysis-scope]").first().getAttribute("data-advanced")) === "11",
+      "戻したのに高度分析の対象が戻っていない",
+    );
+
+    // 一覧に身元も当て方の並びも出ていない
+    const text = (await panel.innerText()).replace(/\s+/g, " ");
+    assert(!/@/.test(text), `一覧に利用者名が出ている: ${text.slice(0, 120)}`);
+
+    await ctx.close();
+  });
+
+  await test("Y", "答えた人には掘り下げも回答一覧も出ない", async () => {
+    const workId = await seedDrillWork("回答者には出ない");
+    const answerer = await makeMember(db, `yv${drillPerson++}`);
+    await answerWork(db, answerer, workId, { correct: true });
+
+    // 作者以外が URL を書き換えても、何も出ない
+    const { ctx, page } = await signedInPage(seeded.memberEmail);
+    await page.goto(`${base}/works/${workId}?result=open&pattern=00000&manage=open`);
+    await settledBody(page);
+
+    assert(
+      (await page.locator("[data-author-analysis]").count()) === 0,
+      "作者以外に作者向けの集計が出ている",
+    );
+    assert(
+      (await page.locator("[data-drilldown]").count()) === 0,
+      "作者以外に掘り下げが出ている",
+    );
+    assert(
+      (await page.locator("[data-exclusion-panel]").count()) === 0,
+      "作者以外に回答一覧が出ている",
+    );
+
+    await ctx.close();
+  });
+
+  /* =====================================================================
+   * V. 取り込み枠（P4）
+   * =====================================================================
+   *
+   * 画面から押せる範囲だけを見る。数え方そのものは test/db/run.mjs の Z 群。
+   */
+
+  /** 回答が n 件付いた作品を1件作る。枠は足さない */
+  async function seedCapacityWork(title, answers) {
+    const { prompt_id: promptId } = await drawPrompt(db, seeded.author, {
+      timeLimit: 3600,
+    });
+    const workId = await postWork(db, seeded.author, promptId, title);
+    for (let i = 0; i < answers; i += 1) {
+      await answerWork(db, await makeMember(db, `vc${drillPerson++}`), workId, {
+        correct: true,
+      });
+    }
+    return workId;
+  }
+
+  await test("V", "取り込む前は掘り下げが閉じていて、母数の内訳が出る", async (t) => {
+    const workId = await seedCapacityWork("枠の試験（閉じている）", 6);
+    const { ctx, page } = await signedInPage(seeded.authorEmail);
+
+    await page.goto(`${base}/works/${workId}?result=open`);
+    await settledBody(page);
+    await page.locator("[data-author-analysis]").waitFor({ state: "visible", timeout: 15000 });
+
+    t.stage("母数の内訳");
+    const scope = page.locator("[data-analysis-scope]").first();
+    assert((await scope.getAttribute("data-answers-total")) === "6", "全回答の数が違う");
+    assert((await scope.getAttribute("data-imported")) === "0", "取り込み済みが0でない");
+    assert((await scope.getAttribute("data-unimported")) === "6", "未インポートの数が違う");
+    assert((await scope.getAttribute("data-advanced")) === "0", "高度分析の対象が0でない");
+
+    t.stage("掘り下げは閉じている");
+    assert(
+      (await page.locator("[data-drilldown-locked]").count()) === 1,
+      "取り込み0件なのに掘り下げの断りが出ていない",
+    );
+    const cell = page.locator("[data-pattern]").first();
+    assert(
+      (await cell.getAttribute("data-pattern-locked")) === "1",
+      "区画が押せる状態になっている",
+    );
+    assert(
+      (await page.locator("[data-pattern] button").count()) === 0,
+      "取り込み0件なのに押せるマスがある",
+    );
+
+    t.stage("無料の集計は出ている");
+    assert(
+      (await page.locator("[data-author-analysis] [data-word-ranking]").count()) > 0,
+      "無料の語の分布まで出なくなっている",
+    );
+
+    t.stage("枠の画面");
+    const panel = page.locator("[data-capacity-panel]");
+    await panel.waitFor({ state: "visible", timeout: 15000 });
+    assert(
+      (await panel.locator("[data-remaining]").getAttribute("data-remaining")) === "0",
+      "残り枠が0でない",
+    );
+    assert(
+      (await panel.locator("[data-purchase-slot]").count()) === 1,
+      "枠を増やす場所の案内が出ていない",
+    );
+    await assertBody(page, /購入の画面も出していません/, "買えないことが書かれていない");
+
+    await ctx.close();
+  });
+
+  await test("V", "枠があれば、画面から取り込めて掘り下げが開く", async (t) => {
+    const workId = await seedCapacityWork("枠の試験（取り込む）", 6);
+    // 枠は運営の鍵でしか足せない。画面には入口が無いので、ここで直に足す
+    await db.query(`select public.grant_import_capacity($1, 10, 'test', null)`, [workId]);
+
+    const { ctx, page } = await signedInPage(seeded.authorEmail);
+    await page.goto(`${base}/works/${workId}?result=open`);
+    await settledBody(page);
+
+    t.stage("取り込む");
+    await submitAndSettle(page, page.locator("[data-import-now]"));
+    await settledBody(page);
+
+    const scope = page.locator("[data-analysis-scope]").first();
+    assert((await scope.getAttribute("data-imported")) === "6", `取り込み済みが ${await scope.getAttribute("data-imported")}`);
+    assert((await scope.getAttribute("data-unimported")) === "0", "未インポートが残っている");
+    assert((await scope.getAttribute("data-advanced")) === "6", "高度分析の対象が増えていない");
+    assert(
+      (await page.locator("[data-remaining]").getAttribute("data-remaining")) === "4",
+      "残り枠が4になっていない",
+    );
+
+    t.stage("掘り下げが開く");
+    assert(
+      (await page.locator("[data-drilldown-locked]").count()) === 0,
+      "取り込んだのに断りが残っている",
+    );
+    const sections = await page.locator("[data-author-analysis] [data-word-ranking]").count();
+    const all = "1".repeat(sections);
+    await clickSafely(page.locator(`[data-pattern="${all}"]`));
+    await page.waitForURL((u) => u.toString().includes("pattern="), { timeout: 20000 });
+    await settledBody(page);
+    assert(
+      (await page.locator("[data-subgroup-count]").getAttribute("data-subgroup-count")) === "6",
+      "掘り下げの集団が6人になっていない",
+    );
+
+    await ctx.close();
+  });
+
+  await test("V", "自動にすると溜まった回答が入り、尽きると自動が切れる", async (t) => {
+    const workId = await seedCapacityWork("枠の試験（自動）", 5);
+    await db.query(`select public.grant_import_capacity($1, 3, 'test', null)`, [workId]);
+
+    const { ctx, page } = await signedInPage(seeded.authorEmail);
+    await page.goto(`${base}/works/${workId}?result=open`);
+    await settledBody(page);
+
+    t.stage("自動にする");
+    await submitAndSettle(page, page.locator('[data-toggle-auto="on"]'));
+    await settledBody(page);
+
+    // 枠は3。古い3件だけが入り、枠が尽きて自動は切れる
+    const scope = page.locator("[data-analysis-scope]").first();
+    assert((await scope.getAttribute("data-imported")) === "3", `取り込みが ${await scope.getAttribute("data-imported")}`);
+    assert((await scope.getAttribute("data-unimported")) === "2", "未インポートが2件でない");
+    assert(
+      (await page.locator("[data-remaining]").getAttribute("data-remaining")) === "0",
+      "残り枠が0でない",
+    );
+    assert(
+      (await page.locator("[data-auto-import]").getAttribute("data-auto-import")) === "0",
+      "枠が尽きたのに自動が入ったまま",
+    );
+
+    t.stage("尽きた知らせが残っている");
+    assert(
+      (await page.locator('[data-notice="exhausted"]').count()) === 1,
+      "尽きた知らせが出ていない",
+    );
+
+    await ctx.close();
+  });
+
+  await test("V", "削除した作品でも、枠と取り込みの履歴が見える", async (t) => {
+    const workId = await seedCapacityWork("枠の試験（削除）", 3);
+    await db.query(`select public.grant_import_capacity($1, 10, 'test', null)`, [workId]);
+    await asOwner(db, workId, `select public.import_answers($1)`);
+
+    t.stage("削除する");
+    await db.query(
+      `update public.works set deleted_at = now(), is_published = false where id = $1`,
+      [workId],
+    );
+
+    const { ctx, page } = await signedInPage(seeded.authorEmail);
+    await page.goto(`${base}/works/${workId}`);
+    await settledBody(page);
+
+    await assertBody(page, /この作品は削除済みです/, "削除済みの画面になっていない");
+
+    const panel = page.locator("[data-capacity-panel]");
+    await panel.waitFor({ state: "visible", timeout: 15000 });
+    assert(
+      (await panel.locator("[data-remaining]").getAttribute("data-remaining")) === "7",
+      `削除後の残り枠が ${await panel.locator("[data-remaining]").getAttribute("data-remaining")}`,
+    );
+    assert(
+      (await panel.locator("[data-grant-history] [data-grant]").count()) === 1,
+      "枠を足した記録が残っていない",
+    );
+
+    await ctx.close();
+  });
+
+  await test("V", "作者以外には、枠の画面が出ない", async () => {
+    const workId = await seedCapacityWork("枠の試験（他人）", 3);
+    await db.query(`select public.grant_import_capacity($1, 10, 'test', null)`, [workId]);
+
+    const { ctx, page } = await signedInPage(seeded.memberEmail);
+    await page.goto(`${base}/works/${workId}?result=open`);
+    await settledBody(page);
+
+    assert(
+      (await page.locator("[data-capacity-panel]").count()) === 0,
+      "作者以外に枠の画面が出ている",
+    );
+    assert(
+      (await page.locator("[data-analysis-scope]").count()) === 0,
+      "作者以外に母数の内訳が出ている",
+    );
 
     await ctx.close();
   });

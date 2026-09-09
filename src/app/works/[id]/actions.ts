@@ -503,7 +503,7 @@ export async function setFlavorTextAction(form: FormData): Promise<void> {
   }
 
   try {
-    await callSetFlavorText(workId, vocabIds);
+    await callSetFlavorText(workId, vocabIds, breaks);
   } catch (e) {
     backWithError(workId, e);
   }
@@ -548,4 +548,55 @@ export async function postFlavorReplyAction(form: FormData): Promise<void> {
 
   revalidatePath(`/works/${workId}`);
   redirect(`/works/${workId}?notice=${encodeURIComponent("返歌を送りました。")}`);
+}
+
+/**
+ * 回答を、作者の分析から外す／戻す。
+ *
+ * 【何をしないか】
+ *   回答そのものは消さない。答えた本人の結果も、公開の集計も変えない。
+ *   変わるのは、作者が自分の作品ページで見る集計の母数だけ。
+ *
+ * 【誰が変えられるか】
+ *   作品の持ち主だけ。**画面では確かめていない。**確かめるのは
+ *   set_answer_excluded の中で、そこが唯一の関門になる。
+ *
+ * 【何で相手を指すか】
+ *   作品の中だけの通し番号。回答者の ID も名前も出てこないし、
+ *   画面へ渡してもいない。
+ */
+export async function setAnswerExcludedAction(form: FormData): Promise<void> {
+  const workId = str(form, "workId");
+  const excluded = str(form, "mode") === "exclude";
+
+  const nos = form
+    .getAll("no")
+    .map((v) => Number.parseInt(typeof v === "string" ? v : "", 10))
+    .filter((n) => Number.isFinite(n));
+
+  if (nos.length === 0) {
+    redirect(
+      `/works/${workId}?result=open&manage=open&error=${encodeURIComponent(
+        "対象が選ばれていません。外したい回答にチェックを入れてください。",
+      )}`,
+    );
+  }
+
+  try {
+    await callSetAnswerExcluded(workId, nos, excluded);
+  } catch (e) {
+    backWithError(workId, e);
+  }
+
+  /*
+    **同じ画面へ redirect しない。**
+
+    送り先がいま見ている URL と同じだと、ブラウザ側の控えがそのまま
+    使われて、外したはずの件数が古いまま出た（実測。11件のあとも11件）。
+
+    書き換えたあとに revalidatePath だけを呼ぶと、いまの画面が
+    そのまま組み立て直される。URL は変わらないので、開いている一覧
+    （manage=open）も、選んでいた区画も、そのまま残る。
+  */
+  revalidatePath(`/works/${workId}`);
 }
