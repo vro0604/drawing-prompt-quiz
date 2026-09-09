@@ -4291,6 +4291,28 @@ async function main() {
    */
 
   /** 枠を足す（運営の鍵で呼ぶ関数。試験では持ち主の立場から直接呼ぶ） */
+  function grant(db, workId, quantity, sourceType = "test", ref = null) {
+    return db
+      .query(`select public.grant_import_capacity($1, $2, $3, $4) as r`, [
+        workId,
+        quantity,
+        sourceType,
+        ref,
+      ])
+      .then((r) => r.rows[0].r);
+  }
+
+  /** 作者の立場で取り込む */
+  function importAll(db, uid, workId) {
+    return value(db, asMember(uid), `select public.import_answers($1)`, [workId]);
+  }
+
+  /** 作者の立場で状態を読む */
+  function importState(db, uid, workId) {
+    return value(db, asMember(uid), `select public.get_work_import_state($1)`, [workId]);
+  }
+
+  /** 回答をn件付ける。全員が全問正解（中身はこの節では見ない） */
   async function addAnswers(db, workId, tag, n) {
     for (let i = 0; i < n; i += 1) {
       const u = await makeMember(db, `${tag}${i}`);
@@ -4305,6 +4327,358 @@ async function main() {
     const workId = await postWork(db, author, promptId, title);
     return { author, workId };
   }
+
+  await test("Z", "枠を足すと増える。足し合わせになる。0以下は断る", async () => {
+    const { author, workId } = await makeWork(db, "cap1", "枠を足す");
+
+    const first = await grant(db, workId, 100);
+    assert(first.remaining === 100, `100足して残り ${first.remaining}`);
+
+    const second = await grant(db, workId, 30);
+    assert(second.total === 130, `合計が ${second.total}`);
+    assert(second.remaining === 130, `残りが ${second.remaining}`);
+
+    await expectFailure(() => grant(db, workId, 0), "BAD_QUANTITY");
+    await expectFailure(() => grant(db, workId, -5), "BAD_QUANTITY");
+
+    const state = await importState(db, author, workId);
+    assert(state.granted_total === 130, `台帳の合計が ${state.granted_total}`);
+    assert(state.grants.length === 2, `台帳が ${state.grants.length}件`);
+    assert(
+      state.grants.every((g) => g.source_type === "test"),
+      "台帳に出どころが残っていない",
+    );
+  });
+
+  await test("Z", "作品ごとに独立している。持ち出せない", async () => {
+    const { author: a1, workId: w1 } = await makeWork(db, "cap2", "作品A");
+    const { author: a2, workId: w2 } = await makeWork(db, "cap3", "作品B");
+
+    await grant(db, w1, 50);
+
+    const s1 = await importState(db, a1, w1);
+    const s2 = await importState(db, a2, w2);
+    assert(s1.remaining === 50, `作品Aの残りが ${s1.remaining}`);
+    assert(s2.remaining === 0, `作品Bの残りが ${s2.remaining}（0のはず）`);
+
+    // 作品Bの作者が作品Aの状態を読もうとしても返らない
+    assert(
+      (await importState(db, a2, w1)) === null,
+      "他人の作品の枠が読めている",
+    );
+  });
+
+  await test("Z", "回答1件＝枠1つ。二度目は0件で、枠も減らない", async () => {
+    const { author, workId } = await makeWork(db, "imp1", "取り込み");
+    await addAnswers(db, workId, "imp1r", 5);
+    await grant(db, workId, 100);
+
+    const first = await importAll(db, author, workId);
+    assert(first.imported_now === 5, `1回目に ${first.imported_now}件`);
+    assert(first.imported === 5, `取り込み済みが ${first.imported}件`);
+    assert(first.remaining === 95, `残りが ${first.remaining}`);
+
+    const second = await importAll(db, author, workId);
+    assert(second.imported_now === 0, `2回目に ${second.imported_now}件`);
+    assert(second.remaining === 95, `2回目で残りが ${second.remaining}`);
+  });
+
+  await test("Z", "枠より回答が多いときは、枠のぶんだけ取り込む", async () => {
+    const { author, workId } = await makeWork(db, "imp2", "枠が足りない");
+    await addAnswers(db, workId, "imp2r", 8);
+    await grant(db, workId, 3);
+
+    const done = await importAll(db, author, workId);
+    assert(done.imported_now === 3, `${done.imported_now}件`);
+    assert(done.remaining === 0, `残りが ${done.remaining}`);
+
+    const state = await importState(db, author, workId);
+    assert(state.unimported === 5, `未取り込みが ${state.unimported}件`);
+  });
+
+  await test("Z", "回答より枠が多いときは、余った枠が残る", async () => {
+    const { author, workId } = await makeWork(db, "imp3", "枠が余る");
+    await addAnswers(db, workId, "imp3r", 6);
+    await grant(db, workId, 10);
+
+    const done = await importAll(db, author, workId);
+    assert(done.imported_now === 6, `${done.imported_now}件`);
+    assert(done.remaining === 4, `残りが ${done.remaining}（4のはず）`);
+
+    // あとから来た回答に、余った枠が使える
+    await addAnswers(db, workId, "imp3s", 2);
+    const more = await importAll(db, author, workId);
+    assert(more.imported_now === 2, `あとの回答を ${more.imported_now}件`);
+    assert(more.remaining === 2, `残りが ${more.remaining}`);
+  });
+
+  await test("Z", "取り込むのは古い順。同じ時刻でも順番が決まる", async () => {
+    const { author, workId } = await makeWork(db, "fifo", "古い順");
+    await addAnswers(db, workId, "fifor", 6);
+
+    // **わざと全員の時刻を同じにする。**それでも順番が決まることを見る
+    await db.query(
+      `update public.answers set created_at = timestamptz '2026-09-01 00:00:00+09'
+        where work_id = $1`,
+      [workId],
+    );
+
+    await grant(db, workId, 3);
+    await importAll(db, author, workId);
+
+    const { rows } = await db.query(
+      `select a.id,
+              exists (select 1 from public.analysis_imports i where i.answer_id = a.id) as taken
+         from public.answers a where a.work_id = $1 order by a.created_at, a.id`,
+      [workId],
+    );
+    const taken = rows.map((r) => r.taken);
+    assert(
+      JSON.stringify(taken) === JSON.stringify([true, true, true, false, false, false]),
+      `取り込まれた並びが ${taken.join(",")}`,
+    );
+  });
+
+  await test("Z", "自動が切のときは取り込まない。入のときは新しい回答を取り込む", async () => {
+    const { author, workId } = await makeWork(db, "auto1", "自動");
+    await grant(db, workId, 10);
+
+    // 既定は切
+    const state0 = await importState(db, author, workId);
+    assert(state0.auto_import === false, "既定で自動取り込みが入っている");
+
+    await addAnswers(db, workId, "auto1a", 2);
+    const state1 = await importState(db, author, workId);
+    assert(state1.imported === 0, `切のときに ${state1.imported}件取り込まれた`);
+    assert(state1.remaining === 10, `切のときに枠が ${state1.remaining}へ減った`);
+
+    // 入れる。溜まっていた2件が古い順に入る
+    const on = await value(db, asMember(author), `select public.set_auto_import($1, true)`, [
+      workId,
+    ]);
+    assert(on.auto_import === true, "入らなかった");
+    assert(on.imported_now === 2, `入れた瞬間に ${on.imported_now}件`);
+    assert(on.remaining === 8, `残りが ${on.remaining}`);
+
+    // 以降の新しい回答は自動で入る
+    await addAnswers(db, workId, "auto1b", 1);
+    const state2 = await importState(db, author, workId);
+    assert(state2.imported === 3, `自動で入らなかった（${state2.imported}件）`);
+    assert(state2.remaining === 7, `残りが ${state2.remaining}`);
+  });
+
+  await test("Z", "枠が尽きると自動が切れる。枠を足しても勝手に入らない", async () => {
+    const { author, workId } = await makeWork(db, "auto2", "尽きる");
+    await grant(db, workId, 2);
+    await value(db, asMember(author), `select public.set_auto_import($1, true)`, [workId]);
+
+    await addAnswers(db, workId, "auto2a", 3);
+
+    const state = await importState(db, author, workId);
+    assert(state.imported === 2, `${state.imported}件取り込まれた（2件のはず）`);
+    assert(state.remaining === 0, `残りが ${state.remaining}`);
+    assert(state.auto_import === false, "枠が尽きても自動が入ったまま");
+    assert(state.unimported === 1, `未取り込みが ${state.unimported}件`);
+
+    // 枠を足しても入り直さない
+    await grant(db, workId, 10);
+    const after = await importState(db, author, workId);
+    assert(after.auto_import === false, "枠を足したら勝手に自動が入った");
+    assert(after.imported === 2, `枠を足しただけで ${after.imported}件取り込まれた`);
+  });
+
+  await test("Z", "残り枠が1のときに回答が2件来ても、1件しか取り込まない", async () => {
+    /*
+      【本当に同時ではない】
+        ここで使っている DB は1つの処理系の中で動くので、2つの取り込みを
+        本当に同じ瞬間へぶつけられない。**この節が確かめているのは
+        「2件目が来ても枠を超えない」ことまで。**
+        同時に来たときに待たされることは、consume_import_capacity が
+        状態の行を for update で押さえる作りであることに拠っている。
+        本物の並行での確認は未検証（報告に書いてある）。
+    */
+    const { author, workId } = await makeWork(db, "race", "続けて来る");
+    await grant(db, workId, 1);
+    await value(db, asMember(author), `select public.set_auto_import($1, true)`, [workId]);
+
+    await addAnswers(db, workId, "racer", 2);
+
+    const state = await importState(db, author, workId);
+    assert(state.imported === 1, `${state.imported}件取り込まれた（1件のはず）`);
+    assert(state.remaining === 0, `残りが ${state.remaining}`);
+    assert(state.remaining >= 0, "残りが負になっている");
+    assert(state.unimported === 1, `未取り込みが ${state.unimported}件`);
+  });
+
+  await test("Z", "残量の知らせは世代ごとに1回。枠を足すとまた出せる", async () => {
+    /*
+      分母を20にする。2割は残り4、5%は残り1で、どちらも整数で踏める。
+      分母が10だと 5% は残り 0.5 になり、0 になる前には踏めない。
+    */
+    const { author, workId } = await makeWork(db, "note", "知らせ");
+    await grant(db, workId, 20);   // 世代1・分母20
+    await addAnswers(db, workId, "noter", 16);
+    await importAll(db, author, workId);   // 残り4＝2割
+
+    const state1 = await importState(db, author, workId);
+    const kinds1 = state1.notifications.map((n) => n.kind);
+    assert(kinds1.filter((k) => k === "remaining_20").length === 1, `2割の知らせが ${kinds1}`);
+    assert(!kinds1.includes("remaining_5"), "まだ5%ではないのに知らせが出た");
+    assert(!kinds1.includes("exhausted"), "まだ尽きていないのに尽きた知らせが出た");
+
+    // もう3件取り込んで残り1（＝5%）にする
+    await addAnswers(db, workId, "notes", 3);
+    await importAll(db, author, workId);
+
+    const state2 = await importState(db, author, workId);
+    const kinds2 = state2.notifications.map((n) => n.kind);
+    assert(kinds2.includes("remaining_5"), `5%の知らせが出ていない（${kinds2}）`);
+    assert(!kinds2.includes("exhausted"), "まだ残り1なのに尽きた知らせが出た");
+
+    // 最後の1件で0にする
+    await addAnswers(db, workId, "notex", 1);
+    await importAll(db, author, workId);
+
+    const state2b = await importState(db, author, workId);
+    const kinds2b = state2b.notifications.map((n) => n.kind);
+    assert(kinds2b.includes("exhausted"), "尽きた知らせが出ていない");
+    assert(
+      kinds2b.filter((k) => k === "remaining_20").length === 1,
+      "2割の知らせが増えている",
+    );
+    assert(
+      kinds2b.filter((k) => k === "remaining_5").length === 1,
+      "5%の知らせが増えている",
+    );
+    assert(state2b.auto_import === false, "尽きたのに自動が入っている");
+
+    // 枠を足すと世代が進み、同じ目盛りでまた知らせられる
+    await grant(db, workId, 20);
+    await addAnswers(db, workId, "notet", 16);
+    await value(db, asMember(author), `select public.set_auto_import($1, true)`, [workId]);
+
+    const state3 = await importState(db, author, workId);
+    const twenty = state3.notifications.filter((n) => n.kind === "remaining_20");
+    assert(twenty.length === 2, `2割の知らせが ${twenty.length}件（世代ごとに1件で2件のはず）`);
+    assert(
+      new Set(twenty.map((n) => n.epoch)).size === 2,
+      "同じ世代で2回知らせている",
+    );
+    assert(
+      state3.notifications.every((n) => n.email_sent === false),
+      "メールを送った記録が入っている（送る仕組みはまだ無い）",
+    );
+  });
+
+  await test("Z", "下書きにしても、削除しても、枠と記録が残る", async () => {
+    const { author, workId } = await makeWork(db, "del", "消しても残る");
+    await addAnswers(db, workId, "delr", 3);
+    await grant(db, workId, 10);
+    await importAll(db, author, workId);
+
+    await value(
+      db,
+      asMember(author),
+      `select public.update_work($1, null, null, null, null, null, false)`,
+      [workId],
+    );
+    const hidden = await importState(db, author, workId);
+    assert(hidden.remaining === 7, `下書きにしたら残りが ${hidden.remaining}`);
+    assert(hidden.imported === 3, `下書きにしたら取り込みが ${hidden.imported}`);
+
+    await value(db, asMember(author), `select public.delete_work($1)`, [workId]);
+    const deleted = await importState(db, author, workId);
+    assert(deleted !== null, "削除したら枠の履歴が読めなくなった");
+    assert(deleted.remaining === 7, `削除したら残りが ${deleted.remaining}`);
+    assert(deleted.imported === 3, `削除したら取り込みが ${deleted.imported}`);
+    assert(deleted.grants.length === 1, `台帳が ${deleted.grants.length}件`);
+  });
+
+  await test("Z", "取り込みも自動の切り替えも、作品の持ち主だけ", async () => {
+    const { author, workId } = await makeWork(db, "perm", "持ち主だけ");
+    await addAnswers(db, workId, "permr", 2);
+    await grant(db, workId, 10);
+
+    const stranger = await makeMember(db, "perm-s");
+
+    await expectFailure(
+      () => value(db, asMember(stranger), `select public.import_answers($1)`, [workId]),
+      "NOT_WORK_OWNER",
+    );
+    await expectFailure(
+      () => value(db, asMember(stranger), `select public.set_auto_import($1, true)`, [workId]),
+      "NOT_WORK_OWNER",
+    );
+    assert(
+      (await importState(db, stranger, workId)) === null,
+      "他人に枠の状態が返っている",
+    );
+
+    await expectFailure(
+      () => value(db, ANON, `select public.import_answers($1)`, [workId]),
+      "permission denied",
+    );
+    await expectFailure(
+      () => value(db, ANON, `select public.get_work_import_state($1)`, [workId]),
+      "permission denied",
+    );
+
+    // 枠を足す関数は、利用者の鍵では呼べない
+    await expectFailure(
+      () =>
+        value(db, asMember(author), `select public.grant_import_capacity($1, 10, 'test', null)`, [
+          workId,
+        ]),
+      "permission denied",
+    );
+    await expectFailure(
+      () =>
+        value(db, ANON, `select public.grant_import_capacity($1, 10, 'test', null)`, [workId]),
+      "permission denied",
+    );
+  });
+
+  await test("Z", "無料の集計は全部の回答。高度な分析は取り込んだ回答だけ", async () => {
+    const { author, workId } = await makeWork(db, "elig", "母集団の分かれ方");
+    await addAnswers(db, workId, "eligr", 8);
+
+    // 取り込む前。無料の集計は8件で出るが、掘り下げは始められない
+    const before = await authorView(db, author, workId);
+    assert(before.answers_count === 8, `無料の母数が ${before.answers_count}件`);
+    assert(before.imported_count === 0, `取り込み済みが ${before.imported_count}件`);
+    assert(before.advanced_count === 0, `高度分析の対象が ${before.advanced_count}件`);
+    assert(before.sections.length > 0, "無料の語の分布が出ていない");
+
+    const locked = await drill(db, author, workId, null, []);
+    assert(locked.not_imported === true, "取り込み0件なのに掘り下げが始まった");
+    assert(locked.subgroup_count === null, "取り込み0件で人数が返っている");
+
+    // 6件だけ取り込む
+    await grant(db, workId, 6);
+    await importAll(db, author, workId);
+
+    const after = await authorView(db, author, workId);
+    assert(after.answers_count === 8, `無料の母数が ${after.answers_count}件（8件のまま）`);
+    assert(after.imported_count === 6, `取り込み済みが ${after.imported_count}件`);
+    assert(after.unimported_count === 2, `未取り込みが ${after.unimported_count}件`);
+    assert(after.advanced_count === 6, `高度分析の対象が ${after.advanced_count}件`);
+
+    const open = await drill(db, author, workId, null, []);
+    assert(open.not_imported === false, "取り込んだのに始まらない");
+    assert(open.subgroup_count === 6, `掘り下げの集団が ${open.subgroup_count}人（6人のはず）`);
+
+    // 取り込んだうち1件を外すと、掘り下げの集団だけが減る
+    await value(db, asMember(author), `select public.set_answer_excluded($1, $2::int[], true)`, [
+      workId,
+      "{1}",
+    ]);
+    const narrowed = await drill(db, author, workId, null, []);
+    assert(narrowed.below_threshold === false, "5人なのに止まっている");
+    assert(narrowed.subgroup_count === 5, `外したあとの集団が ${narrowed.subgroup_count}人`);
+
+    const free = await authorView(db, author, workId);
+    assert(free.answers_count === 8, `無料の母数が ${free.answers_count}件（変わらないはず）`);
+  });
 
   await test("X", "分析から外すと作者の集計から消え、戻すと戻る", async () => {
     const author = await makeMember(db, "ex-author");

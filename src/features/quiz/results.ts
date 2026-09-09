@@ -55,6 +55,7 @@ export type WorkAnswerAnalysis = {
   /** まだ取り込んでいない回答の数 */
   unimported_count: number;
   /** 高度な分析の対象になる回答の数（取り込み済み かつ 外していない） */
+  advanced_count: number;
   /** 掘り下げに要る最少人数。画面はこの値を読む */
   min_subgroup: number;
   question_count: number;

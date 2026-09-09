@@ -61,6 +61,12 @@ import {
   weightedPoints,
   withFilter,
 } from "../../src/features/quiz/results.ts";
+import {
+  GRANT_SOURCE_LABEL,
+  NOTICE_LABEL,
+  canDrillDown,
+  remainingPercent,
+} from "../../src/features/quiz/capacity.ts";
 import { recordCount } from "../counts.mjs";
 
 const results = [];
@@ -541,6 +547,42 @@ test("条件", "掘り下げる項目は、正解を含まなかったところ�
 });
 
 console.log("\n取り込み枠（P4）");
+
+test("枠", "残りの割合は、いまの世代が始まったときの残量を分母にする", () => {
+  assert(remainingPercent({ remaining: 20, epoch_base: 100 }) === 20, "20/100 が2割にならない");
+  assert(remainingPercent({ remaining: 5, epoch_base: 100 }) === 5, "5/100 が5%にならない");
+  assert(remainingPercent({ remaining: 4, epoch_base: 20 }) === 20, "4/20 が2割にならない");
+  assert(remainingPercent({ remaining: 0, epoch_base: 20 }) === 0, "0のときに0%にならない");
+});
+
+test("枠", "一度も枠を足していなければ割合を出さない（0%とは書かない）", () => {
+  assert(remainingPercent({ remaining: 0, epoch_base: 0 }) === null, "分母0で割っている");
+});
+
+test("枠", "掘り下げを始められるかは、取り込んだ回答の数で決まる", () => {
+  assert(canDrillDown(0) === false, "取り込み0件で始められることになっている");
+  assert(canDrillDown(1) === true, "1件あるのに始められない");
+  // 枠が残っていても、取り込むまでは始まらない（枠の数は見ていない）
+  assert(canDrillDown(0) === false, "枠の有無で判定している");
+});
+
+test("枠", "目盛りと出どころの呼び名が全部そろっている", () => {
+  for (const kind of ["remaining_20", "remaining_5", "exhausted"]) {
+    assert(typeof NOTICE_LABEL[kind] === "string" && NOTICE_LABEL[kind] !== "",
+      `${kind} の呼び名が無い`);
+  }
+  for (const src of ["checkout", "admin", "promotion", "test"]) {
+    assert(typeof GRANT_SOURCE_LABEL[src] === "string" && GRANT_SOURCE_LABEL[src] !== "",
+      `${src} の呼び名が無い`);
+  }
+});
+
+console.log("\n文章の組み立て（P5）");
+
+/** 語の並びを手早く作る。上限は呼ぶ側が渡す */
+function words(...labels) {
+  return labels.map((l, i) => ({ id: i + 1, label: l, breakAfter: false }));
+}
 
 const passed = results.filter((r) => r.ok).length;
 const failed = results.filter((r) => !r.ok);

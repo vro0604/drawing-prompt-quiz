@@ -1,6 +1,14 @@
 import { createSupabaseServerClient } from "@/lib/supabase/server";
 import { readableRpcError } from "@/features/draft/rpc";
 import type { AnswerSelection, MyAnswer, WorkQuiz } from "@/features/quiz/types";
+import type { WorkImportState } from "@/features/quiz/capacity";
+import type {
+  AnswerFilter,
+  Drilldown,
+  MyAnswerAnalysis,
+  WorkAnswerAnalysis,
+  WorkAnswerList,
+} from "@/features/quiz/results";
 
 /**
  * クイズ関連の DB 呼び出し。サーバー専用。
@@ -154,4 +162,59 @@ export async function callSetAnswerExcluded(
 
   if (error) throw new Error(readableRpcError(error.message));
   return data as { changed: number; excluded_count: number; analysed_count: number };
+}
+
+/**
+ * 作者が見る取り込み枠の状態と履歴。作者以外・未サインインには null。
+ *
+ * 削除した作品でも下書きでも返る（買った枠と取り込んだ記録は残るため）。
+ */
+export async function fetchWorkImportState(
+  workId: string,
+): Promise<WorkImportState | null> {
+  const supabase = await createSupabaseServerClient();
+  const { data, error } = await supabase.rpc("get_work_import_state", {
+    p_work_id: workId,
+  });
+
+  if (error) throw new Error(readableRpcError(error.message));
+  return (data as WorkImportState | null) ?? null;
+}
+
+/**
+ * 残り枠を使って、古い回答から順に取り込む。
+ *
+ * **購入ではない。**既に持っている枠を使うだけ。作品の持ち主だけが呼べる
+ * （断るのは DB 側）。
+ */
+export async function callImportAnswers(
+  workId: string,
+): Promise<{ imported_now: number; imported: number; remaining: number }> {
+  const supabase = await createSupabaseServerClient();
+  const { data, error } = await supabase.rpc("import_answers", {
+    p_work_id: workId,
+  });
+
+  if (error) throw new Error(readableRpcError(error.message));
+  return data as { imported_now: number; imported: number; remaining: number };
+}
+
+/**
+ * 自動の取り込みを入れる／切る。
+ *
+ * 入れた瞬間に、溜まっている未取り込みの回答を古い順に取り込む。
+ * そこで枠が尽きれば、そのまま切れる。
+ */
+export async function callSetAutoImport(
+  workId: string,
+  on: boolean,
+): Promise<{ auto_import: boolean; imported_now: number; remaining: number }> {
+  const supabase = await createSupabaseServerClient();
+  const { data, error } = await supabase.rpc("set_auto_import", {
+    p_work_id: workId,
+    p_on: on,
+  });
+
+  if (error) throw new Error(readableRpcError(error.message));
+  return data as { auto_import: boolean; imported_now: number; remaining: number };
 }

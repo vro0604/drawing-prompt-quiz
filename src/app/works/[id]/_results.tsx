@@ -23,6 +23,8 @@ import { btnPrimary, btnQuiet, btnSecondary, surface } from "@/app/_surface";
 import { SubmitButton } from "@/app/_pending";
 
 import { setAnswerExcludedAction } from "./actions";
+import { AnalysisScope } from "./_capacity";
+import type { WorkImportState } from "@/features/quiz/capacity";
 
 /* ===========================================================================
  * 押すと画面が変わる部品（JavaScript を使わない）
@@ -683,6 +685,153 @@ function ExclusionPanel({
       >
         閉じる
       </AnalysisButton>
+    </section>
+  );
+}
+
+/* ===========================================================================
+ * 作者向け
+ * =========================================================================== */
+
+export function AuthorAnalysis({
+  analysis,
+  workId,
+  imageSrc,
+  imageWidth,
+  imageHeight,
+  title,
+  pattern,
+  filters,
+  drilldown,
+  answerList,
+  manageOpen,
+  importState,
+}: {
+  analysis: WorkAnswerAnalysis;
+  workId: string;
+  imageSrc: string;
+  imageWidth: number;
+  imageHeight: number;
+  title: string;
+  /** いま選んでいる区画。URL の pattern */
+  pattern: string | null;
+  filters: AnswerFilter[];
+  /** 区画を選んでいるときだけ入る */
+  drilldown: Drilldown | null;
+  answerList: WorkAnswerList | null;
+  manageOpen: boolean;
+  /** 取り込み枠の状態。作者以外なら null */
+  importState: WorkImportState | null;
+}) {
+  if (analysis.answers_count === 0 && analysis.excluded_count === 0) return null;
+
+  // 取り込んだ回答が1件も無いあいだは、区画を押しても掘り下げられない
+  const locked = analysis.advanced_count === 0;
+
+  return (
+    <section className={`${surface} space-y-6`} data-author-analysis>
+      {/*
+        掘り下げのあいだも絵が見えているようにする。
+        どの語が選ばれたかを読むとき、絵が無いと何の話か分からなくなる。
+      */}
+      <div className="sticky top-14 z-10 -mx-6 border-b border-line bg-surface px-6 py-2">
+        <Image
+          src={imageSrc}
+          alt={title}
+          width={imageWidth}
+          height={imageHeight}
+          sizes="(max-width: 768px) 100vw, 768px"
+          className="mx-auto h-auto max-h-[22vh] w-auto object-contain"
+        />
+      </div>
+
+      <div className="space-y-2">
+        <h2 className="text-sm font-bold">どう見えたか</h2>
+        <p className="text-xs text-faint" data-analysed-count={String(analysis.answers_count)}>
+          ここから下の語の分布と重なりの図は、
+          <span className="font-bold">全{analysis.answers_count}件の回答</span>
+          で出しています。何人が当てたかではなく、どの語が選ばれたかを並べています。
+        </p>
+        {importState ? <AnalysisScope state={importState} /> : null}
+      </div>
+
+      <div className="space-y-4">
+        <h3 className="text-xs text-faint">項目ごとに、選ばれた語</h3>
+        <ul className="space-y-5">
+          {analysis.sections.map((s) => (
+            <WordRanking key={s.question_id} section={s} />
+          ))}
+        </ul>
+        <p className="text-xs text-faint">
+          割合は「その語が出た回数のうち、どれだけ選ばれたか」です。
+          ビタ当てで選ばれたら1、複勝の2語のどちらかなら0.5として数えます。
+        </p>
+      </div>
+
+      <div className="space-y-3 border-t border-ink/10 pt-5">
+        <div className="space-y-1">
+          <h3 className="text-xs text-faint">どの項目が、誰に伝わったか</h3>
+          <p className="text-xs text-faint">
+            1マスが1通りの当て方です。点が光っている項目で正解を含んでいた人が、
+            そのマスに入ります。全部外した人（点が1つも光っていないマス）も出します。
+          </p>
+          {locked ? (
+            <div
+              className="space-y-1 rounded-xl border border-line-firm px-4 py-3"
+              data-drilldown-locked
+            >
+              <p className="text-sm font-bold">
+                掘り下げは、取り込んだ回答があるときだけ使えます
+              </p>
+              <p className="text-xs text-faint">
+                高度分析の対象：{analysis.advanced_count}件 ／ 未インポート：
+                {analysis.unimported_count}件。
+                下の「分析に使う回答の枠」から取り込むと、マスを押して
+                「その人たちが何を選んだか」まで見られるようになります。
+              </p>
+            </div>
+          ) : (
+            <p className="text-xs text-faint">
+              <span className="font-bold">マスを押すと、その人たちだけを掘り下げられます</span>
+              （{analysis.min_subgroup}人以上のときだけ）。掘り下げが数えるのは、
+              取り込んだ {analysis.advanced_count}件です。
+            </p>
+          )}
+        </div>
+        <PatternField
+          workId={workId}
+          patterns={analysis.patterns}
+          questionCount={analysis.question_count}
+          total={analysis.answers_count}
+          sections={analysis.sections}
+          selected={pattern}
+          locked={locked}
+        />
+      </div>
+
+      {pattern && drilldown ? (
+        <DrilldownPanel
+          workId={workId}
+          pattern={pattern}
+          filters={filters}
+          drilldown={drilldown}
+          allSections={analysis.sections}
+        />
+      ) : null}
+
+      <div
+        className="border-t border-ink/10 pt-5 text-sm"
+        data-perfect-exact-count={String(analysis.perfect_exact_count)}
+      >
+        <span className="text-faint">全問をビタ当てで通した人（完全ビタ）… </span>
+        <span className="font-bold tabular-nums">
+          {analysis.perfect_exact_count} / {analysis.answers_count}人
+        </span>
+      </div>
+
+      {answerList ? (
+        <ExclusionPanel workId={workId} list={answerList} open={manageOpen} />
+      ) : null}
     </section>
   );
 }

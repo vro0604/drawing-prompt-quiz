@@ -5,7 +5,24 @@ import { notFound } from "next/navigation";
 import { SubmitButton } from "@/app/_pending";
 import { getCurrentUser } from "@/features/auth/session";
 import { formatDuration } from "@/features/draft/types";
-import { fetchMyAnswer, fetchWorkQuiz } from "@/features/quiz/rpc";
+import {
+  fetchMyAnswer,
+  fetchMyAnswerAnalysis,
+  fetchWorkAnswerAnalysis,
+  fetchWorkAnswerList,
+  fetchWorkDrilldown,
+  fetchWorkImportState,
+  fetchWorkQuiz,
+} from "@/features/quiz/rpc";
+import type { WorkImportState } from "@/features/quiz/capacity";
+import {
+  parseFilters,
+  type AnswerFilter,
+  type Drilldown,
+  type MyAnswerAnalysis,
+  type WorkAnswerAnalysis,
+  type WorkAnswerList,
+} from "@/features/quiz/results";
 import type { MyAnswer, WorkQuiz } from "@/features/quiz/types";
 import {
   fetchMyWork,
@@ -488,6 +505,25 @@ function PublicView({
             封を切る前は MyResult だけ。あの画面は「開く」を出すためにある
             （D112。開くまで数字を出さない）。
           */}
+          {resultOpen && after.workAnalysis ? (
+            <AuthorAnalysis
+              analysis={after.workAnalysis}
+              workId={work.id}
+              imageSrc={workImageUrl(work.image_path)}
+              imageWidth={work.image_width}
+              imageHeight={work.image_height}
+              title={work.title}
+              pattern={after.pattern}
+              filters={after.filters}
+              drilldown={after.drilldown}
+              answerList={after.answerList}
+              manageOpen={after.manageOpen}
+              importState={after.importState}
+            />
+          ) : null}
+          {resultOpen && after.importState ? (
+            <CapacityPanel workId={work.id} state={after.importState} />
+          ) : null}
           <MyResult result={result} open={resultOpen} workId={work.id} />
           {resultOpen ? <SlotStats stats={work.slot_stats} /> : null}
         </>
@@ -532,7 +568,19 @@ function PublicView({
 }
 
 /** 本人にだけ見える作品（下書き・審査で伏せた・削除済み）の表示 */
-function OwnerOnlyView({ work }: { work: MyWork }) {
+function OwnerOnlyView({
+  work,
+  importState,
+}: {
+  work: MyWork;
+  /**
+   * 取り込み枠の状態。
+   *
+   * **下書きにしても、削除しても、買った枠と取り込んだ記録は残る。**
+   * この画面は本人にしか出ないので、そこで確かめられるようにしておく。
+   */
+  importState: WorkImportState | null;
+}) {
   const reason = work.deleted_at
     ? "この作品は削除済みです。"
     : work.review_status !== "ok"
@@ -569,6 +617,8 @@ function OwnerOnlyView({ work }: { work: MyWork }) {
 
       {/* 下書きでも、過去に公開していれば回答が付いている可能性がある */}
       <SlotStats stats={work.slot_stats} />
+
+      {importState ? <CapacityPanel workId={work.id} state={importState} /> : null}
 
       {!work.is_published && !work.deleted_at && work.review_status === "ok" ? (
         <form action={publishWorkAction} className="space-y-3">
@@ -810,6 +860,14 @@ export default async function WorkPage({
     replyVocab,
     flavorVocab,
     hintResult,
+    analysis: myAnalysis,
+    workAnalysis,
+    pattern,
+    filters,
+    drilldown,
+    answerList,
+    manageOpen,
+    importState,
     shareOpen: rawShare === "open",
     replyOpen: rawReply === "open",
   };
@@ -839,7 +897,7 @@ export default async function WorkPage({
           after={after}
         />
       ) : myWork ? (
-        <OwnerOnlyView work={myWork} />
+        <OwnerOnlyView work={myWork} importState={importState} />
       ) : null}
     </main>
   );

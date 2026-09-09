@@ -4,7 +4,12 @@ import { redirect } from "next/navigation";
 import { headers } from "next/headers";
 import { revalidatePath } from "next/cache";
 import { ensureUserId } from "@/features/auth/session";
-import { callSubmitAnswer } from "@/features/quiz/rpc";
+import {
+  callImportAnswers,
+  callSetAnswerExcluded,
+  callSetAutoImport,
+  callSubmitAnswer,
+} from "@/features/quiz/rpc";
 import type { AnswerSelection } from "@/features/quiz/types";
 import { callCreateReport } from "@/features/report/rpc";
 import {
@@ -598,5 +603,47 @@ export async function setAnswerExcludedAction(form: FormData): Promise<void> {
     そのまま組み立て直される。URL は変わらないので、開いている一覧
     （manage=open）も、選んでいた区画も、そのまま残る。
   */
+  revalidatePath(`/works/${workId}`);
+}
+
+/**
+ * 残り枠を使って、古い回答から順に取り込む。
+ *
+ * 【何をしないか】
+ *   お金は動かない。既に持っている枠を使うだけ。
+ *   回答そのものも、答えた人の画面も変わらない。
+ *
+ * 【誰ができるか】
+ *   作品の持ち主だけ。**画面では確かめていない。**断るのは import_answers の中。
+ */
+export async function importAnswersAction(form: FormData): Promise<void> {
+  const workId = str(form, "workId");
+
+  try {
+    await callImportAnswers(workId);
+  } catch (e) {
+    backWithError(workId, e);
+  }
+
+  // 同じ画面へ戻す redirect はしない（ブラウザの控えが使われて数が古いまま出る）
+  revalidatePath(`/works/${workId}`);
+}
+
+/**
+ * 自動の取り込みを入れる／切る。
+ *
+ * 入れた瞬間に、溜まっている回答が古い順に取り込まれる。
+ * そこで枠が尽きれば、そのまま切れる（DB 側がそうする）。
+ */
+export async function setAutoImportAction(form: FormData): Promise<void> {
+  const workId = str(form, "workId");
+  const on = str(form, "on") === "on";
+
+  try {
+    await callSetAutoImport(workId, on);
+  } catch (e) {
+    backWithError(workId, e);
+  }
+
   revalidatePath(`/works/${workId}`);
 }
