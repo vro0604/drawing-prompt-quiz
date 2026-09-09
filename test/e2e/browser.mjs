@@ -2115,11 +2115,98 @@ async function main() {
       "答えていない人に、みんなの答えが出ている",
     );
     assert(
-      /断定して送ります/.test(await shown()),
-      "1つ選んだときに、結果の違いが書かれていない",
+      (await p.locator("[data-author-analysis]").count()) === 0,
+      "答えていない人に、作者向けの集計が出ている",
+    );
+    assert(
+      (await p.locator("[data-word]").count()) === 0,
+      "答えていない人に、語の分布が出ている",
     );
 
-    await boxes.nth(1).check();
+    await ctx.close();
+  });
+
+  /* =====================================================================
+   * Y. 掘り下げと、分析から外すこと（P3）
+   * =====================================================================
+   *
+   * 作者だけが使う面。毎回まっさらな作品を作る（人数がそのまま答えになるため）。
+   */
+
+  /**
+   * 11人が答えた作品を1件作る。**全員が全問を外す。**
+   *
+   *   8人 … ビタ当てで、正解ではない1つ目の語を選ぶ
+   *   3人 … 複勝で、正解ではない1つ目と2つ目の語を選ぶ
+   *
+   * 全員の当て方の並びが同じ（全部0）なので、その区画に11人が入る。
+   * 1つ目の語は11人全員が選んでいて、2つ目の語は3人だけが選んでいる。
+   * だから2つ目の語で絞ると、少人数の断りが出る。
+   */
+  //
+  // 【手短な呼び名を使う】
+  //   呼び名は 3〜20 文字で、英小文字・数字・ハイフンだけ
+  //   （profiles_handle_format）。時刻をそのまま足すと 20 文字を超えて
+  //   作れない（実測）。この検査の中だけで重ならなければよいので、
+  //   通し番号にする。
+  let drillPerson = 0;
+
+  /**
+   * 作品の持ち主の立場で RPC を1つ呼ぶ。
+   *
+   * 取り込みは持ち主しか呼べないので、役を借りて呼ぶ。
+   * ブラウザを開かずに下ごしらえを済ませるための近道で、
+   * 画面から押す経路は別の節（V群）で確かめる。
+   */
+  async function asOwner(db, workId, sql) {
+    const { rows } = await db.query(
+      `select user_id from public.works where id = $1`,
+      [workId],
+    );
+    return value(db, asMember(rows[0].user_id), sql, [workId]);
+  }
+
+  async function seedDrillWork(title) {
+    const { prompt_id: promptId } = await drawPrompt(db, seeded.author, {
+      mode: "hard",
+      timeLimit: 3600,
+    });
+    const workId = await postWork(db, seeded.author, promptId, title);
+
+    for (let i = 0; i < 8; i += 1) {
+      await answerWork(db, await makeMember(db, `yd${drillPerson++}`), workId, {
+        wrong: true,
+      });
+    }
+    for (let i = 0; i < 3; i += 1) {
+      await answerWork(db, await makeMember(db, `yp${drillPerson++}`), workId, {
+        pair: "all",
+        pairCorrect: false,
+      });
+    }
+
+    // **枠を足して全部取り込む。**P4 から、掘り下げが数えるのは
+    // 取り込み済みの回答だけになった。取り込まないとマスを押せない
+    await db.query(`select public.grant_import_capacity($1, 100, 'test', null)`, [workId]);
+    await asOwner(db, workId, `select public.import_answers($1)`);
+
+    return workId;
+  }
+
+  await test("Y", "区画を押すと掘り下げが開き、外した項目だけが並ぶ", async (t) => {
+    const workId = await seedDrillWork("掘り下げの試験");
+    const { ctx, page } = await signedInPage(seeded.authorEmail);
+
+    t.stage("開く");
+    await page.goto(`${base}/works/${workId}?result=open`);
+    await settledBody(page);
+    await page.locator("[data-author-analysis]").waitFor({ state: "visible", timeout: 15000 });
+
+    const sections = await page.locator("[data-author-analysis] [data-word-ranking]").count();
+    const zero = "0".repeat(sections);
+
+    t.stage("全部外した区画を押す");
+    const cell = page.locator(`[data-pattern="${zero}"]`);
     assert(
       /2択当て/.test(await shown()),
       `2つ選んだときの表示が違う: ${await shown()}`,

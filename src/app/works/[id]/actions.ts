@@ -479,6 +479,17 @@ export async function openFlavorHintAction(form: FormData): Promise<void> {
  * 正解に近すぎる語が混じっていれば set_flavor_text が断る。
  * **画面で候補を絞っているだけでは守りにならない**ので、保存でも同じ関門を通す。
  */
+/**
+ * 「1,4,9」の形の欄を、数の並びに直す。
+ *
+ * 数でないものと負の数を落とす。**並びの順も、重なりも変えない。**
+ *
+ * 【同じ語を2回置けること】
+ *   「影 が 消える 影 も 消える」のように、同じ語を繰り返す文は作れる。
+ *   助詞はとくに何度も出てくる。ここで重なりを落とすと、
+ *   **2つ目以降が黙って消えて、作者が作った並びと違うものが保存される。**
+ *   落としてよいのは、意味の無い値（数でない・負）だけ。
+ */
 export async function setFlavorTextAction(form: FormData): Promise<void> {
   const workId = str(form, "workId");
 

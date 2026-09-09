@@ -67,3 +67,39 @@ export async function callSubmitAnswer(
   if (error) throw new Error(readableRpcError(error.message));
   return data as MyAnswer;
 }
+
+/**
+ * 作者が見る集計。作者以外・未サインインには null が返る。
+ *
+ * **正解を含む。**呼べるのは DB 側で作者だけに絞ってあるので、
+ * ここで持ち主を確かめ直していない（確かめる場所を2つにしない）。
+ */
+export async function fetchWorkAnswerAnalysis(
+  workId: string,
+): Promise<WorkAnswerAnalysis | null> {
+  const supabase = await createSupabaseServerClient();
+  const { data, error } = await supabase.rpc("get_work_answer_analysis", {
+    p_work_id: workId,
+  });
+
+  if (error) throw new Error(readableRpcError(error.message));
+  return (data as WorkAnswerAnalysis | null) ?? null;
+}
+
+/**
+ * 答え終わった本人が見る集計。まだ答えていない人には null が返る。
+ *
+ * 未サインイン（anon）が呼ぶと権限エラーになるので、
+ * 回答済みだと分かってから呼ぶこと。
+ */
+export async function fetchMyAnswerAnalysis(
+  workId: string,
+): Promise<MyAnswerAnalysis | null> {
+  const supabase = await createSupabaseServerClient();
+  const { data, error } = await supabase.rpc("get_my_answer_analysis", {
+    p_work_id: workId,
+  });
+
+  if (error) throw new Error(readableRpcError(error.message));
+  return (data as MyAnswerAnalysis | null) ?? null;
+}

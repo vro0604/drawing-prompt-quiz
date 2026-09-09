@@ -477,7 +477,7 @@ export function MyResult({
   return (
     <section className={`${surface} space-y-5`}>
       <div className="flex flex-wrap items-baseline justify-between gap-2">
-        <h2 className="text-sm font-bold">結果</h2>
+        <h2 className="text-sm font-bold">当てられた割合（内訳）</h2>
         <a
           href={`/works/${workId}`}
           className="text-xs text-faint underline"
@@ -487,14 +487,17 @@ export function MyResult({
       </div>
 
       {/*
-        **1つにまとめた割合は出さない**（D165 の 11-2）。
-        以前はここに correct_items ÷ total_items の百分率を大きく出していた。
-        その数は、断定して当てた人と2つまで絞った人を同じ重みで足したもので、
-        どちらの意味でもない。
+        【2026-09-08。ここを主役から降ろした】
+          もとはこの2つを 3xl の大きな数字で出していた。
+          その数は「当てられた割合」でしかなく、**どう見えたかを何も言わない。**
+          作品を出した人が最初に見る数として、この2つは弱い。
 
-        大きく出すのはビタ当てのほう。断定で当てられたかどうかが、
-        いちばん強い「伝わった」であるため。2択当てはその隣に、
-        同じ大きさで並べる（隠さない。足さない）。
+          消してはいない。当たった割合を知りたいときには要るし、
+          どこで使われているかを確かめる前に消すのは早い。
+          小さくして、語の分布と重なりの図（AuthorAnalysis）の下に置く。
+
+        **1つにまとめた割合は出さない**（D165 の 11-2）。
+          断定して当てた人と2つまで絞った人を足すと、どちらの意味でもなくなる。
       */}
       <div className="flex flex-wrap items-baseline gap-x-8 gap-y-3">
         <div
@@ -503,7 +506,7 @@ export function MyResult({
           data-corrects={result.exact_correct}
         >
           <div className="flex items-baseline gap-2">
-            <span className="text-3xl font-bold tabular-nums">
+            <span className="text-base font-bold tabular-nums">
               {exactPercent === null ? "—" : `${exactPercent}%`}
             </span>
             <span className="text-xs text-faint tabular-nums">
@@ -519,7 +522,7 @@ export function MyResult({
           data-corrects={result.pair_correct}
         >
           <div className="flex items-baseline gap-2">
-            <span className="text-3xl font-bold tabular-nums">
+            <span className="text-base font-bold tabular-nums">
               {pairPercent === null ? "—" : `${pairPercent}%`}
             </span>
             <span className="text-xs text-faint tabular-nums">

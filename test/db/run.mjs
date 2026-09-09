@@ -4175,6 +4175,137 @@ async function main() {
     const hit = rows.find((r) => r.id === workId);
     assert(hit !== undefined, "通常の作品が時間別から消えた");
     assert(hit.time_limit_bucket === "long", `区分が ${hit.time_limit_bucket}`);
+  });
+
+  /* =======================================================================
+   * U. 「その語が何回出されたか」を、あとから数えられるか
+   * =======================================================================
+   *
+   * 【なぜここを確かめるか】
+   *   語ごとの当てられやすさを出すには、当てられた回数だけでは足りない。
+   *   **その語が何回、選択肢として目の前に出たか**が要る。
+   *   10回出て5回当てられた語と、2回しか出ていない語を同じには並べられない。
+   *
+   *   出された選択肢は quiz_choices に残っている。お題を確定したときに
+   *   1回だけ抽選して書き込み、そのあと誰が見ても同じ4つが出る。
+   *   人ごとに並べ替えたり選び直したりしていない。
+   *   **だから回答を1件ずつ見れば、その人に何が出ていたかを復元できる。**
+   *   別に控えを取る必要は無い、ということをここで実測する。
+   */
+
+  await test("U", "回答から、その問で出ていた選択肢をあとから復元できる", async () => {
+    const author = await makeMember(db, "expo-author");
+    const { prompt_id: promptId } = await drawPrompt(db, author, { timeLimit: 3600 });
+    const workId = await postWork(db, author, promptId, "提示の復元");
+
+    const reader = await makeMember(db, "expo-reader");
+    await answerWork(db, reader, workId, { correct: true });
+
+    const { rows } = await db.query(
+      `select ai.question_id,
+              ai.selected_tag_id,
+              (select count(*)::int from public.quiz_choices c
+                where c.question_id = ai.question_id) as shown,
+              exists (select 1 from public.quiz_choices c
+                       where c.question_id = ai.question_id
+                         and c.tag_id = ai.selected_tag_id) as selected_was_shown
+         from public.answer_items ai
+         join public.answers a on a.id = ai.answer_id
+        where a.work_id = $1`,
+      [workId],
+    );
+
+    assert(rows.length > 0, "回答の内訳が1件も無い");
+    for (const r of rows) {
+      assert(r.shown >= 3 && r.shown <= 4, `問 ${r.question_id} の選択肢が ${r.shown} 個`);
+      assert(r.selected_was_shown, `選んだ語が、その問の選択肢に無い（問 ${r.question_id}）`);
+    }
+  });
+
+  await test("U", "同じ作品なら、誰が見ても出る選択肢は同じ", async () => {
+    const author = await makeMember(db, "expo-same-author");
+    const { prompt_id: promptId } = await drawPrompt(db, author, { timeLimit: 3600 });
+    const workId = await postWork(db, author, promptId, "同じ選択肢");
+
+    const a = await makeMember(db, "expo-viewer-a");
+    const b = await makeMember(db, "expo-viewer-b");
+
+    const shape = (quiz) =>
+      quiz.questions
+        .map((q) => `${q.question_id}:${q.choices.map((c) => c.tag_id).sort((x, y) => x - y).join("-")}`)
+        .sort()
+        .join(" / ");
+
+    const seenByA = shape(await value(db, asMember(a), `select public.get_work_quiz($1)`, [workId]));
+    const seenByB = shape(await value(db, asMember(b), `select public.get_work_quiz($1)`, [workId]));
+    const seenByAnon = shape(await value(db, ANON, `select public.get_work_quiz($1)`, [workId]));
+
+    assert(seenByA === seenByB, `人によって選択肢が違う:\n  ${seenByA}\n  ${seenByB}`);
+    assert(seenByA === seenByAnon, "サインインの有無で選択肢が変わる");
+  });
+
+  await test("U", "語ごとの「出された回数」を、回答から数え上げられる", async () => {
+    const author = await makeMember(db, "expo-count-author");
+    const { prompt_id: promptId } = await drawPrompt(db, author, { timeLimit: 3600 });
+    const workId = await postWork(db, author, promptId, "提示回数");
+
+    for (const who of ["expo-c1", "expo-c2", "expo-c3"]) {
+      await answerWork(db, await makeMember(db, who), workId, { correct: true });
+    }
+
+    // 「その語が選択肢として出た回数」＝
+    //   その語を含む問に対して積まれた回答の内訳の数
+    const { rows } = await db.query(
+      `select c.tag_id, count(*)::int as shown_times
+         from public.answer_items ai
+         join public.answers a on a.id = ai.answer_id
+         join public.quiz_choices c on c.question_id = ai.question_id
+        where a.work_id = $1
+        group by c.tag_id`,
+      [workId],
+    );
+
+    assert(rows.length > 0, "提示回数を数えられない");
+    for (const r of rows) {
+      assert(
+        r.shown_times === 3,
+        `語 ${r.tag_id} の提示回数が ${r.shown_times}（3人ぶんの 3 のはず）`,
+      );
+    }
+  });
+
+  /* =======================================================================
+   * Z. 取り込み枠（P4）
+   * =======================================================================
+   *
+   * 【ここで確かめること】
+   *   ・枠を足すと増える。作品ごとに独立している。負の数は断る
+   *   ・回答1件＝枠1つ。同じ回答を二度取り込まない
+   *   ・古い回答から順に取り込む（時刻が同じでも順番が決まる）
+   *   ・自動取り込みの入り切りと、入れた瞬間の取り込み
+   *   ・枠が尽きたら自動で切れる。枠を足しても勝手に入らない
+   *   ・同時に回答が来ても、残り枠を使いすぎない
+   *   ・残量の目盛りの知らせが、世代ごとに1回だけ出る
+   *   ・作品を消しても下書きにしても、枠と記録が残る
+   *   ・持ち主以外は何もできない
+   */
+
+  /** 枠を足す（運営の鍵で呼ぶ関数。試験では持ち主の立場から直接呼ぶ） */
+  async function addAnswers(db, workId, tag, n) {
+    for (let i = 0; i < n; i += 1) {
+      const u = await makeMember(db, `${tag}${i}`);
+      await answerWith(db, u, workId, (q) => ({ tag_id: q.correct }));
+    }
+  }
+
+  /** 作品を1件作る */
+  async function makeWork(db, tag, title) {
+    const author = await makeMember(db, `${tag}-a`);
+    const { prompt_id: promptId } = await drawPrompt(db, author, { timeLimit: 3600 });
+    const workId = await postWork(db, author, promptId, title);
+    return { author, workId };
+  }
+
   await test("U", "候補の配り方は、全枠同じ枚数に固定されていない", async () => {
     /*
       【1回引いて確かめない】
@@ -4261,6 +4392,273 @@ async function main() {
   }
 
   /** 作者として集計を読む */
+  function authorView(db, uid, workId) {
+    return value(db, asMember(uid), `select public.get_work_answer_analysis($1)`, [workId]);
+  }
+
+  /** 回答者として集計を読む */
+  function answererView(db, uid, workId) {
+    return value(db, asMember(uid), `select public.get_my_answer_analysis($1)`, [workId]);
+  }
+
+  await test("V", "正解を含んだかの並びが、問の出題順で出る", async () => {
+    const author = await makeMember(db, "an-pattern");
+    const { prompt_id: promptId } = await drawPrompt(db, author, { timeLimit: 3600 });
+    const workId = await postWork(db, author, promptId, "並びの試験");
+
+    const reader = await makeMember(db, "an-pattern-r");
+    // 0問目: ビタで正解 / 1問目: 複勝に正解を含む / それ以外: 外す
+    await answerWith(db, reader, workId, (q, i) => {
+      if (i === 0) return { tag_id: q.correct };
+      if (i === 1) return { tag_id: q.others[0], tag_id_2: q.correct };
+      return { tag_id: q.others[0] };
+    });
+
+    const view = await authorView(db, author, workId);
+    assert(view !== null, "作者に集計が返らない");
+
+    const n = view.question_count;
+    assert(n >= 3, `問が ${n} 問（3問以上のはず）`);
+    assert(view.patterns.length === 1, `並びが ${view.patterns.length} 通り`);
+
+    const pattern = view.patterns[0].pattern;
+    assert(pattern.length === n, `並びの長さが ${pattern.length}（${n} のはず）`);
+    assert(pattern[0] === "1", "ビタ当てで当てた問が 0 になっている");
+    assert(pattern[1] === "1", "複勝に正解を含めた問が 0 になっている");
+    assert(
+      pattern.slice(2) === "0".repeat(n - 2),
+      `外した問が 1 になっている: ${pattern}`,
+    );
+    assert(view.patterns[0].count === 1, `${view.patterns[0].count}人`);
+  });
+
+  await test("V", "全部外した並び（0だけ）も、1通りとして数える", async () => {
+    const author = await makeMember(db, "an-blind");
+    const { prompt_id: promptId } = await drawPrompt(db, author, { timeLimit: 3600 });
+    const workId = await postWork(db, author, promptId, "全部外し");
+
+    const reader = await makeMember(db, "an-blind-r");
+    await answerWith(db, reader, workId, (q) => ({ tag_id: q.others[0] }));
+
+    const view = await authorView(db, author, workId);
+    const zero = "0".repeat(view.question_count);
+    const row = view.patterns.find((p) => p.pattern === zero);
+    assert(row !== undefined, `全部外した並びが出ていない: ${JSON.stringify(view.patterns)}`);
+    assert(row.count === 1, `${row.count}人`);
+  });
+
+  await test("V", "完全ビタは、全問をビタ当てで当てた人だけ", async () => {
+    const author = await makeMember(db, "an-perfect");
+    const { prompt_id: promptId } = await drawPrompt(db, author, { timeLimit: 3600 });
+    const workId = await postWork(db, author, promptId, "完全ビタ");
+
+    const perfect = await makeMember(db, "an-perfect-1");
+    await answerWith(db, perfect, workId, (q) => ({ tag_id: q.correct }));
+
+    // 全問当てているが、1問だけ複勝で当てた人
+    const viaPair = await makeMember(db, "an-perfect-2");
+    await answerWith(db, viaPair, workId, (q, i) =>
+      i === 0 ? { tag_id: q.correct, tag_id_2: q.others[0] } : { tag_id: q.correct },
+    );
+
+    // 全問ビタ当てだが、1問外した人
+    const oneMiss = await makeMember(db, "an-perfect-3");
+    await answerWith(db, oneMiss, workId, (q, i) =>
+      i === 0 ? { tag_id: q.others[0] } : { tag_id: q.correct },
+    );
+
+    const view = await authorView(db, author, workId);
+    assert(view.answers_count === 3, `回答が ${view.answers_count}件`);
+    assert(view.perfect_exact_count === 1, `完全ビタが ${view.perfect_exact_count}人（1人のはず）`);
+
+    const mine = await answererView(db, perfect, workId);
+    assert(mine.is_perfect_exact === true, "全問ビタ当てで当てた人が完全ビタになっていない");
+
+    const pairView = await answererView(db, viaPair, workId);
+    assert(pairView.is_perfect_exact === false, "複勝で当てた人が完全ビタになっている");
+
+    const missView = await answererView(db, oneMiss, workId);
+    assert(missView.is_perfect_exact === false, "1問外した人が完全ビタになっている");
+  });
+
+  await test("V", "語ごとに、ビタ当て・複勝・提示回数を分けて数える", async () => {
+    const author = await makeMember(db, "an-words");
+    const { prompt_id: promptId } = await drawPrompt(db, author, { timeLimit: 3600 });
+    const workId = await postWork(db, author, promptId, "語の数");
+
+    const a = await makeMember(db, "an-words-1");
+    const b = await makeMember(db, "an-words-2");
+    // 1人目: 全問ビタで正解 / 2人目: 全問「正解＋別の語」の複勝
+    await answerWith(db, a, workId, (q) => ({ tag_id: q.correct }));
+    await answerWith(db, b, workId, (q) => ({ tag_id: q.correct, tag_id_2: q.others[0] }));
+
+    const view = await authorView(db, author, workId);
+    const first = view.sections[0];
+    const correctWord = first.words.find((w) => w.is_correct);
+    const otherWord = first.words.find((w) => w.tag_id === first.words.find((x) => !x.is_correct).tag_id);
+
+    assert(correctWord.exact_count === 1, `正解語のビタが ${correctWord.exact_count}`);
+    assert(correctWord.pair_count === 1, `正解語の複勝が ${correctWord.pair_count}`);
+    assert(correctWord.shown_times === 2, `正解語の提示が ${correctWord.shown_times}`);
+    assert(
+      otherWord.shown_times === 2,
+      `選ばれなかった語の提示が ${otherWord.shown_times}（出た回数は同じはず）`,
+    );
+    assert(
+      first.words.every((w) => w.shown_times === 2),
+      "同じ問なのに提示回数が語によって違う",
+    );
+  });
+
+  await test("V", "回答の似かたは、選んだ語の集まりが完全に一致した問の数", async () => {
+    const author = await makeMember(db, "an-sim");
+    const { prompt_id: promptId } = await drawPrompt(db, author, { timeLimit: 3600 });
+    const workId = await postWork(db, author, promptId, "似かた");
+
+    const me = await makeMember(db, "an-sim-me");
+    // 0問目: ビタA / 1問目: 複勝 A+B / 残り: ビタA
+    await answerWith(db, me, workId, (q, i) =>
+      i === 1 ? { tag_id: q.correct, tag_id_2: q.others[0] } : { tag_id: q.correct },
+    );
+
+    // 同じ答え。全問一致するはず
+    const same = await makeMember(db, "an-sim-same");
+    await answerWith(db, same, workId, (q, i) =>
+      i === 1 ? { tag_id: q.correct, tag_id_2: q.others[0] } : { tag_id: q.correct },
+    );
+
+    // 1問目だけ、同じ2語を逆の順で選ぶ。**順番は見ないので一致する**
+    const swapped = await makeMember(db, "an-sim-swap");
+    await answerWith(db, swapped, workId, (q, i) =>
+      i === 1 ? { tag_id: q.others[0], tag_id_2: q.correct } : { tag_id: q.correct },
+    );
+
+    // 1問目をビタAだけにした人。**集まりが違うので一致しない**
+    const narrower = await makeMember(db, "an-sim-narrow");
+    await answerWith(db, narrower, workId, (q) => ({ tag_id: q.correct }));
+
+    const view = await answererView(db, me, workId);
+    const n = view.question_count;
+    assert(view.others_count === 3, `自分以外が ${view.others_count}人`);
+
+    const at = (k) => (view.match_histogram.find((h) => h.matches === k) ?? { count: 0 }).count;
+    assert(at(n) === 2, `全問一致が ${at(n)}人（同じ答えと逆順の2人のはず）`);
+    assert(at(n - 1) === 1, `${n - 1}問一致が ${at(n - 1)}人（1語だけの人のはず）`);
+
+    const total = view.match_histogram.reduce((s, h) => s + h.count, 0);
+    assert(total === 3, `分布の合計が ${total}人（自分以外の3人のはず）`);
+  });
+
+  await test("V", "作者以外と、まだ答えていない人には何も返らない", async () => {
+    const author = await makeMember(db, "an-priv");
+    const { prompt_id: promptId } = await drawPrompt(db, author, { timeLimit: 3600 });
+    const workId = await postWork(db, author, promptId, "見せない");
+
+    const reader = await makeMember(db, "an-priv-r");
+    await answerWith(db, reader, workId, (q) => ({ tag_id: q.correct }));
+
+    const stranger = await makeMember(db, "an-priv-s");
+
+    assert(
+      (await authorView(db, reader, workId)) === null,
+      "作者以外に作者向けの集計が返っている",
+    );
+    assert(
+      (await authorView(db, stranger, workId)) === null,
+      "無関係な人に作者向けの集計が返っている",
+    );
+    assert(
+      (await answererView(db, stranger, workId)) === null,
+      "まだ答えていない人に集計が返っている",
+    );
+    // 未サインインは、返り値が null になる手前で断られる（実行権が無い）。
+    // **null を返すより強い。**関数の中まで入れない
+    await expectFailure(
+      () => value(db, ANON, `select public.get_work_answer_analysis($1)`, [workId]),
+      "permission denied",
+    );
+    await expectFailure(
+      () => value(db, ANON, `select public.get_my_answer_analysis($1)`, [workId]),
+      "permission denied",
+    );
+  });
+
+  /* =======================================================================
+   * X. 掘り下げと、分析から外すこと（P3）
+   * =======================================================================
+   *
+   * 【ここで確かめること】
+   *   ・区画を選ぶと、正解を含まなかった項目だけが返る
+   *   ・語で絞ると人数が減り、語の数え直しが起きる
+   *   ・集団が5人未満になったら、人数も語も返らない（作者本人にも）
+   *   ・作者以外・未サインインは呼べない
+   *   ・分析から外すと作者の集計から消え、戻すと戻る
+   *   ・外しても回答そのものと、答えた本人の結果は変わらない
+   */
+
+  /**
+   * 掘り下げを試すための作品を1件作る。
+   *
+   * 12人が答え、全員が1問目だけ当てて残りを外す（当て方の並びは全員同じ）。
+   * 外した問では、選ぶ語を人数で分けておく。
+   *
+   *   2問目 … 先頭10人が同じ語 / 残り2人が別の語
+   *   3問目 … 先頭 6人が同じ語 / 残り6人が別の語
+   *   4問目 … 先頭 5人が同じ語 / 残り7人が別の語
+   *   5問目 … 先頭 4人が同じ語 / 残り8人が別の語
+   *
+   * 先頭から数えているので、条件を重ねるほど 10 → 6 → 5 → 4 と減る。
+   * 5人で止まり、4人で止まらないことを、同じ作品の中で見られる。
+   */
+  await test("V", "古い形の回答が混ざっていても、集計が落ちない", async () => {
+    const author = await makeMember(db, "an-legacy");
+    const { prompt_id: promptId } = await drawPrompt(db, author, { timeLimit: 3600 });
+    const workId = await postWork(db, author, promptId, "古い回答");
+
+    const now = await makeMember(db, "an-legacy-now");
+    await answerWith(db, now, workId, (q) => ({ tag_id: q.correct }));
+
+    // 問数が3で固定だった頃の回答を、持ち主の立場で直接入れる。
+    // **RPC を通さない。**いまの RPC はこの形を作れないため
+    const old = await makeMember(db, "an-legacy-old");
+    const questions = await quizWithAnswers(db, author, workId);
+    const answerId = (
+      await db.query(
+        `insert into public.answers
+           (work_id, user_id, correct_count, question_count, scoring_version,
+            exact_attempts, exact_corrects, pair_attempts, pair_corrects)
+         values ($1, $2, 1, $3, 'v1_fixed_count', $3, 1, 0, 0)
+         returning id`,
+        [workId, old, Math.max(1, questions.length - 1)],
+      )
+    ).rows[0].id;
+
+    // **わざと1問少なく入れる。**問数が増える前の回答を再現する
+    const oldItems = questions.slice(0, Math.max(1, questions.length - 1));
+    for (const q of oldItems) {
+      await db.query(
+        `insert into public.answer_items
+           (answer_id, question_id, card_slot_key, selected_tag_id, answer_mode, is_correct)
+         select $1, $2, qq.card_slot_key, $3, 'exact', $4
+           from public.quiz_questions qq where qq.id = $2`,
+        [answerId, q.question_id, q.correct, true],
+      );
+    }
+
+    const view = await authorView(db, author, workId);
+    assert(view.answers_count === 2, `回答が ${view.answers_count}件`);
+    assert(
+      view.patterns.some((p) => p.pattern.length === oldItems.length),
+      `古い回答の並びが ${oldItems.length} 文字で出ていない: ${JSON.stringify(view.patterns)}`,
+    );
+    assert(
+      view.perfect_exact_count === 1,
+      `完全ビタが ${view.perfect_exact_count}人（問数が足りない古い回答は入らない）`,
+    );
+
+    const mine = await answererView(db, now, workId);
+    assert(mine !== null, "古い回答が混ざると集計が返らない");
+    assert(mine.others_count === 1, `自分以外が ${mine.others_count}人`);
   });
 
   /* =========================================================================

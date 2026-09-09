@@ -362,7 +362,22 @@ function PublicView({
       {quiz === null ? null : quiz.is_author ? (
         <AuthorNotice />
       ) : myAnswer ? (
-        <AnswerResult answer={myAnswer} />
+        <>
+          <AnswerResult answer={myAnswer} />
+          {after.analysis ? (
+            <AnswererAnalysis
+              analysis={after.analysis}
+              myTagsByQuestion={Object.fromEntries(
+                myAnswer.items.map((i) => [
+                  i.question_id,
+                  [i.selected_tag_id, i.selected_tag_id_2].filter(
+                    (t): t is number => t !== null,
+                  ),
+                ]),
+              )}
+            />
+          ) : null}
+        </>
       ) : (
         <>
           {/* 回答前のヒント（D162 の 2）。開くかどうかは本人が決める */}
@@ -429,6 +444,7 @@ function PublicView({
           workId={work.id}
           vocab={after.flavorVocab}
           current={after.flavor}
+          action={setFlavorTextAction}
         />
       ) : null}
 
@@ -461,6 +477,17 @@ function PublicView({
       */}
       {result ? (
         <>
+          {/*
+            【開いたあとに、いちばん上へ来るもの】
+              主役は当たった割合ではなく、**どの語が選ばれたか**と
+              **どの項目が誰に伝わったか**。だから語の分布と重なりの図を先に置く。
+
+              当てられた割合（MyResult）と項目別の内訳（SlotStats）は消していない。
+              その下に、小さくして残す。
+
+            封を切る前は MyResult だけ。あの画面は「開く」を出すためにある
+            （D112。開くまで数字を出さない）。
+          */}
           <MyResult result={result} open={resultOpen} workId={work.id} />
           {resultOpen ? <SlotStats stats={work.slot_stats} /> : null}
         </>
@@ -622,6 +649,9 @@ export default async function WorkPage({
     result: rawResult,
     share: rawShare,
     reply: rawReply,
+    pattern: rawPattern,
+    f: rawFilters,
+    manage: rawManage,
   } = await searchParams;
 
   // まず公開の経路で引く。ここで取れたものは誰が見ても同じ。
@@ -650,10 +680,23 @@ export default async function WorkPage({
   let quiz: WorkQuiz | null = null;
   let myAnswer: MyAnswer | null = null;
 
+  // 答え終わった人にだけ返る集計（語の人気・自分と似た回答者・完全ビタ）。
+  // まだ答えていない人には DB 側が null を返す
+  let myAnalysis: MyAnswerAnalysis | null = null;
+
   if (publicWork) {
     quiz = await fetchWorkQuiz(id);
-    if (quiz?.answered_by_me) myAnswer = await fetchMyAnswer(id);
+    if (quiz?.answered_by_me) {
+      [myAnswer, myAnalysis] = await Promise.all([
+        fetchMyAnswer(id),
+        fetchMyAnswerAnalysis(id),
+      ]);
+    }
   }
+
+  // 作者だけが見る集計。作者以外には DB 側が null を返す
+  const workAnalysis: WorkAnswerAnalysis | null =
+    publicWork?.is_author && user ? await fetchWorkAnswerAnalysis(id) : null;
 
   // 封を開けたかどうかは URL で持つ。Client Component にしないので、
   // JavaScript が無効でも開ける
