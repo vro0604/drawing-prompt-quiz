@@ -14,6 +14,8 @@
  *   W. 管理             通報の処理と作品の非表示（管理 v0）。権限・効き目・監査
  *   R. 持ち込み         既存絵から作るお題（art_first）。語の検査・出題・回答・
  *                       一覧・救済・ランキング・時間の扱い
+ *   U. 形状アシスト     お題ではない発想補助（D191）。出題・正解・伝達率・
+ *                       配給・回答者の画面へ1歩も漏れていないこと
  *
  * 【この試験が届かないところ】
  *   ・画面（HTML）の見た目と操作。ここは DB と RPC だけを通す
@@ -4908,6 +4910,279 @@ async function main() {
     ).rows[0];
     assert(left.rows === 0, `得意分野が ${left.rows} 行残っている`);
     assert(left.avatar === null, "プロフィールに置き場所が残っている");
+  });
+
+
+  // =========================================================================
+  // U. 形状アシスト（D191）
+  //
+  //    お題を引く前に、作者が「どういう形として描くか」の取っかかりを
+  //    1つだけ持てるようにしたもの。**正式なお題ではない。**
+  //    ここで確かめるのは、それが正式なお題の側へ1歩も漏れていないこと。
+  //
+  //    漏れる先は5つ。出題（問の数と選択肢）、正解、伝達率の集計、
+  //    次の作品の配り方（D169）、回答者の画面。**全部を毎回数える。**
+  // =========================================================================
+
+  /** 形状アシストを指定してドラフトを始め、確定まで進める */
+  async function drawWithAssist(uid, assistKey) {
+    return asRole(db, asMember(uid), async (c) => {
+      const start = await c.query(
+        `select public.start_draft('normal', 3600, null, $1) as s`,
+        [assistKey],
+      );
+      let state = start.rows[0].s;
+      for (const slot of state.slots) {
+        if (slot.candidates.some((x) => x.is_chosen)) continue;
+        const r = await c.query(
+          `select public.choose_card($1, $2, 0) as s
+             from (select public.reveal_card($1, $2, 0)) as r`,
+          [state.session_id, slot.card_slot_key],
+        );
+        state = r.rows[0].s;
+      }
+      const done = await c.query(`select public.complete_draft($1) as s`, [
+        state.session_id,
+      ]);
+      return { state, ...done.rows[0].s };
+    });
+  }
+
+  await test("U", "使わないときは、これまでと何も変わらない", async () => {
+    const u = await makeMember(db, "sa-none");
+    const drawn = await drawWithAssist(u, null);
+
+    assert(
+      drawn.state.shape_assist_key === null,
+      `使わないのに ${drawn.state.shape_assist_key} が入っている`,
+    );
+
+    const mine = await value(db, asMember(u), `select public.get_my_prompt($1::uuid)`, [
+      drawn.prompt_id,
+    ]);
+    assert(mine.shape_assist_key === null, "確定したお題に値が入っている");
+    assert(mine.cards.length >= 3, `語が ${mine.cards.length} 語しかない`);
+  });
+
+  await test("U", "選んだものが盤面に入り、確定したお題からも読める", async () => {
+    const u = await makeMember(db, "sa-pick");
+    const drawn = await drawWithAssist(u, "humanoid");
+
+    assert(
+      drawn.state.shape_assist_key === "humanoid",
+      `盤面の値が ${drawn.state.shape_assist_key}`,
+    );
+
+    const mine = await value(db, asMember(u), `select public.get_my_prompt($1::uuid)`, [
+      drawn.prompt_id,
+    ]);
+    assert(
+      mine.shape_assist_key === "humanoid",
+      `確定したお題の値が ${mine.shape_assist_key}`,
+    );
+  });
+
+  await test("U", "形が合わない指定は受け付けない", async () => {
+    const u = await makeMember(db, "sa-bad");
+    await expectFailure(
+      () =>
+        value(db, asMember(u), `select public.start_draft('normal', 3600, null, $1)`, [
+          "人型 <script>",
+        ]),
+      "BAD_SHAPE_ASSIST",
+    );
+  });
+
+  await test("U", "引き直しても、選んだものは残る", async () => {
+    const u = await makeMember(db, "sa-reroll");
+    const state = await asRole(db, asMember(u), async (c) => {
+      const start = await c.query(
+        `select public.start_draft('normal', 3600, null, 'monster') as s`,
+      );
+      const r = await c.query(`select public.reroll_draft($1) as s`, [
+        start.rows[0].s.session_id,
+      ]);
+      return r.rows[0].s;
+    });
+    assert(
+      state.shape_assist_key === "monster",
+      `引き直したら ${state.shape_assist_key} になった`,
+    );
+  });
+
+  await test("U", "出題の数も語の数も、形状アシストで変わらない", async () => {
+    const a = await makeMember(db, "sa-count-a");
+    const b = await makeMember(db, "sa-count-b");
+    const without = await drawWithAssist(a, null);
+    const withOne = await drawWithAssist(b, "vehicle");
+
+    assert(
+      without.card_count === without.question_count,
+      `使わない側で語 ${without.card_count} / 問 ${without.question_count}`,
+    );
+    assert(
+      withOne.card_count === withOne.question_count,
+      `使う側で語 ${withOne.card_count} / 問 ${withOne.question_count}`,
+    );
+
+    // 形状アシストのぶんだけ問が増えていないこと。
+    // **語数そのものはモードの抽選で毎回変わる**ので、
+    // 「語と問が一致していること」を両方で見る（D165）。
+    const rows = await db.query(
+      `select (select count(*)::int from public.quiz_questions q where q.prompt_id = $1) as q_without,
+              (select count(*)::int from public.prompt_cards c where c.prompt_id = $1) as c_without,
+              (select count(*)::int from public.quiz_questions q where q.prompt_id = $2) as q_with,
+              (select count(*)::int from public.prompt_cards c where c.prompt_id = $2) as c_with`,
+      [without.prompt_id, withOne.prompt_id],
+    );
+    const r = rows.rows[0];
+    assert(r.q_without === r.c_without, `使わない側で問 ${r.q_without} / 札 ${r.c_without}`);
+    assert(r.q_with === r.c_with, `使う側で問 ${r.q_with} / 札 ${r.c_with}`);
+  });
+
+  await test("U", "選択肢にも正解にも、形状アシストの語は出ない", async () => {
+    const u = await makeMember(db, "sa-choices");
+    const drawn = await drawWithAssist(u, "landscape");
+
+    // 選択肢はすべて正式語彙（tags）の語であること。
+    // 形状アシストは tags に1行も入れていないので、ここに出ようが無い。
+    const bad = (
+      await db.query(
+        `select count(*)::int as n
+           from public.quiz_choices ch
+           join public.quiz_questions q on q.id = ch.question_id
+      left join public.tags t on t.id = ch.tag_id
+          where q.prompt_id = $1 and t.id is null`,
+        [drawn.prompt_id],
+      )
+    ).rows[0].n;
+    assert(bad === 0, `正式語彙にない選択肢が ${bad} 件`);
+
+    const named = (
+      await db.query(
+        `select count(*)::int as n from public.tags
+          where label in ('人型','動物型','植物型','怪物型','道具型',
+                          '建造物型','乗物型','景観型','気象型')`,
+      )
+    ).rows[0].n;
+    assert(named === 0, `形状アシストの語が正式語彙に ${named} 件入っている`);
+  });
+
+  await test("U", "他人の確定したお題からは読めない", async () => {
+    const owner = await makeMember(db, "sa-owner");
+    const other = await makeMember(db, "sa-other");
+    const drawn = await drawWithAssist(owner, "plant");
+
+    const seen = await value(db, asMember(other), `select public.get_my_prompt($1::uuid)`, [
+      drawn.prompt_id,
+    ]);
+    assert(seen === null, "他人のお題が読めてしまう");
+  });
+
+  await test("U", "回答者へ渡る取得系に、形状アシストの鍵が1つも無い", async () => {
+    const author = await makeMember(db, "sa-author");
+    const reader = await makeMember(db, "sa-reader");
+    const drawn = await drawWithAssist(author, "weather");
+    const work = await postWork(db, author, drawn.prompt_id);
+
+    const detail = await value(db, asMember(reader), `select public.get_work_detail($1::uuid)`, [
+      work,
+    ]);
+    const quiz = await value(db, asMember(reader), `select public.get_work_quiz($1::uuid)`, [work]);
+    const list = await value(
+      db,
+      ANON,
+      `select jsonb_agg(to_jsonb(w)) from public.get_public_works(null,'new',20,0) w`,
+    );
+
+    for (const [name, payload] of [
+      ["get_work_detail", detail],
+      ["get_work_quiz", quiz],
+      ["get_public_works", list],
+    ]) {
+      const text = JSON.stringify(payload ?? null);
+      assert(
+        !text.includes("shape_assist") && !text.includes("weather"),
+        `${name} の戻り値に形状アシストが出ている`,
+      );
+    }
+  });
+
+  await test("U", "出題と配給の関数が、形状アシストを1文字も見ていない", async () => {
+    // **思い出す形にしない。**定義文を毎回数える。
+    // 将来この列を読む行を足したら、ここで落ちる。
+    const rows = await db.query(
+      `select p.proname
+         from pg_proc p join pg_namespace n on n.oid = p.pronamespace
+        where n.nspname = 'public'
+          and p.proname in ('build_quiz_for_prompt','next_work_candidates',
+                            'get_next_work','get_work_detail','get_work_quiz',
+                            'get_public_works','create_work','create_art_first_work')
+          and pg_get_functiondef(p.oid) like '%shape_assist%'`,
+    );
+    assert(
+      rows.rows.length === 0,
+      `形状アシストを見ている関数がある: ${rows.rows.map((r) => r.proname).join(", ")}`,
+    );
+
+    const counted = (
+      await db.query(
+        `select count(*)::int as n
+           from pg_proc p join pg_namespace n on n.oid = p.pronamespace
+          where n.nspname = 'public'
+            and p.proname in ('build_quiz_for_prompt','next_work_candidates','get_work_detail')`,
+      )
+    ).rows[0].n;
+    assert(counted >= 3, `見るべき関数が ${counted} 本しか無い（数え漏れ）`);
+  });
+
+  await test("U", "持ち込み（art_first）では必ず空になる", async () => {
+    const u = await makeMember(db, "sa-artfirst");
+    const ids = [
+      ...(await pickTags(db, "morph", 1)),
+      ...(await pickTags(db, "action", 1)),
+      ...(await pickTags(db, "color", 1)),
+    ].map((t) => t.id);
+    const made = await postArtFirstWork(db, u, ids);
+    const promptId = (
+      await db.query(`select prompt_id from public.works where id = $1`, [made.workId])
+    ).rows[0].prompt_id;
+
+    const mine = await value(db, asMember(u), `select public.get_my_prompt($1::uuid)`, [
+      promptId,
+    ]);
+    assert(mine !== null, "持ち込みのお題が読めない");
+    assert(
+      mine.shape_assist_key === null,
+      `持ち込みなのに ${mine.shape_assist_key} が入っている`,
+    );
+  });
+
+  await test("U", "列そのものは、利用者から直接読み書きできない", async () => {
+    const granted = (
+      await db.query(
+        `select count(*)::int as n
+           from information_schema.column_privileges
+          where table_schema = 'public'
+            and table_name   = 'draft_sessions'
+            and column_name  = 'shape_assist_key'
+            and grantee in ('anon','authenticated','PUBLIC')`,
+      )
+    ).rows[0].n;
+    assert(granted === 0, `列に権限が ${granted} 件ある`);
+
+    const u = await makeMember(db, "sa-direct");
+    const session = await startDraftOnly(db, u);
+    await expectFailure(
+      () =>
+        value(
+          db,
+          asMember(u),
+          `update public.draft_sessions set shape_assist_key = 'humanoid' where id = $1`,
+          [session.session_id],
+        ),
+      "permission denied",
+    );
   });
 
 }

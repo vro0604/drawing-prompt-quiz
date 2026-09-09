@@ -2786,6 +2786,35 @@ export const diagnostics = [
            where p.avatar_path is not null
              and p.avatar_path not like p.id::text || '/avatar/%'`,
   },
+  {
+    // 形状アシスト（D191）は正式なお題ではない。
+    // 出題・正解・伝達率・次の作品の配り方は、この値を1文字も読まない。
+    //
+    // **思い出す形にしない。**関数の定義文を毎回数える。
+    // 将来この列を読む行が1つでも入ったら、ここに名前が出る。
+    id: "A40",
+    label: "形状アシストを読んでしまっている、出題・配給の関数",
+    sql: `select p.proname
+            from pg_proc p join pg_namespace n on n.oid = p.pronamespace
+           where n.nspname = 'public'
+             and p.proname in ('build_quiz_for_prompt','next_work_candidates',
+                               'get_next_work','get_work_detail','get_work_quiz',
+                               'get_public_works','create_work','create_art_first_work')
+             and pg_get_functiondef(p.oid) like '%shape_assist%'`,
+  },
+  {
+    // 形状アシストの列は、利用者から直接読み書きできない。
+    // 読めるのは draft_state_json と get_my_prompt を通したときだけで、
+    // どちらも本人の行しか返さない。
+    id: "A41",
+    label: "形状アシストの列に、利用者の権限が付いている",
+    sql: `select (grantee || ' ' || privilege_type) as id
+            from information_schema.column_privileges
+           where table_schema = 'public'
+             and table_name   = 'draft_sessions'
+             and column_name  = 'shape_assist_key'
+             and grantee in ('anon','authenticated','PUBLIC')`,
+  },
 ];
 
 /**

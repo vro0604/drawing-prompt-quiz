@@ -87,6 +87,13 @@ export type DraftState = {
   slot_count: number;
   /** 持ち出しで埋まっている枠の数（D161）。0 なら普通の抽選 */
   carried_count: number;
+  /**
+   * 形状アシスト（D191）。null は「使わない」。
+   *
+   * **お題ではない。**盤面に小さく出すためだけの値で、
+   * 出題数にも正解にも伝達率にも関係しない。
+   */
+  shape_assist_key: string | null;
   chosen_count: number;
   is_ready_to_complete: boolean;
   slots: DraftSlot[];
@@ -194,6 +201,14 @@ export type PromptDetail = {
   candidates_revealed_at: string | null;
   reveal_reason: string | null;
   created_at: string;
+  /**
+   * 形状アシスト（D191）。null は「使わない」。
+   *
+   * **お題ではない。**返すのは作者本人のときだけ（get_my_prompt が
+   * created_by = auth.uid() で絞っている）。回答者の画面には出ない。
+   * 持ち込み（art_first）では必ず null。
+   */
+  shape_assist_key: string | null;
   work_id: string | null;
   cards: PromptCard[];
   unchosen: UnchosenCard[];

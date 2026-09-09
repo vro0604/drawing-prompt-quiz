@@ -5,6 +5,89 @@
 日時は JST。全体が400行を超えたら、一番下（最も古いもの）から削ります。
 
 ---
+## 2026-09-09 形状アシストを実装した（D191。本番へはまだ当てていない）
+
+### 何ができるようになったか
+
+お題を引く前に、作者が「どういう形として描くか」の取っかかりを1つだけ
+持てるようになった。「人型」を持った状態で「自動販売機 / 深緑 / 怯え」を
+受け取ると、「自動販売機を人型としてどう表現するか」から考え始められる。
+
+操作は3つ。使わない／ランダムに1つ／自分で選ぶ。候補は9つ。
+1回のお題につき0個か1個。**正式なお題ではない。**
+
+### 何を引き換えにしたか
+
+引き換えは無し。お題の抽選は1行も変えていない。表は52のまま。
+既存のお題はすべて「使わない」になるだけで、動きは変わらない。
+
+### 混ざらないことを、画面ではなく置き場所で決めた
+
+保存先は `draft_sessions.shape_assist_key` の1列だけ。
+**クイズを作る関数が読むのは `prompt_cards` と `card_slots` の2つだけ**
+なので（本番の定義を実測）、この列は届かない。画面で隠しているのではない。
+
+次の作品の配り方（D169）が読むのは `answers` と `works` だけ。ここにも届かない。
+回答者へ渡る3本（`get_work_detail` / `get_work_quiz` / `get_public_works`）には
+鍵を1つも足していない。返すのは `get_my_prompt` だけで、あれは作者に絞っている。
+
+未踏組み合わせの判定は、そもそもこの工程にまだ存在しない（実測で0件）。
+
+### 何が何を呼び、値がどこへ渡るか
+
+    /play の始める前のフォーム
+      → shapeAssistMode（使わない/ランダム/自分で選ぶ）と shapeAssistKey を送る
+      → startDraftAction が「ランダム」ならその場で1つに決める
+      → callStartDraft が start_draft の4つ目の引数として渡す
+      → draft_sessions.shape_assist_key に入る
+      → draft_state_json が盤面へ返す（/play の見出し行に小さく出る）
+      → complete_draft のあと、get_my_prompt が prompts.draft_session_id を
+         たどって同じ値を返す（/prompt/[id] に1行だけ出る）
+
+この先へは進まない。`prompt_cards` にも `works` にも入らない。
+
+### なぜ列1つで済ませたか（他の道を実測で落とした）
+
+- Cookie だけで持つ道は選ばなかった。端末を替えると消え、別の端末で
+  始めたドラフトへ古い値が混ざる。
+- 既存の入れ物へ足す道は**無かった。**public スキーマで自由記述の入れ物
+  （jsonb）を持つ列は `profiles.links` の1つだけ（実測）。
+- 候補の一覧は `src/features/shape-assist/types.ts` に置いた。
+  `tags` に入れると**クイズの誤答としてこの語が出る。**
+
+### 手元での実測
+
+- `npm run test:db` 216件すべて合格（形状アシストのU群11件を含む）
+- `npm run db:verify:local` 合格189・不合格0（診断 A40 / A41 を追加）
+- `npm run typecheck` 終了コード0 ／ `npm run lint` エラー0・警告2（既存）
+- `npm run build` 成功
+- `npm run test:e2e` 群U 5件すべて合格
+
+### 次の一手
+
+- **本番へは当てていない。**`20260909200000_shape_assist.sql` の1本。
+  当てる前に画面を出すと `/play` の開始が壊れる（start_draft の引数が増える）。
+- 順番は「本番へ migration を当てる → push（Vercel が組み直す）」。
+
+### 400行を超えたので、いちばん古い1件を削った
+
+削ったのは「2026-09-08（5回目）art_first を本番へ出した」。
+**2026-09-08 に出し終えている。**そのときの実測は
+`docs/verify-2026-09-09.md` と `docs/prod-apply-2026-09-08.md` に、
+決定は `docs/decisions.md` の D172（art_first のほう）に残っている。
+進行中の作業線の記録は1件も消していない。
+
+### 触ったファイル
+
+- `supabase/migrations/20260909200000_shape_assist.sql`（新規）
+- `src/features/shape-assist/types.ts`（新規）
+- `src/features/draft/{types.ts,rpc.ts}`、`src/app/play/{actions.ts,_components.tsx}`
+- `src/app/prompt/[id]/page.tsx`
+- `scripts/db-checks.mjs`（A40 / A41）、`test/db/run.mjs`（U群）、
+  `test/e2e/browser.mjs`（U群）
+- `docs/decisions.md`（D191）、`docs/spec.md`（4-6）
+
+---
 ## 2026-09-09 形状アシストと Color / Sub Color の仕様を先に固めて置いた（D189・D190。実装はしない）
 
 ### 終えたこと
@@ -313,52 +396,4 @@ D171 と、その回の verify 文書に残っている。
 - `test/db/run.mjs`、`test/e2e/{browser.mjs,seed.mjs,server.mjs}`
 - `docs/admin-tool-investigation.md`（新規）、`docs/verify-2026-09-09.md`（新規）
 - `docs/{decisions.md,spec.md,legal-draft.md,launch-checklist.md}`、`PROGRESS.md`
-
----
-
-## 2026-09-08（5回目）art_first を本番へ出した（DB1本＋画面。書きかけは入れていない）
-
-直前に終えたこと。
-
-- 本番へ当てたのは `supabase/migrations/20260908090000_art_first.sql` の**1本だけ**。
-  `npm run db:deploy`（`supabase db push`）は使えなかった。dry-run が
-  書きかけの `20260907120000_single_pass_draw_and_slot_redo.sql` まで
-  一緒に当てると言ったため（実測）。CLI にファイルを選ぶ引数は無い。
-- そこで `scripts/db-apply-one.mjs`（`npm run db:apply:one`）を足した。
-  名指しした1本を1トランザクションで流す。履歴表への記録は CLI 本来の
-  `supabase migration repair <版番号> --status applied` で行った。
-  **当てた直後にだけ使う。**当てずに repair だけするのは履歴に嘘を書くこと。
-- 本番の migration は 44本 → **45本**。書きかけは未適用のまま。
-- 副作用が1つある。書きかけの版番号が本番の最後より古くなったので、次に
-  `db push` を叩くと `--include-all` を求められる（実測の文言は
-  `docs/prod-apply-2026-09-08.md` 9-3）。**適用不能ではない。**まだ一度も
-  当てていないファイルなので、版番号を付け替えれば普通に押せる。付け替えは
-  一巡ドローの作業線の判断なので、こちらでは触っていない。
-- 作業ツリーに2つの作業線が混ざっていたので、HEAD から切った worktree へ
-  こちらのぶんだけを組み直し、そこで型検査・lint・build・DB試験・
-  ブラウザ試験を通してから、その内容だけをコミットした。相手のファイルは
-  1つも消していない・戻していない（`git status` に残っている）。
-- 実測: 当てる前の本番 `db:verify` は 合格181・不合格6（6件はすべて
-  「art_first がまだ無い」ため）。当てた後は **187項目すべて合格**。
-  デプロイ後にもう一度回して、同じく 187項目すべて合格。
-  `verify:launch` は前後とも 18項目すべて合格。
-  組み直した木では test:db 165件・db:verify:local 176件・test:e2e **61件**が
-  すべて合格し、build も通った。
-
-次の一手。
-
-- 本番で持ち込みを1往復する（実際に絵を出して答えてもらう）は**やっていない。**
-  持ち込み用のスモークが無く、作ると本番に公開作品が1件増えるため。
-  作るかどうかはユーザーの判断。
-- `smoke:draft` / `smoke:play` の本番実行も、いまはできない。作業ツリーの
-  スモークが `pick_card` を前提にしていて、本番のDBにその関数がまだ無い。
-  一巡ドローが本番へ入ってから。
-- 一巡ドローと長押し回答は、別の作業線の書きかけのまま。
-
-触ったファイル。
-
-- `supabase/migrations/20260908090000_art_first.sql`（新規・本番へ適用済み）
-- `scripts/db-apply-one.mjs`（新規）、`package.json`（`db:apply:one` を追加）
-- `docs/prod-apply-2026-09-08.md`（9節に実測を追記）
-- 画面・受け口・試験は前回の項目（下）と同じ
 

@@ -138,12 +138,16 @@ export async function callStartDraft(
   modeKey: string,
   timeLimitSeconds: number | null,
   carriedElementIds: number[] = [],
+  shapeAssistKey: string | null = null,
 ): Promise<DraftState> {
   const supabase = await createSupabaseServerClient();
   const { data, error } = await supabase.rpc("start_draft", {
     p_mode_key: modeKey,
     p_time_limit_seconds: timeLimitSeconds,
     p_carried_element_ids: carriedElementIds.length > 0 ? carriedElementIds : null,
+    // 形状アシスト（D191）。**お題ではない。**入れるのはこの1つの値だけで、
+    // これ以降の出題・採点・配給はこの値を1度も読まない
+    p_shape_assist_key: shapeAssistKey,
   });
 
   if (error) throw new Error(readableRpcError(error.message));

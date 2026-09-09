@@ -1,5 +1,6 @@
 import Link from "next/link";
 import { notFound } from "next/navigation";
+import { shapeAssistLabel } from "@/features/shape-assist/types";
 import { fetchMyPrompt, fetchPromptTimer } from "@/features/draft/rpc";
 import { getCurrentUser } from "@/features/auth/session";
 import {
@@ -7,6 +8,7 @@ import {
   btnQuiet,
   btnSecondary,
   noticeError,
+  noticeMuted,
   noticeSuccess,
 } from "@/app/_surface";
 import { SubmitButton } from "@/app/_pending";
@@ -77,6 +79,25 @@ export default async function PromptPage({
           {prompt.was_rerolled ? `・引き直し ${prompt.reroll_count} 回` : ""}
         </p>
       </header>
+
+      {/* 形状アシスト（D191）。**お題ではない。**
+          この画面に居るのは必ずそのお題の作者なので、ここに出しても
+          回答者には届かない（get_my_prompt が created_by で絞っている）。
+
+          下のお題カードと同じ見た目にしない。守らせるものではないので、
+          文言でもそう書く。出所: ユーザー指示（2026-09-09）
+          「正式お題と視覚的に同格に見せない」「『必須条件』と誤解させない」。 */}
+      {shapeAssistLabel(prompt.shape_assist_key) ? (
+        <p className={noticeMuted} data-testid="prompt-shape-assist">
+          形状アシスト:{" "}
+          <span className="font-bold text-muted">
+            {shapeAssistLabel(prompt.shape_assist_key)}
+          </span>
+          {" — "}
+          始める前に選んだ、発想の手がかりです。お題ではありません。
+          守らなくても投稿できますし、クイズにも出ません。
+        </p>
+      ) : null}
 
       {/* 時計は「引いてから描く」挑戦のためのもの。
           持ち込み（art_first）は投稿と同時に作られるお題なので、

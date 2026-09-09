@@ -8,6 +8,10 @@ import {
   callPromoteSessionCarry,
 } from "@/features/carry/rpc";
 import {
+  isShapeAssistKey,
+  pickRandomShapeAssist,
+} from "@/features/shape-assist/types";
+import {
   callAbandonDraft,
   callCompleteDraft,
   callRerollDraft,
@@ -132,10 +136,33 @@ export async function startDraftAction(form: FormData): Promise<void> {
     .map((v) => Number.parseInt(typeof v === "string" ? v : "", 10))
     .filter((n) => Number.isFinite(n));
 
+  // 形状アシスト（D191）。**お題ではない。**
+  //
+  //   なし     … 何も渡さない（null）
+  //   ランダム … ここで1つに決めて渡す。決めた結果はドラフトの行に残るので、
+  //              引き直しても、読み込み直しても同じものが残る
+  //   自分で選ぶ … 選ばれた候補をそのまま渡す
+  //
+  // 「自分で選ぶ」以外のときに候補の値が混ざっていても無視する。
+  // 押していない選択肢が効いてしまうと、画面と結果が食い違う。
+  const shapeAssistMode = str(form, "shapeAssistMode");
+  const pickedShapeAssist = str(form, "shapeAssistKey");
+  const shapeAssistKey =
+    shapeAssistMode === "random"
+      ? pickRandomShapeAssist()
+      : shapeAssistMode === "pick" && isShapeAssistKey(pickedShapeAssist)
+        ? pickedShapeAssist
+        : null;
+
   try {
     // ここが「最初の書き込み」。必要ならこの瞬間に匿名ユーザーが発行される
     await ensureUserId();
-    await callStartDraft(modeKey, timeLimitSeconds, carriedElementIds);
+    await callStartDraft(
+      modeKey,
+      timeLimitSeconds,
+      carriedElementIds,
+      shapeAssistKey,
+    );
   } catch (e) {
     const existing = await sameConditionDraft(modeKey, timeLimitSeconds);
 

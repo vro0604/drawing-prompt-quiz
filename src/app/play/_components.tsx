@@ -13,6 +13,10 @@ import {
   slotSummary,
   type SavedElements,
 } from "@/features/carry/types";
+import {
+  SHAPE_ASSISTS,
+  shapeAssistLabel,
+} from "@/features/shape-assist/types";
 import { SubmitButton } from "@/app/_pending";
 import {
   abandonDraftAction,
@@ -141,6 +145,67 @@ export function StartForm({
           カードをめくっている間も、お題が決まったあとも、同じ1つの時計です。
           残りが少なくなると、画面のいちばん上から時間を延ばせます。
         </p>
+      </div>
+
+      {/* --- 形状アシスト（D191）------------------------------------------
+          **お題ではない。**「何を描くか」はこのあとの抽選で決まる。
+          ここで決めるのは「それをどういう形として出すか」の取っかかりだけ。
+
+          正式なお題と同じ大きさで見せない。守らせるものでもないので、
+          文言も「決まり」ではなく「手がかり」として書く。
+          出所: ユーザー指示（2026-09-09）「正式お題と視覚的に同格に見せない」
+          「『必須条件』と誤解させない文言にする」。 */}
+      <div className="space-y-3 border-t border-ink/10 pt-6" data-testid="shape-assist">
+        <h2 className="text-sm font-bold">形状アシスト（任意）</h2>
+        <p className="text-xs text-faint">
+          お題ではありません。「このあと出るお題を、どういう形として描くか」の
+          手がかりを1つだけ持って始められます。守らなくてもかまいませんし、
+          クイズにも出ません。使わないままでも大丈夫です。
+        </p>
+
+        <div className="flex flex-wrap gap-2">
+          {[
+            { value: "none", label: "使わない" },
+            { value: "random", label: "ランダムに1つ" },
+            { value: "pick", label: "自分で選ぶ" },
+          ].map((m, i) => (
+            <label
+              key={m.value}
+              className="flex min-h-11 cursor-pointer items-center rounded-lg border border-line-mid px-3 py-2 text-xs has-checked:border-line-active has-checked:bg-hover"
+            >
+              <input
+                type="radio"
+                name="shapeAssistMode"
+                value={m.value}
+                defaultChecked={i === 0}
+                className="mr-2"
+              />
+              {m.label}
+            </label>
+          ))}
+        </div>
+
+        <div className="space-y-2 rounded-xl bg-sunken p-4">
+          <p className="text-xs text-faint">
+            「自分で選ぶ」を選んだときの候補です。ここだけ押しても始まりません。
+          </p>
+          <div className="flex flex-wrap gap-2" data-testid="shape-assist-choices">
+            {SHAPE_ASSISTS.map((sa) => (
+              <label
+                key={sa.key}
+                className="flex min-h-11 cursor-pointer items-center rounded-lg border border-line-mid px-3 py-2 text-xs has-checked:border-line-active has-checked:bg-hover"
+              >
+                <input
+                  type="radio"
+                  name="shapeAssistKey"
+                  value={sa.key}
+                  className="mr-2"
+                />
+                {sa.label}
+              </label>
+            ))}
+          </div>
+        </div>
       </div>
 
       {saved.slots.length > 0 ? (
@@ -506,6 +571,13 @@ export function DraftBoard({ state }: { state: DraftState }) {
           {state.carried_count > 0 ? (
             <span className="text-xs text-success">
               持ち出し {state.carried_count} 個
+            </span>
+          ) : null}
+          {/* 形状アシスト（D191）。**お題ではない**ので、枠と同じ大きさで出さない。
+              進み具合と同じ行に、ただの控えとして並べる */}
+          {shapeAssistLabel(state.shape_assist_key) ? (
+            <span className="text-xs text-faint" data-testid="board-shape-assist">
+              形状アシスト {shapeAssistLabel(state.shape_assist_key)}
             </span>
           ) : null}
         </div>

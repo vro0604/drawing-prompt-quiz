@@ -3298,6 +3298,141 @@ async function main() {
 
 
   /* =====================================================================
+   * U. 形状アシスト（D191）
+   *
+   *    お題を引く前に、作者が「どういう形として描くか」の取っかかりを
+   *    1つだけ持てるようにしたもの。**正式なお題ではない。**
+   *    画面側では「選べること」「作者に見えること」「回答者に見えないこと」
+   *    「使わなければ何も変わらないこと」を確かめる。
+   * ===================================================================== */
+
+  /** 形状アシストを指定して、お題の確定まで進める */
+  async function clearDraft() {
+    // **/play は、進行中のドラフトがあると盤面を出す。**
+    // 始める前のフォームはそのとき画面に無い。前の群がお題を引いたまま
+    // 来ることがあるので、フォームを見る前に必ずここを通す。
+    // 片づけるのは**この人のぶんだけ。**他の窓のドラフトには触らない。
+    await db.query(
+      `update public.draft_sessions set status = 'abandoned', abandoned_at = now()
+        where user_id = $1 and status = 'in_progress'`,
+      [seeded.viewer],
+    );
+  }
+
+  async function drawWithAssist(page, mode, key) {
+    await clearDraft();
+    await page.goto(`${base}/play`);
+    await page.selectOption("select[name=timeLimitSeconds]", "3600");
+    await page.check(`input[name=shapeAssistMode][value="${mode}"]`);
+    if (key) await page.check(`input[name=shapeAssistKey][value="${key}"]`);
+    await page.getByRole("button", { name: "ドラフトを始める" }).click();
+    await page.waitForSelector("button[data-card=hidden]", { timeout: 20000 });
+  }
+
+  await test("U", "形状アシストの欄があり、はじめは「使わない」になっている", async (t) => {
+    const p = m;
+    await clearDraft();
+    await p.goto(`${base}/play`);
+    await p.locator('[data-testid="shape-assist"]').waitFor({ state: "visible", timeout: 20000 });
+
+    t.stage("3つの操作がそろっている");
+    for (const value of ["none", "random", "pick"]) {
+      assert(
+        (await p.locator(`input[name=shapeAssistMode][value="${value}"]`).count()) === 1,
+        `${value} の選択肢が無い`,
+      );
+    }
+    assert(
+      await p.locator('input[name=shapeAssistMode][value="none"]').isChecked(),
+      "はじめから「使わない」になっていない",
+    );
+
+    t.stage("候補が9つ出ている");
+    const n = await p.locator('[data-testid="shape-assist-choices"] input').count();
+    assert(n === 9, `候補が ${n} 個（9個のはず）`);
+
+    t.stage("お題ではないと書いてある");
+    const text = await p.locator('[data-testid="shape-assist"]').innerText();
+    assert(/お題ではありません/.test(text), `断り書きが無い: ${text.slice(0, 120)}`);
+    assert(/守らなくても/.test(text), "守らなくてよいと書いていない");
+  });
+
+  await test("U", "自分で選ぶと、盤面と確定したお題に出る", async (t) => {
+    const p = m;
+    await drawWithAssist(p, "pick", "monster");
+
+    t.stage("盤面に出ている");
+    const board = await p.locator('[data-testid="board-shape-assist"]').innerText();
+    assert(/怪物型/.test(board), `盤面の表示が「${board}」`);
+
+    t.stage("お題を確定しても残っている");
+    await revealAll(p);
+    await clickSafely(p.getByRole("button", { name: "このお題で確定する" }));
+    await p.waitForURL("**/prompt/**");
+
+    const note = await p.locator('[data-testid="prompt-shape-assist"]').innerText();
+    assert(/怪物型/.test(note), `確定画面の表示が「${note}」`);
+    assert(/お題ではありません/.test(note), "確定画面に断り書きが無い");
+  });
+
+  await test("U", "ランダムを選ぶと、候補のどれか1つに決まる", async (t) => {
+    const p = m;
+    await drawWithAssist(p, "random", null);
+
+    t.stage("盤面に1つだけ出ている");
+    const board = await p.locator('[data-testid="board-shape-assist"]').innerText();
+    const labels = ["人型", "動物型", "植物型", "怪物型", "道具型",
+                    "建造物型", "乗物型", "景観型", "気象型"];
+    const hit = labels.filter((l) => board.includes(l));
+    assert(hit.length === 1, `当てはまる候補が ${hit.length} 個（${board}）`);
+  });
+
+  await test("U", "使わないときは、画面に1つも出ない", async (t) => {
+    const p = m;
+    await drawWithAssist(p, "none", null);
+
+    t.stage("盤面に出ない");
+    assert(
+      (await p.locator('[data-testid="board-shape-assist"]').count()) === 0,
+      "使わないのに盤面に出ている",
+    );
+
+    t.stage("確定したお題にも出ない");
+    await revealAll(p);
+    await clickSafely(p.getByRole("button", { name: "このお題で確定する" }));
+    await p.waitForURL("**/prompt/**");
+    assert(
+      (await p.locator('[data-testid="prompt-shape-assist"]').count()) === 0,
+      "使わないのに確定画面に出ている",
+    );
+  });
+
+  await test("U", "回答者の画面には出ない", async (t) => {
+    const p = m;
+    await drawWithAssist(p, "pick", "vehicle");
+    await revealAll(p);
+    await clickSafely(p.getByRole("button", { name: "このお題で確定する" }));
+    await p.waitForURL("**/prompt/**");
+
+    t.stage("お題は確定していて、作者には見えている");
+    const note = await p.locator('[data-testid="prompt-shape-assist"]').innerText();
+    assert(/乗物型/.test(note), `作者の画面に出ていない: ${note}`);
+
+    t.stage("ゲストが見る作品の一覧と作品ページに出ない");
+    for (const path of ["/works", `/works/${seeded.works[0].workId}`]) {
+      await g.goto(`${base}${path}`);
+      const html = await g.content();
+      assert(!/乗物型/.test(html), `${path} に形状アシストが出ている`);
+      assert(!/shape_assist/.test(html), `${path} に鍵の名前が出ている`);
+      assert(
+        !/形状アシスト/.test(html),
+        `${path} に「形状アシスト」の文字が出ている`,
+      );
+    }
+  });
+
+
+  /* =====================================================================
    * !. 記録の自己試験（E2E_FORCE_FAIL=1 のときだけ動く）
    *
    * **失敗したときに、試験名と原因が記録に残るか**を、本物の失敗で確かめる。
