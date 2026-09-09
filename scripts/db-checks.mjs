@@ -10,7 +10,7 @@
  *   rpc     … 指定のロールで関数を呼び、成功／権限エラーを判定すること
  */
 
-/** 誰も直接読めない17表 */
+/** 誰も直接読めない29表 */
 export const SEALED_TABLES = [
   "draft_candidates",
   "prompt_cards",
@@ -45,6 +45,14 @@ export const SEALED_TABLES = [
   "notification_events",
   "notification_deliveries",
   "push_subscriptions",
+  // D187。課金 v0（Founding Creator）の5表（2026-09-09）。
+  // 読み書きはすべて RPC を通す。金額・決済 ID・Founder 番号は
+  // ブラウザから1列も見えない
+  "billing_offers",
+  "billing_customers",
+  "billing_purchases",
+  "billing_entitlements",
+  "billing_webhook_events",
 ];
 
 /** anon / authenticated が列権限を持つ10表 */
@@ -309,6 +317,37 @@ const ADMIN_FUNCS = [
   "admin_get_report",
   "admin_hide_work",
   "admin_resolve_report",
+];
+
+/**
+ * 課金の書き込み側 RPC（D187）。**service_role だけが呼べること**を見る。
+ * 誤って anon / authenticated へ渡ると、枠の予約も権限の付与も外から叩ける。
+ */
+const BILLING_WRITE_FUNCS = [
+  "billing_reserve_slot",
+  "billing_upsert_customer",
+  "billing_get_customer",
+  "billing_attach_checkout",
+  "billing_complete_checkout",
+  "billing_expire_checkout",
+  "billing_mark_refund_pending",
+  "billing_apply_refund_result",
+  "billing_mark_dispute",
+  "billing_claim_webhook_event",
+  "billing_finish_webhook_event",
+  "billing_reassign_purchase",
+];
+
+/** 利用者から呼べる4本を含めた、課金の RPC 全部 */
+const BILLING_ALL_FUNCS = [
+  ...BILLING_WRITE_FUNCS,
+  "billing_active_slots",
+  "billing_offer_is_open",
+  "get_founder_offer_status",
+  "list_founders",
+  "get_founder_badge",
+  "set_my_founder_visibility",
+  "get_my_entitlements",
 ];
 
 const CLEANUP_FUNCS = [
@@ -612,15 +651,20 @@ export const checks = [
     // origin/main の全機能と P0〜P5 の両方を持つ。**課金 v0 の5表は入っていない。
     // この上に D194 / D195 を載せた作業線（onboarding-phase12-integration）では 64。
     // 出所: 2026-09-10 の実測（npm run db:verify:local）。
-    name: "public スキーマの表が64個",
-    expected: 64,
+    // 2026-09-17 に5表増えた（課金 v0 / D187 を main へ取り込んだ）。
+    //   ・billing_offers ・billing_customers ・billing_purchases
+    //   ・billing_entitlements ・billing_webhook_events
+    // 合わせて 69。**本番は課金を当てるまで 64 のまま**なので、
+    // 課金を当てる前に db:verify:keychain を回すとここが食い違う。
+    name: "public スキーマの表が69個",
+    expected: 69,
     sql: `select count(*)::int from pg_tables where schemaname = 'public'`,
     detailSql: `select tablename from pg_tables
                  where schemaname = 'public' order by tablename`,
   },
   {
     group: "構造",
-    name: "遮断24表がすべて存在する",
+    name: "遮断29表がすべて存在する",
     expected: SEALED_TABLES.length,
     sql: `select count(*)::int from pg_tables
            where schemaname = 'public' and tablename = any($1)`,
@@ -628,8 +672,8 @@ export const checks = [
   },
   {
     group: "構造",
-    name: "64表すべてで RLS が有効",
-    expected: 64,
+    name: "69表すべてで RLS が有効",
+    expected: 69,
     sql: `select count(*)::int from pg_class c
             join pg_namespace n on n.oid = c.relnamespace
            where n.nspname = 'public' and c.relkind = 'r' and c.relrowsecurity`,
@@ -1115,6 +1159,157 @@ export const checks = [
            where conrelid = 'public.admin_audit_log'::regclass
              and contype = 'c'
              and conname = 'admin_audit_log_reason_length'`,
+  },
+
+  // ──────────────────────────────── 課金 ────────────────────────────────
+  //
+  // D187。Founding Creator の販売基盤。ここで見るのは4つ。
+  //   1. 商品の定義が想定どおりか（金額・上限・既定は売らない）
+  //   2. 同じ人が二重に買えない索引があるか
+  //   3. Founder 番号が重複しない一意制約があるか
+  //   4. 書き込み側の関数が service_role にしか渡っていないか
+  //
+  // 遮断の一括検査（18表）にも含まれているが、**課金は間違えると
+  // お金が動く**ので、狙いが分かる形で単独でも見る。
+  {
+    group: "課金",
+    name: "商品 founding_creator_v0 が1行ある",
+    expected: 1,
+    sql: `select count(*)::int from public.billing_offers
+           where code = 'founding_creator_v0'`,
+  },
+  {
+    group: "課金",
+    name: "Founding Creator は 3000円・上限30・買い切り・円建て",
+    expected: 1,
+    sql: `select count(*)::int from public.billing_offers
+           where code = 'founding_creator_v0'
+             and amount = 3000 and sales_cap = 30
+             and kind = 'one_time' and currency = 'jpy'`,
+  },
+  {
+    group: "課金",
+    // **足しただけでは売れない。**販売開始は運営が別途 true にする
+    name: "Founding Creator は既定で販売していない（is_active = false）",
+    expected: 1,
+    sql: `select count(*)::int from public.billing_offers
+           where code = 'founding_creator_v0' and is_active = false`,
+  },
+  {
+    group: "課金",
+    // 事前の判定だけでは、すき間に入られたときに2行入る
+    name: "同じ人・同じ商品で生きている購入は1つだけ（部分一意索引）",
+    expected: 1,
+    sql: `select count(*)::int from pg_indexes
+           where schemaname = 'public'
+             and indexname = 'billing_purchases_one_live_per_profile'`,
+  },
+  {
+    group: "課金",
+    // 錠をすり抜けても、ここで2つ目が弾かれる
+    name: "Founder 番号に一意制約が付いている",
+    expected: 1,
+    sql: `select count(*)::int from pg_constraint
+           where conrelid = 'public.billing_purchases'::regclass
+             and contype = 'u'
+             and pg_get_constraintdef(oid) like '%founder_number%'`,
+  },
+  {
+    group: "課金",
+    // 予約中・失効・取り消しの行が番号を持っていたら事故
+    name: "番号を持てるのは一度でも払われた行だけ（CHECK）",
+    expected: 1,
+    sql: `select count(*)::int from pg_constraint
+           where conrelid = 'public.billing_purchases'::regclass
+             and contype = 'c'
+             and conname = 'billing_purchases_number_only_after_paid'`,
+  },
+  {
+    group: "課金",
+    name: "課金の状態8つが CHECK で固定されている",
+    expected: 1,
+    sql: `select count(*)::int from pg_constraint
+           where conrelid = 'public.billing_purchases'::regclass
+             and contype = 'c'
+             and conname = 'billing_purchases_status_valid'`,
+  },
+  {
+    group: "課金",
+    name: "受け取った合図の ID が主キーになっている（再送で二重処理しない）",
+    expected: 1,
+    sql: `select count(*)::int from pg_constraint
+           where conrelid = 'public.billing_webhook_events'::regclass
+             and contype = 'p'
+             and pg_get_constraintdef(oid) like '%stripe_event_id%'`,
+  },
+  {
+    group: "課金",
+    name: "課金の書き込み RPC が anon / authenticated に1本も渡っていない",
+    expected: 0,
+    sql: `select count(*)::int
+            from pg_proc p
+            join pg_namespace n on n.oid = p.pronamespace
+           cross join lateral aclexplode(coalesce(p.proacl, acldefault('f', p.proowner))) a
+           where n.nspname = 'public'
+             and p.proname = any($1)
+             and a.grantee in (
+               (select oid from pg_roles where rolname = 'anon'),
+               (select oid from pg_roles where rolname = 'authenticated'),
+               0)`,
+    params: [BILLING_WRITE_FUNCS],
+    detailSql: `select p.proname, a.privilege_type,
+                       coalesce(r.rolname, 'PUBLIC') as grantee
+                  from pg_proc p
+                  join pg_namespace n on n.oid = p.pronamespace
+                 cross join lateral aclexplode(coalesce(p.proacl, acldefault('f', p.proowner))) a
+                  left join pg_roles r on r.oid = a.grantee
+                 where n.nspname = 'public' and p.proname = any($1)
+                 order by p.proname`,
+    detailParams: [BILLING_WRITE_FUNCS],
+  },
+  {
+    group: "課金",
+    name: "課金の RPC は security definer で search_path が固定されている",
+    expected: BILLING_ALL_FUNCS.length,
+    sql: `select count(*)::int from pg_proc p
+            join pg_namespace n on n.oid = p.pronamespace
+           where n.nspname='public' and p.proname = any($1)
+             and p.prosecdef
+             and p.proconfig is not null
+             and exists (select 1 from unnest(p.proconfig) c
+                          where c like 'search_path=%')`,
+    params: [BILLING_ALL_FUNCS],
+  },
+  {
+    group: "課金",
+    // Stripe の API の版を、こちらで握っていること。
+    // **口座の既定に任せると、Stripe 側の画面を触った日に形が変わる。**
+    // 届いた知らせの版を残す場所があるかを見る（食い違いに後から気づくため）。
+    name: "受け取った合図に、Stripe の API の版を残す列がある",
+    expected: 1,
+    sql: `select count(*)::int from information_schema.columns
+           where table_schema='public' and table_name='billing_webhook_events'
+             and column_name='api_version'`,
+  },
+  {
+    group: "課金",
+    name: "合図を押さえる関数が、API の版を受け取れる（引数6つ）",
+    expected: 1,
+    sql: `select count(*)::int from pg_proc p
+            join pg_namespace n on n.oid = p.pronamespace
+           where n.nspname='public' and p.proname='billing_claim_webhook_event'
+             and p.pronargs = 6`,
+  },
+  {
+    group: "課金",
+    // 公開設定は本人しか変えられない。**誰の設定かを引数で受け取らない**
+    name: "公開設定の切り替えは auth.uid() だけを宛先にしている",
+    expected: 1,
+    sql: `select count(*)::int from pg_proc p
+            join pg_namespace n on n.oid = p.pronamespace
+           where n.nspname='public' and p.proname='set_my_founder_visibility'
+             and p.prosrc like '%auth.uid()%'
+             and p.pronargs = 1`,
   },
 
   // ──────────────────────────────── 掃除 ────────────────────────────────
@@ -3337,6 +3532,48 @@ export const roleProbes = [
       sql: `select 1 from public.${t} limit 1`,
     })),
   ),
+  // 課金 v0（D187）。**書き込み側は呼べず、見る側だけ呼べる**ことを実際に試す。
+  ...["anon", "authenticated"].flatMap((role) => [
+    {
+      role,
+      mode: "denied",
+      label: `${role} → billing_reserve_slot を呼ぶ`,
+      sql: `select public.billing_reserve_slot(
+              '00000000-0000-0000-0000-000000000000'::uuid, 'founding_creator_v0')`,
+    },
+    {
+      role,
+      mode: "denied",
+      label: `${role} → billing_complete_checkout を呼ぶ`,
+      sql: `select public.billing_complete_checkout(
+              'cs_x', '00000000-0000-0000-0000-000000000000'::uuid,
+              'founding_creator_v0', 'payment', 'paid', 3000, 'jpy', 'pi_x')`,
+    },
+    {
+      role,
+      mode: "denied",
+      label: `${role} → billing_apply_refund_result を呼ぶ`,
+      sql: `select public.billing_apply_refund_result('pi_x', 're_x', 'succeeded')`,
+    },
+    {
+      role,
+      mode: "allowed",
+      label: `${role} → get_founder_offer_status`,
+      sql: `select public.get_founder_offer_status('founding_creator_v0')`,
+    },
+    {
+      role,
+      mode: "allowed",
+      label: `${role} → list_founders`,
+      sql: `select public.list_founders('founding_creator_v0')`,
+    },
+  ]),
+  {
+    role: "anon",
+    mode: "denied",
+    label: "anon → set_my_founder_visibility を呼ぶ",
+    sql: `select public.set_my_founder_visibility(true)`,
+  },
 
   // 管理 v0。**実際に呼んでみて断られること**を確かめる。
   // 権限の表を読むだけでは、grant の取り消し漏れに気づけないことがある。

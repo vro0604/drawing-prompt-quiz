@@ -25,6 +25,8 @@ import {
   type PublicProfile,
   type SlotStatSummary,
 } from "@/features/profile/types";
+import { fetchFounderBadge } from "@/features/billing/rpc";
+import { founderLabel } from "@/features/billing/types";
 import { workImageUrl } from "@/features/work/rpc";
 import { divisionLabel, type PublicWorkListItem } from "@/features/work/types";
 import { surface, tabOff, tabOn } from "@/app/_surface";
@@ -362,6 +364,11 @@ export default async function ProfilePage({
       ? await fetchPublicAnswers({ userId: profile.id, limit: PAGE_SIZE, offset: 0 })
       : [];
 
+  // Founder の番号。**プロフィールにだけ出す**（作品カードや回答欄には出さない）。
+  // 本人が公開を選んでいて、いま権利が生きているときだけ返る。
+  // 読めなかったときは null なので、バッジが出ないだけでこの画面は落ちない。
+  const founder = await fetchFounderBadge(profile.id);
+
   return (
     <main className="mx-auto w-full max-w-5xl space-y-8 p-6 sm:p-10">
       {/* --- 見出し ------------------------------------------------------------ */}
@@ -390,6 +397,14 @@ export default async function ProfilePage({
           <div className="space-y-1">
             <h1 className="text-2xl font-bold break-words">{profile.display_name}</h1>
             <p className="text-sm text-faint">@{profile.handle}</p>
+            {founder ? (
+              <p
+                className="text-xs font-bold text-muted"
+                data-testid="founder-badge"
+              >
+                Founding Creator {founderLabel(founder.founder_number)}
+              </p>
+            ) : null}
           </div>
         </div>
 

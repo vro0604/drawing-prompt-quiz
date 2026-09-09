@@ -120,6 +120,13 @@ export function SiteFooter() {
         >
           プライバシーポリシー
         </Link>
+        {/* 有料の商品を売る以上、名乗りはどのページからも1回で行けること */}
+        <Link
+          href="/tokushoho"
+          className="inline-flex min-h-11 items-center text-muted hover:underline"
+        >
+          特定商取引法に基づく表示
+        </Link>
       </div>
     </footer>
   );

@@ -155,6 +155,31 @@ const OPTIONAL = [
   },
 ];
 
+/**
+ * あると機能が増えるが、無くてもサイトは動くもの（2026-09-09、D187）。
+ *
+ * **足りなくてもビルドを止めない。**Stripe の鍵がその例で、
+ * 無ければ /founder が「準備中」になり、購入の受け口は 503 で断るだけ。
+ * サイトの他の部分は今までどおり動く。素通しにはしない
+ * （src/lib/env.ts の billingConfigError）。
+ */
+const BILLING_OPTIONAL = [
+  {
+    name: "STRIPE_SECRET_KEY",
+    label: "Stripe の秘密鍵（決済ページを作る）",
+    check: (v) =>
+      v.startsWith("sk_") || v.startsWith("rk_")
+        ? null
+        : "sk_ か rk_ で始まる鍵を入れてください",
+  },
+  {
+    name: "STRIPE_WEBHOOK_SECRET",
+    label: "Stripe からの知らせの署名を確かめる鍵",
+    check: (v) =>
+      v.startsWith("whsec_") ? null : "whsec_ で始まる鍵を入れてください",
+  },
+];
+
 const problems = [];
 const lines = [];
 
@@ -220,6 +245,32 @@ if (optionalMissing === OPTIONAL.length) {
   console.log(`  ${DIM}プッシュ通知は送られません。知らせは画面内にだけ出ます${RESET}`);
   console.log(`  ${DIM}鍵の作り方: docs/web-push-setup.md${RESET}`);
 }
+
+// --- 課金の鍵（D187）。無ければ購入の入口だけが閉じる。足りなくても止めない ---
+// プッシュ通知の一覧（OPTIONAL）とは分けて数える。混ぜると、上の
+// 「全部未設定ならプッシュは送られない」の判定が課金の鍵まで数えてしまうため。
+const billingLines = [];
+for (const item of BILLING_OPTIONAL) {
+  const value = (env[item.name] ?? "").trim();
+
+  if (value === "") {
+    billingLines.push(`  ${DIM}－ ${item.name} 未設定 — ${item.label}${RESET}`);
+    continue;
+  }
+
+  const reason = item.check ? item.check(value) : null;
+  if (reason) {
+    billingLines.push(`  ${YELLOW}△${RESET} ${item.name} ${DIM}${reason}${RESET}`);
+    continue;
+  }
+
+  billingLines.push(`  ${GREEN}✓${RESET} ${item.name} ${DIM}設定あり（${value.length}文字）${RESET}`);
+}
+
+console.log("");
+console.log(`${BOLD}[任意・課金]${RESET} ${DIM}無ければ /founder は「準備中」、購入の受け口は 503（足りなくても止まりません）${RESET}`);
+console.log("");
+for (const l of billingLines) console.log(l);
 
 if (leaked.length > 0) {
   console.log("");

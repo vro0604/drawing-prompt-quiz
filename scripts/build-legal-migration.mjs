@@ -50,6 +50,23 @@ const OLD_SERVICE_NAME = "お題を引いて描くクイズ";
 /** 制定日＝版番号。既定は今日（本番へ入れる日）。 */
 const DATE = arg("date") ?? new Date().toISOString().slice(0, 10);
 
+/**
+ * 出来上がる migration の名前の後ろ半分。
+ *
+ * **版を重ねるたびに変える。**同じ名前で2つ作ると、
+ * どちらが新しいのか名前から分からなくなる（1本目は legal_v1）。
+ *   例: --slug legal_v2_billing
+ */
+const SLUG = arg("slug") ?? "legal_v1";
+
+if (!/^[a-z0-9_]+$/.test(SLUG)) {
+  console.error(`${RED}名前の後ろ半分は英小文字・数字・下線だけにしてください: ${SLUG}${RESET}`);
+  process.exit(1);
+}
+
+/** 元に戻すときに立てる、1つ前の版。既定は最初の版 */
+const PREV = arg("prev") ?? "2026-08-04";
+
 if (!/^\d{4}-\d{2}-\d{2}$/.test(DATE)) {
   console.error(`${RED}制定日の形が違います: ${DATE}（例 2026-08-08）${RESET}`);
   process.exit(1);
@@ -196,17 +213,19 @@ console.log(`${GREEN}✓ 第5節のチェックをすべて通りました${RESE
 const stamp = DATE.replace(/-/g, "") + "200000";
 
 const sql = `-- ============================================================================
--- ${stamp}_legal_v1.sql
---   手順2 ／ 規約とポリシーの本文を、雛形から本物へ差し替える
+-- ${stamp}_${SLUG}.sql
+--   規約とポリシーの本文を、いま有効な版として差し替える
 -- ============================================================================
 --
 -- **このファイルは生成物。手で編集しない。**
 --   原本は docs/legal-draft.md。本文を直すときはそちらを直して、
---   node scripts/build-legal-migration.mjs --write を流し直す。
+--   node scripts/build-legal-migration.mjs --slug ${SLUG} --date ${DATE} --write
+--   を流し直す。
 --
 -- 【何が変わるか】
---   利用規約           雛形42行  →  本物（${termsBody.split("\n").length}行）
---   プライバシーポリシー 雛形54行  →  本物（${privacyBody.split("\n").length}行）
+--   いま有効な版が ${PREV} から ${DATE} へ移る。
+--   利用規約           ${termsBody.split("\n").length} 行
+--   プライバシーポリシー ${privacyBody.split("\n").length} 行
 --
 --   埋めたもの
 --     サービス名   つたわるかな（D114。08-04 の決定を改定した）
@@ -317,18 +336,18 @@ end $$;
 --
 --   update public.terms_versions   set is_current = false where version = '${DATE}';
 --   update public.privacy_versions set is_current = false where version = '${DATE}';
---   update public.terms_versions   set is_current = true  where version = '2026-08-04';
---   update public.privacy_versions set is_current = true  where version = '2026-08-04';
+--   update public.terms_versions   set is_current = true  where version = '${PREV}';
+--   update public.privacy_versions set is_current = true  where version = '${PREV}';
 --
 --   本文の行は消さない。取り違えても失われないようにしておく。
 -- ============================================================================
 `;
 
-const out = resolve(ROOT, `supabase/migrations/${stamp}_legal_v1.sql`);
+const out = resolve(ROOT, `supabase/migrations/${stamp}_${SLUG}.sql`);
 
 if (!WRITE) {
   console.log(`${DIM}--write を付けると、ここへ書き出します:${RESET}`);
-  console.log(`  supabase/migrations/${stamp}_legal_v1.sql`);
+  console.log(`  supabase/migrations/${stamp}_${SLUG}.sql`);
   console.log(`  ${DIM}（${sql.length} 文字）${RESET}`);
   process.exit(0);
 }
@@ -338,5 +357,5 @@ if (existsSync(out)) {
 }
 
 writeFileSync(out, sql, "utf8");
-console.log(`${GREEN}✓ 書き出しました${RESET}  supabase/migrations/${stamp}_legal_v1.sql`);
+console.log(`${GREEN}✓ 書き出しました${RESET}  supabase/migrations/${stamp}_${SLUG}.sql`);
 console.log(`\n${DIM}次: npm run db:status で、何が流れるかを見る${RESET}`);

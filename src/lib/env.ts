@@ -49,6 +49,51 @@ export function hasAdminUserId(): boolean {
 }
 
 /**
+ * Stripe の秘密鍵と、Webhook の署名を確かめる鍵。**どちらもサーバー専用**。
+ *
+ * 【NEXT_PUBLIC_ を絶対に付けない】
+ *   付けるとブラウザに埋め込まれる。秘密鍵が漏れれば、その Stripe
+ *   アカウントで返金も送金も課金もできる。**鍵そのものはログにも出さない。**
+ *
+ * 【なぜ2本要るか】
+ *   STRIPE_SECRET_KEY   … こちらから Stripe を呼ぶための鍵（決済ページを作る）
+ *   STRIPE_WEBHOOK_SECRET … Stripe から来た知らせが本物かを確かめるための鍵
+ *   向きが逆なので、同じ鍵にはならない。
+ *
+ * 【未設定のとき】
+ *   購入の入口を閉じる（503）。**「設定していないから素通し」にしない。**
+ *   CRON_SECRET・Turnstile と同じ考え方。
+ *   閉じるのは購入だけで、サイトの他の部分は今までどおり動く。
+ */
+export const STRIPE_SECRET_KEY = (process.env.STRIPE_SECRET_KEY ?? "").trim();
+export const STRIPE_WEBHOOK_SECRET = (process.env.STRIPE_WEBHOOK_SECRET ?? "").trim();
+
+/** Stripe を呼べる状態か。購入ページはこれが false なら「準備中」と出す。 */
+export function hasStripeSecretKey(): boolean {
+  return STRIPE_SECRET_KEY !== "";
+}
+
+/** Stripe からの知らせを確かめられる状態か。false なら Webhook は 503 で断る。 */
+export function hasStripeWebhookSecret(): boolean {
+  return STRIPE_WEBHOOK_SECRET !== "";
+}
+
+/**
+ * 課金の設定が足りていないときの理由。足りていれば null。
+ *
+ * **値そのものは1文字も入れない。**入れるのは変数の名前だけ。
+ */
+export function billingConfigError(): string | null {
+  const missing: string[] = [];
+  if (!hasStripeSecretKey()) missing.push("STRIPE_SECRET_KEY");
+  if (!hasStripeWebhookSecret()) missing.push("STRIPE_WEBHOOK_SECRET");
+  if (!hasSupabaseSecretKey()) missing.push("SUPABASE_SECRET_KEY");
+  if (missing.length === 0) return null;
+
+  return `課金の設定が足りていません: ${missing.join(", ")}`;
+}
+
+/**
  * このサービスの**正規URL**。
  *
  * 確認メールの戻り先に使う。ここを個別 Deployment URL

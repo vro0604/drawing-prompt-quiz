@@ -93,6 +93,12 @@ import {
   warnLevel,
 } from "../../src/features/challenge/warning.ts";
 import { hasUnseenResults } from "../../src/features/notice/unseen.ts";
+import {
+  parseStripeEvent,
+  toStripeForm,
+  verifyStripeSignature,
+} from "../../src/features/billing/signature.ts";
+import { STRIPE_API_VERSION } from "../../src/features/billing/types.ts";
 import { recordCount } from "../counts.mjs";
 
 const results = [];
@@ -965,6 +971,230 @@ await testAsync("知らせ", "true 以外の値は true と見なさない", asy
     const f = fakeUnseen({ session: MEMBER_SESSION, rpcResult: { data, error: null } });
     assert((await hasUnseenResults(f.client)) === false, `${JSON.stringify(data)} を true と見なした`);
   }
+});
+
+
+/* ===========================================================================
+ * 課金 ／ 偽の知らせを弾けるか（W22 の本体）
+ *
+ * 【なぜここで見るか】
+ *   署名の確かめ方は、外部も DB もブラウザも要らない純粋な計算。
+ *   **偽の署名を自分で作って投げ込むのが、いちばん確実な試し方。**
+ *   縦断試験（DB）はここへ届かず、ブラウザ試験は本物の Stripe を呼べない。
+ *
+ * 【何を試すか】
+ *   ・本物の手順で作った署名は通る
+ *   ・鍵が違う／本文が1文字違う／時刻が古い／v1 が無い ものは通らない
+ *   ・鍵の入れ替え中（署名が2つ付く）でも、片方が合えば通る
+ * ========================================================================= */
+
+const WHSEC = "whsec_test_0123456789abcdef";
+
+/** Stripe と同じやり方で署名を作る（試験の側で本物の手順を再現する） */
+function signLikeStripe(payload, secret, timestamp) {
+  const mac = createHmac("sha256", secret)
+    .update(`${timestamp}.${payload}`, "utf8")
+    .digest("hex");
+  return `t=${timestamp},v1=${mac}`;
+}
+
+const EVENT_BODY = JSON.stringify({
+  id: "evt_test_1",
+  type: "checkout.session.completed",
+  livemode: false,
+  created: 1_700_000_000,
+  data: { object: { id: "cs_test_1", payment_status: "paid", amount_total: 3000 } },
+});
+
+test("課金", "正しい署名は通る", () => {
+  const now = 1_700_000_000;
+  verifyStripeSignature({
+    payload: EVENT_BODY,
+    header: signLikeStripe(EVENT_BODY, WHSEC, now),
+    secret: WHSEC,
+    nowSeconds: now,
+  });
+});
+
+test("課金", "鍵が違う署名は弾く", () => {
+  const now = 1_700_000_000;
+  let threw = "";
+  try {
+    verifyStripeSignature({
+      payload: EVENT_BODY,
+      header: signLikeStripe(EVENT_BODY, "whsec_someone_else", now),
+      secret: WHSEC,
+      nowSeconds: now,
+    });
+  } catch (e) {
+    threw = e.message;
+  }
+  assert(threw.includes("SIGNATURE_INVALID"), `弾いていない（${threw}）`);
+});
+
+test("課金", "本文が1文字でも違えば弾く", () => {
+  const now = 1_700_000_000;
+  const header = signLikeStripe(EVENT_BODY, WHSEC, now);
+  const tampered = EVENT_BODY.replace('"amount_total":3000', '"amount_total":1');
+
+  let threw = "";
+  try {
+    verifyStripeSignature({ payload: tampered, header, secret: WHSEC, nowSeconds: now });
+  } catch (e) {
+    threw = e.message;
+  }
+  assert(threw.includes("SIGNATURE_INVALID"), `書き換えを見逃した（${threw}）`);
+});
+
+test("課金", "古すぎる知らせは弾く（差し戻し攻撃）", () => {
+  const signedAt = 1_700_000_000;
+  const header = signLikeStripe(EVENT_BODY, WHSEC, signedAt);
+
+  // 署名そのものは正しいが、10分前のもの
+  let threw = "";
+  try {
+    verifyStripeSignature({
+      payload: EVENT_BODY,
+      header,
+      secret: WHSEC,
+      nowSeconds: signedAt + 600,
+    });
+  } catch (e) {
+    threw = e.message;
+  }
+  assert(threw.includes("SIGNATURE_TOO_OLD"), `古い知らせを通した（${threw}）`);
+
+  // 5分以内なら通る
+  verifyStripeSignature({
+    payload: EVENT_BODY,
+    header,
+    secret: WHSEC,
+    nowSeconds: signedAt + 299,
+  });
+});
+
+test("課金", "v1 が無い署名は弾く（v0 だけでは通さない）", () => {
+  const now = 1_700_000_000;
+  const mac = createHmac("sha256", WHSEC).update(`${now}.${EVENT_BODY}`).digest("hex");
+
+  let threw = "";
+  try {
+    verifyStripeSignature({
+      payload: EVENT_BODY,
+      header: `t=${now},v0=${mac}`,
+      secret: WHSEC,
+      nowSeconds: now,
+    });
+  } catch (e) {
+    threw = e.message;
+  }
+  assert(threw.includes("SIGNATURE_MALFORMED"), `v0 だけで通した（${threw}）`);
+});
+
+test("課金", "ヘッダーが無い・鍵が無いときは弾く", () => {
+  const now = 1_700_000_000;
+
+  let a = "";
+  try {
+    verifyStripeSignature({ payload: EVENT_BODY, header: null, secret: WHSEC, nowSeconds: now });
+  } catch (e) {
+    a = e.message;
+  }
+  assert(a.includes("SIGNATURE_MISSING"), `ヘッダー無しを通した（${a}）`);
+
+  let b = "";
+  try {
+    verifyStripeSignature({
+      payload: EVENT_BODY,
+      header: signLikeStripe(EVENT_BODY, WHSEC, now),
+      secret: "",
+      nowSeconds: now,
+    });
+  } catch (e) {
+    b = e.message;
+  }
+  assert(b.includes("SIGNATURE_SECRET_MISSING"), `鍵無しで通した（${b}）`);
+});
+
+test("課金", "鍵の入れ替え中（署名が2つ）でも、片方が合えば通る", () => {
+  const now = 1_700_000_000;
+  const oldMac = createHmac("sha256", "whsec_old_key")
+    .update(`${now}.${EVENT_BODY}`)
+    .digest("hex");
+  const newMac = createHmac("sha256", WHSEC).update(`${now}.${EVENT_BODY}`).digest("hex");
+
+  verifyStripeSignature({
+    payload: EVENT_BODY,
+    header: `t=${now},v1=${oldMac},v1=${newMac}`,
+    secret: WHSEC,
+    nowSeconds: now,
+  });
+});
+
+test("課金", "知らせの中身は、署名を確かめたあとで読める形になる", () => {
+  const event = parseStripeEvent(EVENT_BODY);
+  assert(event.id === "evt_test_1", "ID が違う");
+  assert(event.type === "checkout.session.completed", "種類が違う");
+  assert(event.livemode === false, "本番かどうかが違う");
+  assert(event.object.id === "cs_test_1", "対象の ID が取れていない");
+});
+
+test("課金", "壊れた本文は読まずに弾く", () => {
+  let threw = "";
+  try {
+    parseStripeEvent("{ これは JSON ではない");
+  } catch (e) {
+    threw = e.message;
+  }
+  assert(threw.includes("EVENT_MALFORMED"), `壊れた本文を通した（${threw}）`);
+});
+
+test("課金", "Stripe へ送る文字列が、入れ子のまま組み立てられる", () => {
+  const form = toStripeForm({
+    mode: "payment",
+    metadata: { purchase_id: "p1", offer_code: "founding_creator_v0" },
+    line_items: [
+      { quantity: 1, price_data: { currency: "jpy", unit_amount: 3000 } },
+    ],
+    // null と undefined は**送らない**（空文字として届くのを防ぐ）
+    customer_email: null,
+    locale: undefined,
+  });
+
+  assert(form.get("mode") === "payment", "mode が入っていない");
+  assert(form.get("metadata[purchase_id]") === "p1", "metadata が入れ子になっていない");
+  assert(
+    form.get("line_items[0][price_data][unit_amount]") === "3000",
+    "配列の中の入れ子が組み立てられていない",
+  );
+  assert(!form.has("customer_email"), "null の項目を送っている");
+  assert(!form.has("locale"), "undefined の項目を送っている");
+});
+
+test("課金", "Stripe の API の版が、決め打ちの1つに固定されている", () => {
+  // **口座の既定に任せない。**日付と名前の形（2026-08-26.dahlia）であること
+  assert(
+    /^\d{4}-\d{2}-\d{2}\.[a-z]+$/.test(STRIPE_API_VERSION),
+    `版の形が違う: ${STRIPE_API_VERSION}`,
+  );
+});
+
+test("課金", "知らせから、Stripe が使った API の版を取り出せる", () => {
+  const withVersion = parseStripeEvent(
+    JSON.stringify({
+      id: "evt_v",
+      type: "checkout.session.completed",
+      api_version: STRIPE_API_VERSION,
+      data: { object: {} },
+    }),
+  );
+  assert(withVersion.apiVersion === STRIPE_API_VERSION, "版を読み取れていない");
+
+  // 版が入っていない知らせでも落ちない（null として扱う）
+  const without = parseStripeEvent(
+    JSON.stringify({ id: "evt_n", type: "checkout.session.completed", data: { object: {} } }),
+  );
+  assert(without.apiVersion === null, "版が無いときに null になっていない");
 });
 
 

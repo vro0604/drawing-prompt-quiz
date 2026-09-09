@@ -55,6 +55,7 @@ const SOURCES = {
   "道具の自己試験": { how: "npm run test:tools" },
   "縦断試験": { how: "npm run test:db" },
   "アップグレード試験": { how: "npm run test:db:upgrade" },
+  "同時実行の試験": { how: "npm run test:db:concurrent" },
   "DB構造の検査": { how: "npm run db:verify:local" },
   "語彙": { how: "npm run check:vocab" },
   "ブラウザ試験": { how: "npm run test:e2e" },

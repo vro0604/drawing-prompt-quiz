@@ -110,6 +110,7 @@ const STEPS = [
   { key: "db", name: "まっさらなDBへの全 migration ＋ 縦断試験", cmd: "npm", args: ["run", "test:db"] },
   { key: "db-upgrade", name: "旧 migration 状態からのアップグレード試験", cmd: "npm", args: ["run", "test:db:upgrade"] },
   { key: "db-verify", name: "DB構造・権限・漏洩経路の検査", cmd: "npm", args: ["run", "db:verify:local"] },
+  { key: "db-concurrent", name: "同時実行の試験（本物の Postgres）", cmd: "npm", args: ["run", "test:db:concurrent"] },
   { key: "vocab", name: "語彙の検査と棚卸し", cmd: "npm", args: ["run", "check:vocab"] },
   { key: "typescript", name: "TypeScript", cmd: "npm", args: ["run", "typecheck"] },
   { key: "eslint", name: "ESLint", cmd: "npx", args: ["eslint"] },

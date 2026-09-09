@@ -6765,6 +6765,921 @@ async function main() {
     assert(left.avatar === null, "プロフィールに置き場所が残っている");
   });
 
+  /* ---------------------------------------------------------------------
+   * T. 課金（Founding Creator v0 / D187）
+   *
+   * 【記号が T になっている理由】
+   *   指示の項目は W1〜W22。ところが記号 W は既に「管理（通報・非表示）」で
+   *   使っている。**項目の番号はそのまま W1〜W22 で書き、記号だけ T にした。**
+   *   下の見出しの W1 が指示の W1 と1対1で対応する。
+   *
+   * 【この試験が届かないところ】
+   *   ・**本当の同時実行**。ここで動かしている Postgres（PGlite）は
+   *     接続が1本しか無く、2つの取引を同時に走らせられない。
+   *     W7 と W11 は「順に呼んで片方だけ通る」ことと
+   *     「一意制約が2つ目を弾く」ことまでを見る。
+   *   ・Stripe の署名の検証（W22 の本体）。あれは HTTP の受け口の仕事で、
+   *     DB には届かない。ここで見るのは「Webhook が使う RPC を
+   *     利用者から呼べない」ことまで。署名は HTTP の試験で見る。
+   *
+   * 【枠の試験だけ別の商品でやる理由】
+   *   30枠の境目を見るには、29件を払い終えた状態を作る必要がある。
+   *   本物の Founding Creator でそれをやると、以降の試験が
+   *   すべて「売り切れ」の上で走ることになる。
+   *   そこで**同じ形の商品をもう1つ**立てて、枠の試験だけそちらでやる。
+   *   金額・上限・売り方はすべて本物と同じ値にしてある。
+   *   （本物の商品が 3000円・上限30 であることは db:verify:local が見る）
+   *
+   * 【service_role で表を直接読まない】
+   *   本番の Supabase では service_role に広い表権限が付いているが、
+   *   ここでは付いていない（既存の管理の試験と同じ）。
+   *   表の中身を確かめるときは所有者として読む。
+   * ------------------------------------------------------------------- */
+
+  // **この節だけの入れ物にする。**中で使う名前（SVC など）が、
+  // 他の節で同じ名前を使っていてもぶつからないようにするため。
+  {
+
+  /** 運営の鍵で呼ぶときの身分。課金の書き込みはすべてこれで呼ぶ */
+  const SVC = { role: "service_role", uid: null };
+
+  const FOUNDER = "founding_creator_v0";
+  const CAPCODE = "founder_capacity_probe";
+
+  /** 所有者として1つの値を読む（表の中身の確認用） */
+  const own = async (sql, params = []) => {
+    const r = await db.query(sql, params);
+    return r.rows[0] ? Object.values(r.rows[0])[0] : null;
+  };
+
+  /** 販売を開始する。**既定は false なので、開けないと1件も売れない** */
+  await db.query(
+    `update public.billing_offers set is_active = true where code = $1`,
+    [FOUNDER],
+  );
+
+  // 枠の試験専用の商品。本物と同じ形
+  await db.query(
+    `insert into public.billing_offers
+       (code, name, kind, currency, amount, sales_cap, is_active)
+     values ($1, '枠の試験用', 'one_time', 'jpy', 3000, 30, true)
+     on conflict (code) do nothing`,
+    [CAPCODE],
+  );
+
+  /** 枠を1つ押さえる */
+  const reserve = (uid, code = FOUNDER) =>
+    value(db, SVC, `select public.billing_reserve_slot($1, $2)`, [uid, code]);
+
+  /** 押さえたところから、払い終えるまで一気に進める */
+  async function buy(uid, tag, code = FOUNDER) {
+    const r = await reserve(uid, code);
+    const cus = await value(
+      db, SVC, `select public.billing_upsert_customer($1, $2)`, [uid, `cus_${tag}`],
+    );
+    await value(
+      db, SVC,
+      `select public.billing_attach_checkout($1, $2, $3, now() + interval '30 minutes')`,
+      [r.purchase_id, cus.billing_customer_id, `cs_test_${tag}`],
+    );
+    const done = await value(
+      db, SVC,
+      `select public.billing_complete_checkout($1, $2, $3, 'payment', 'paid', 3000, 'jpy', $4)`,
+      [`cs_test_${tag}`, r.purchase_id, code, `pi_test_${tag}`],
+    );
+    return {
+      purchaseId: r.purchase_id,
+      sessionId: `cs_test_${tag}`,
+      intentId: `pi_test_${tag}`,
+      ...done,
+    };
+  }
+
+  /** いま枠を占めている件数（利用者から見える経路で数える） */
+  const usedSlots = async (code = FOUNDER) =>
+    (await value(db, ANON, `select public.get_founder_offer_status($1)`, [code])).used;
+
+  /**
+   * 規約に同意していない登録利用者を1人作る。**この節の中だけの道具。**
+   * （共通の makeMember は、作ったその場で同意させてしまう）
+   */
+  const makeUnconsented = async (handle) => {
+    const { rows } = await db.query(
+      `insert into auth.users (email, is_anonymous) values ($1, false) returning id`,
+      [`${handle}@example.test`],
+    );
+    await db.query(`update public.profiles set handle = $2 where id = $1`, [rows[0].id, handle]);
+    return rows[0].id;
+  };
+
+  /** その人に生きている権限が何本あるか */
+  const liveGrants = (uid) =>
+    own(
+      `select count(*)::int from public.billing_entitlements
+        where profile_id = $1 and revoked_at is null`,
+      [uid],
+    );
+
+  await test("T", "W0 販売は既定で閉じている（行を足しただけでは売れない）", async () => {
+    const opened = await value(db, ANON, `select public.get_founder_offer_status($1)`, [FOUNDER]);
+    assert(opened.is_open === true, "この試験のために開けたはずの商品が閉じている");
+
+    // 閉じたままの商品では、押さえること自体ができない
+    await db.query(
+      `insert into public.billing_offers (code, name, kind, currency, amount, sales_cap)
+       values ('closed_probe', '閉じたまま', 'one_time', 'jpy', 3000, 30)
+       on conflict (code) do nothing`,
+    );
+    const u = await makeMember(db, "t-closed");
+    await expectFailure(() => reserve(u, "closed_probe"), "OFFER_CLOSED");
+  });
+
+  await test("T", "W1 未ログインでは買えない", async () => {
+    await expectFailure(
+      () => value(db, SVC, `select public.billing_reserve_slot(null, $1)`, [FOUNDER]),
+      "SIGN_IN_REQUIRED",
+    );
+  });
+
+  await test("T", "W1-b 規約に同意していない人には売らない（規約 13-6）", async () => {
+    // **お金を受け取ったあとで同意を求める形にしない。**
+    // 押さえる前に、投稿の門番とまったく同じ見方で確かめる
+    const u = await makeUnconsented("t-noconsent");
+    await expectFailure(() => reserve(u), "TERMS_NOT_AGREED");
+
+    // 画面が案内できるように、状態にも出ている
+    const before = await value(
+      db, { role: "authenticated", uid: u }, `select public.get_founder_offer_status($1)`, [FOUNDER],
+    );
+    assert(before.agreed === false, "同意していないのに agreed が true");
+    assert(typeof before.terms_version === "string", "同意の form に載せる版が返っていない");
+    assert(typeof before.privacy_version === "string", "ポリシーの版が返っていない");
+
+    // 同意すれば買える
+    await value(
+      db, { role: "authenticated", uid: u },
+      `select public.agree_to_documents($1, $2)`,
+      [before.terms_version, before.privacy_version],
+    );
+    const after = await value(
+      db, { role: "authenticated", uid: u }, `select public.get_founder_offer_status($1)`, [FOUNDER],
+    );
+    assert(after.agreed === true, "同意したのに agreed が false");
+
+    const r = await reserve(u);
+    assert(r.result === "reserved", "同意したのに押さえられない");
+
+    // 後ろの試験の枠に響かないよう、片づける
+    await db.query(
+      `update public.billing_purchases set status = 'void' where profile_id = $1`, [u],
+    );
+  });
+
+  await test("T", "W2 ゲストと退会手続き中のアカウントには売らない", async () => {
+    const g = await makeGuest(db);
+    await expectFailure(() => reserve(g), "ACCOUNT_NOT_ELIGIBLE");
+
+    const u = await makeMember(db, "t-leaving");
+    await db.query(
+      `update public.profiles set account_status = 'deletion_pending' where id = $1`, [u],
+    );
+    await expectFailure(() => reserve(u), "ACCOUNT_NOT_ELIGIBLE");
+  });
+
+  await test("T", "W3 登録した人は枠を押さえられ、残りが1つ減る", async () => {
+    const before = await usedSlots();
+    const u = await makeMember(db, "t-reserve");
+    const r = await reserve(u);
+
+    assert(r.result === "reserved", `予約できていない（${r.result}）`);
+    assert(typeof r.purchase_id === "string", "購入の ID が返っていない");
+    assert(r.amount === 3000 && r.currency === "jpy", "金額か通貨が商品の定義と違う");
+
+    const after = await usedSlots();
+    assert(after === before + 1, `枠が増えていない（${before} → ${after}）`);
+
+    // **番号はまだ付かない。**払われて初めて付く
+    const n = await own(
+      `select founder_number from public.billing_purchases where id = $1`, [r.purchase_id],
+    );
+    assert(n === null, "払う前に Founder 番号が付いている");
+  });
+
+  await test("T", "W4 連打しても購入の行は増えず、同じ予約が返る", async () => {
+    const u = await makeMember(db, "t-double");
+    const a = await reserve(u);
+    const b = await reserve(u);
+    const c = await reserve(u);
+
+    assert(a.result === "reserved", "1回目が予約になっていない");
+    assert(b.result === "already_reserved" && c.result === "already_reserved",
+      "2回目以降が新しい予約になっている");
+    assert(b.purchase_id === a.purchase_id && c.purchase_id === a.purchase_id,
+      "同じ予約が返っていない");
+
+    const rows = await own(
+      `select count(*)::int from public.billing_purchases
+        where profile_id = $1 and status = 'reserved'`, [u],
+    );
+    assert(rows === 1, `予約の行が ${rows} 本ある`);
+  });
+
+  await test("T", "W5 買い終えた人は、もう一度買えない", async () => {
+    const u = await makeMember(db, "t-owned");
+    const bought = await buy(u, "w5");
+    assert(bought.result === "granted", "1回目が確定していない");
+
+    await expectFailure(() => reserve(u), "ALREADY_OWNED");
+  });
+
+  await test("T", "W6 上限-1件が払い済み＋1件が予約中なら、次の人は売り切れ", async () => {
+    for (let i = 0; i < 29; i += 1) {
+      const u = await makeMember(db, `t-cap${i}`);
+      await buy(u, `cap${i}`, CAPCODE);
+    }
+    const paid = await usedSlots(CAPCODE);
+    assert(paid === 29, `払い済みが29件になっていない（${paid}）`);
+
+    const u30 = await makeMember(db, "t-cap29");
+    const r30 = await reserve(u30, CAPCODE);
+    assert(r30.result === "reserved", "30人目が押さえられない");
+
+    const full = await usedSlots(CAPCODE);
+    assert(full === 30, `枠が30になっていない（${full}）`);
+
+    // 31人目は断られる。**予約中の1件も枠として数える**
+    const u31 = await makeMember(db, "t-cap30");
+    await expectFailure(() => reserve(u31, CAPCODE), "SOLD_OUT");
+
+    const st = await value(db, ANON, `select public.get_founder_offer_status($1)`, [CAPCODE]);
+    assert(st.sold_out === true, "売り切れの印が立っていない");
+    assert(st.remaining === 0, `残りが0になっていない（${st.remaining}）`);
+  });
+
+  await test("T", "W7 残り1枠に2人が来ると、通るのは1人だけ", async () => {
+    // W6 で30枠すべて埋まっている。予約中の1件を取り消して残り1枠を作る
+    await db.query(
+      `update public.billing_purchases p set status = 'void'
+        from public.billing_offers o
+       where o.id = p.offer_id and o.code = $1 and p.status = 'reserved'`, [CAPCODE],
+    );
+
+    const left = (await value(db, ANON, `select public.get_founder_offer_status($1)`, [CAPCODE]))
+      .remaining;
+    assert(left === 1, `残りが1枠になっていない（${left}）`);
+
+    const a = await makeMember(db, "t-race-a");
+    const b = await makeMember(db, "t-race-b");
+
+    const ra = await reserve(a, CAPCODE);
+    assert(ra.result === "reserved", "先に来た人が押さえられない");
+
+    await expectFailure(() => reserve(b, CAPCODE), "SOLD_OUT");
+  });
+
+  await test("T", "W7-b 枠の判定は、商品の行を押さえてから数えている", async () => {
+    // **本当の同時実行はここでは再現できない**（PGlite は接続が1本）。
+    // 再現できないぶん、順番待ちを作っている文が実際に入っていることを見る。
+    const locked = await own(
+      `select count(*)::int from pg_proc p
+         join pg_namespace n on n.oid = p.pronamespace
+        where n.nspname = 'public' and p.proname = 'billing_reserve_slot'
+          and p.prosrc like '%from public.billing_offers o%'
+          and p.prosrc like '%for update%'`,
+    );
+    assert(locked === 1, "予約の関数に、商品の行を押さえる文が無い");
+  });
+
+  await test("T", "W8 決済ページが失効すると枠が戻る", async () => {
+    const u = await makeMember(db, "t-expire");
+    const r = await reserve(u);
+    const cus = await value(
+      db, SVC, `select public.billing_upsert_customer($1, $2)`, [u, "cus_w8"],
+    );
+    await value(
+      db, SVC,
+      `select public.billing_attach_checkout($1, $2, 'cs_test_w8', now() + interval '30 minutes')`,
+      [r.purchase_id, cus.billing_customer_id],
+    );
+
+    const before = await usedSlots();
+    const out = await value(db, SVC, `select public.billing_expire_checkout('cs_test_w8')`);
+    assert(out.result === "expired", `失効させられていない（${out.result}）`);
+
+    const after = await usedSlots();
+    assert(after === before - 1, `枠が戻っていない（${before} → ${after}）`);
+
+    // 戻ったので、同じ人がもう一度押さえられる
+    const again = await reserve(u);
+    assert(again.result === "reserved", "失効のあとに買い直せない");
+  });
+
+  await test("T", "W8-b 払い終えた行は、失効の合図が来ても戻さない", async () => {
+    const u = await makeMember(db, "t-expire-paid");
+    const bought = await buy(u, "w8b");
+    const out = await value(
+      db, SVC, `select public.billing_expire_checkout($1)`, [bought.sessionId],
+    );
+    assert(out.result === "not_reserved", `払い終えた行を動かしている（${out.result}）`);
+
+    const st = await own(
+      `select status from public.billing_purchases where id = $1`, [bought.purchaseId],
+    );
+    assert(st === "paid", `状態が変わってしまった（${st}）`);
+  });
+
+  await test("T", "W9 決済が確定すると Founder 番号が出て、権限が2つ付く", async () => {
+    const before = await own(
+      `select coalesce(max(p.founder_number), 0)::int from public.billing_purchases p
+         join public.billing_offers o on o.id = p.offer_id where o.code = $1`, [FOUNDER],
+    );
+
+    const u = await makeMember(db, "t-grant");
+    const bought = await buy(u, "w9");
+
+    assert(bought.result === "granted", `確定していない（${bought.result}）`);
+    assert(bought.founder_number === before + 1,
+      `番号が続きになっていない（前 ${before} / 出た番号 ${bought.founder_number}）`);
+
+    const keys = await own(
+      `select coalesce(jsonb_agg(e.entitlement_key order by e.entitlement_key), '[]'::jsonb)
+         from public.billing_entitlements e
+        where e.source_purchase_id = $1 and e.revoked_at is null`, [bought.purchaseId],
+    );
+    assert(JSON.stringify(keys) === JSON.stringify(["beta_access", "founding_creator"]),
+      `付いた権限が違う（${JSON.stringify(keys)}）`);
+
+    const mine = await value(db, asMember(u), `select public.get_my_entitlements()`);
+    assert(mine.includes("founding_creator") && mine.includes("beta_access"),
+      "本人から権限が見えない");
+  });
+
+  await test("T", "W10 同じ合図が2回来ても、番号は増えない", async () => {
+    const u = await makeMember(db, "t-replay");
+    const bought = await buy(u, "w10");
+
+    const again = await value(
+      db, SVC,
+      `select public.billing_complete_checkout($1, $2, $3, 'payment', 'paid', 3000, 'jpy', $4)`,
+      [bought.sessionId, bought.purchaseId, FOUNDER, bought.intentId],
+    );
+    assert(again.result === "already_granted", `2回目が新しい確定になっている（${again.result}）`);
+    assert(again.founder_number === bought.founder_number, "2回目で番号が変わっている");
+
+    const grants = await liveGrants(u);
+    assert(grants === 2, `権限が ${grants} 本になっている（2本のはず）`);
+
+    // 受け取った合図の表そのものも、同じ ID を2回は受け付けない
+    const first = await value(
+      db, SVC,
+      `select public.billing_claim_webhook_event(
+         'evt_w10', 'checkout.session.completed', 'cs_test_w10', false, now(),
+         '2026-08-26.dahlia')`,
+    );
+    const second = await value(
+      db, SVC,
+      `select public.billing_claim_webhook_event(
+         'evt_w10', 'checkout.session.completed', 'cs_test_w10', false, now(),
+         '2026-08-26.dahlia')`,
+    );
+    assert(first.claimed === true, "1回目を受け取れていない");
+    assert(second.claimed === false, "同じ合図を2回受け取ってしまう");
+
+    // **Stripe が使った API の版が残っていること。**
+    // ずれた版で届いたときに、後から1件ずつ突き合わせられるようにするため
+    const ver = await own(
+      `select api_version from public.billing_webhook_events where stripe_event_id = 'evt_w10'`,
+    );
+    assert(ver === "2026-08-26.dahlia", `API の版が残っていない（${ver}）`);
+  });
+
+  await test("T", "W11 別々の購入に同じ番号は出ない（一意制約が2つ目を弾く）", async () => {
+    const u1 = await makeMember(db, "t-num1");
+    const u2 = await makeMember(db, "t-num2");
+    const a = await buy(u1, "w11a");
+    const b = await buy(u2, "w11b");
+
+    assert(b.founder_number === a.founder_number + 1,
+      `番号が続いていない（${a.founder_number} → ${b.founder_number}）`);
+
+    // 錠をすり抜けたと仮定して、同じ番号を無理に入れてみる
+    let blocked = false;
+    try {
+      await db.query(
+        `update public.billing_purchases set founder_number = $2 where id = $1`,
+        [b.purchaseId, a.founder_number],
+      );
+    } catch (e) {
+      blocked = /duplicate key|unique/i.test(e.message);
+    }
+    assert(blocked, "同じ Founder 番号を2つ持ててしまう");
+  });
+
+  await test("T", "W12 金額が合わなければ、権限を1つも付けない", async () => {
+    const u = await makeMember(db, "t-amount");
+    const r = await reserve(u);
+    const cus = await value(db, SVC, `select public.billing_upsert_customer($1,$2)`, [u, "cus_w12"]);
+    await value(
+      db, SVC,
+      `select public.billing_attach_checkout($1, $2, 'cs_test_w12', now() + interval '30 minutes')`,
+      [r.purchase_id, cus.billing_customer_id],
+    );
+
+    await expectFailure(
+      () => value(
+        db, SVC,
+        `select public.billing_complete_checkout(
+           'cs_test_w12', $1, $2, 'payment', 'paid', 100, 'jpy', 'pi_test_w12')`,
+        [r.purchase_id, FOUNDER],
+      ),
+      "AMOUNT_MISMATCH",
+    );
+
+    assert((await liveGrants(u)) === 0, "金額が違うのに権限が付いた");
+    const st = await own(
+      `select status from public.billing_purchases where id = $1`, [r.purchase_id],
+    );
+    assert(st === "reserved", `状態が動いてしまった（${st}）`);
+  });
+
+  await test("T", "W13 通貨が合わなければ、権限を1つも付けない", async () => {
+    const u = await makeMember(db, "t-cur");
+    const r = await reserve(u);
+    const cus = await value(db, SVC, `select public.billing_upsert_customer($1,$2)`, [u, "cus_w13"]);
+    await value(
+      db, SVC,
+      `select public.billing_attach_checkout($1, $2, 'cs_test_w13', now() + interval '30 minutes')`,
+      [r.purchase_id, cus.billing_customer_id],
+    );
+
+    await expectFailure(
+      () => value(
+        db, SVC,
+        `select public.billing_complete_checkout(
+           'cs_test_w13', $1, $2, 'payment', 'paid', 3000, 'usd', 'pi_test_w13')`,
+        [r.purchase_id, FOUNDER],
+      ),
+      "CURRENCY_MISMATCH",
+    );
+    assert((await liveGrants(u)) === 0, "通貨が違うのに権限が付いた");
+  });
+
+  await test("T", "W14 決済ページ・購入・商品・売り方・支払い状態のどれが違っても付けない", async () => {
+    const u = await makeMember(db, "t-bad");
+    const r = await reserve(u);
+    const cus = await value(db, SVC, `select public.billing_upsert_customer($1,$2)`, [u, "cus_w14"]);
+    await value(
+      db, SVC,
+      `select public.billing_attach_checkout($1, $2, 'cs_test_w14', now() + interval '30 minutes')`,
+      [r.purchase_id, cus.billing_customer_id],
+    );
+
+    const call = (session, purchase, offer, mode, pay) =>
+      value(
+        db, SVC,
+        `select public.billing_complete_checkout($1, $2, $3, $4, $5, 3000, 'jpy', 'pi_test_w14')`,
+        [session, purchase, offer, mode, pay],
+      );
+
+    await expectFailure(
+      () => call("cs_test_other", r.purchase_id, FOUNDER, "payment", "paid"),
+      "SESSION_MISMATCH",
+    );
+    await expectFailure(
+      () => call("cs_test_w14", "00000000-0000-0000-0000-000000000000", FOUNDER, "payment", "paid"),
+      "PURCHASE_NOT_FOUND",
+    );
+    await expectFailure(
+      () => call("cs_test_w14", null, FOUNDER, "payment", "paid"),
+      "PURCHASE_ID_MISSING",
+    );
+    await expectFailure(
+      () => call("cs_test_w14", r.purchase_id, CAPCODE, "payment", "paid"),
+      "OFFER_MISMATCH",
+    );
+    await expectFailure(
+      () => call("cs_test_w14", r.purchase_id, FOUNDER, "subscription", "paid"),
+      "MODE_MISMATCH",
+    );
+    await expectFailure(
+      () => call("cs_test_w14", r.purchase_id, FOUNDER, "payment", "unpaid"),
+      "PAYMENT_NOT_PAID",
+    );
+
+    assert((await liveGrants(u)) === 0, "どれかの経路で権限が付いてしまった");
+  });
+
+  await test("T", "W15 公開していない Founder は、一覧で匿名希望になる", async () => {
+    const u = await makeMember(db, "t-hidden");
+    const bought = await buy(u, "w15");
+
+    const rows = await value(db, ANON, `select public.list_founders($1)`, [FOUNDER]);
+    const me = rows.find((x) => x.founder_number === bought.founder_number);
+
+    assert(me, "一覧に載っていない");
+    assert(me.kind === "anonymous", `匿名希望になっていない（${me.kind}）`);
+    assert(me.display_name === null && me.handle === null, "名前が漏れている");
+
+    const badge = await value(db, ANON, `select public.get_founder_badge($1)`, [u]);
+    assert(badge === null, "非公開なのにプロフィールに番号が出る");
+  });
+
+  await test("T", "W16 公開に切り替えると、一覧とプロフィールに名前と番号が出る", async () => {
+    const u = await makeMember(db, "t-shown");
+    const bought = await buy(u, "w16");
+
+    const out = await value(db, asMember(u), `select public.set_my_founder_visibility(true)`);
+    assert(out.founder_public === true, "公開に切り替わっていない");
+
+    const rows = await value(db, ANON, `select public.list_founders($1)`, [FOUNDER]);
+    const me = rows.find((x) => x.founder_number === bought.founder_number);
+    assert(me.kind === "public", `公開になっていない（${me.kind}）`);
+    assert(me.handle === "t-shown", `表示する ID が違う（${me.handle}）`);
+
+    const badge = await value(db, ANON, `select public.get_founder_badge($1)`, [u]);
+    assert(badge.founder_number === bought.founder_number, "プロフィールの番号が違う");
+
+    // 戻せる
+    await value(db, asMember(u), `select public.set_my_founder_visibility(false)`);
+    const back = await value(db, ANON, `select public.get_founder_badge($1)`, [u]);
+    assert(back === null, "非公開に戻せない");
+  });
+
+  await test("T", "W16-b 一覧は番号の小さい順に並び、金額も決済 ID も返さない", async () => {
+    const rows = await value(db, ANON, `select public.list_founders($1)`, [FOUNDER]);
+    assert(rows.length >= 3, `一覧が短すぎて並びを見られない（${rows.length}件）`);
+
+    for (let i = 1; i < rows.length; i += 1) {
+      assert(rows[i].founder_number > rows[i - 1].founder_number,
+        `番号順に並んでいない（${rows[i - 1].founder_number} → ${rows[i].founder_number}）`);
+    }
+
+    const text = JSON.stringify(rows);
+    assert(!/cs_test|pi_test|cus_|amount|profile_id|purchase/.test(text),
+      `一覧に返してはいけない値が入っている: ${text.slice(0, 200)}`);
+  });
+
+  await test("T", "W17 返金が成立すると、一覧は欠番になり権限が消える", async () => {
+    const u = await makeMember(db, "t-refund");
+    const bought = await buy(u, "w17");
+    await value(db, asMember(u), `select public.set_my_founder_visibility(true)`);
+
+    const started = await value(
+      db, SVC, `select public.billing_mark_refund_pending($1, 're_test_w17')`, [bought.intentId],
+    );
+    assert(started.result === "refund_pending", `手続きに入っていない（${started.result}）`);
+
+    // **始まっただけでは取り上げない**
+    assert((await liveGrants(u)) === 2, "返金の手続きに入っただけで権利が消えた");
+    const midway = await value(db, ANON, `select public.get_founder_badge($1)`, [u]);
+    assert(midway !== null, "手続き中にプロフィールの表示が消えた");
+
+    const done = await value(
+      db, SVC,
+      `select public.billing_apply_refund_result($1, 're_test_w17', 'succeeded')`, [bought.intentId],
+    );
+    assert(done.result === "refunded", `返金が成立していない（${done.result}）`);
+    assert((await liveGrants(u)) === 0, "返金が成立したのに権利が残っている");
+
+    const rows = await value(db, ANON, `select public.list_founders($1)`, [FOUNDER]);
+    const me = rows.find((x) => x.founder_number === bought.founder_number);
+    assert(me, "返金したら一覧から行ごと消えている（欠番として残すはず）");
+    assert(me.kind === "void", `欠番になっていない（${me.kind}）`);
+    assert(me.display_name === null, "欠番なのに名前が残っている");
+
+    const badge = await value(db, ANON, `select public.get_founder_badge($1)`, [u]);
+    assert(badge === null, "返金後もプロフィールに番号が出る");
+  });
+
+  await test("T", "W18 返金が成立すると枠が1つ戻り、番号は再利用しない", async () => {
+    const u = await makeMember(db, "t-refund2");
+    const bought = await buy(u, "w18");
+    const full = await usedSlots();
+
+    await value(db, SVC, `select public.billing_mark_refund_pending($1, 're_test_w18')`,
+      [bought.intentId]);
+    await value(
+      db, SVC, `select public.billing_apply_refund_result($1, 're_test_w18', 'succeeded')`,
+      [bought.intentId],
+    );
+
+    const after = await usedSlots();
+    assert(after === full - 1, `枠が戻っていない（${full} → ${after}）`);
+
+    // 空いた枠に次の人が入る。**返金した番号は使い回さない**
+    const next = await makeMember(db, "t-after-refund");
+    const bought2 = await buy(next, "w18n");
+    assert(bought2.founder_number > bought.founder_number,
+      `返金した番号を使い回している（${bought.founder_number} → ${bought2.founder_number}）`);
+  });
+
+  await test("T", "W19 返金が失敗したら、元の権利がそのまま残る", async () => {
+    const u = await makeMember(db, "t-refundfail");
+    const bought = await buy(u, "w19");
+
+    await value(db, SVC, `select public.billing_mark_refund_pending($1, 're_test_w19')`,
+      [bought.intentId]);
+    const out = await value(
+      db, SVC, `select public.billing_apply_refund_result($1, 're_test_w19', 'failed')`,
+      [bought.intentId],
+    );
+    assert(out.result === "restored", `元に戻っていない（${out.result}）`);
+
+    const st = await own(
+      `select status from public.billing_purchases where id = $1`, [bought.purchaseId],
+    );
+    assert(st === "paid", `状態が paid に戻っていない（${st}）`);
+    assert((await liveGrants(u)) === 2, "返金が失敗したのに権利が消えている");
+  });
+
+  await test("T", "W19-b 知らない返金の状態は受け付けない", async () => {
+    await expectFailure(
+      () => value(
+        db, SVC, `select public.billing_apply_refund_result('pi_test_w19', 're_x', 'weird')`,
+      ),
+      "REFUND_STATUS_UNKNOWN",
+    );
+  });
+
+  await test("T", "W20 課金の表は、未サインインからも登録利用者からも触れない", async () => {
+    const u = await makeMember(db, "t-tamper");
+    const tables = [
+      "billing_offers", "billing_customers", "billing_purchases",
+      "billing_entitlements", "billing_webhook_events",
+    ];
+
+    for (const t of tables) {
+      for (const who of [ANON, asMember(u)]) {
+        await expectFailure(
+          () => value(db, who, `select 1 from public.${t} limit 1`), "permission denied",
+        );
+        await expectFailure(
+          () => value(db, who, `delete from public.${t}`), "permission denied",
+        );
+      }
+    }
+
+    // 権限を自分で足すこともできない
+    await expectFailure(
+      () => value(
+        db, asMember(u),
+        `insert into public.billing_entitlements (profile_id, entitlement_key)
+         values ($1, 'founding_creator')`, [u],
+      ),
+      "permission denied",
+    );
+    // 商品の値段を書き換えることもできない
+    await expectFailure(
+      () => value(db, asMember(u), `update public.billing_offers set amount = 1`),
+      "permission denied",
+    );
+    // 枠を押さえる関数も呼べない
+    await expectFailure(
+      () => value(db, asMember(u), `select public.billing_reserve_slot($1, $2)`, [u, FOUNDER]),
+      "permission denied",
+    );
+  });
+
+  await test("T", "W21 他人の公開設定は変えられない", async () => {
+    const owner = await makeMember(db, "t-owner");
+    const other = await makeMember(db, "t-other");
+    const bought = await buy(owner, "w21");
+    await value(db, asMember(owner), `select public.set_my_founder_visibility(true)`);
+
+    // 買っていない人が呼んでも、宛先は自分なので何も起きない
+    await expectFailure(
+      () => value(db, asMember(other), `select public.set_my_founder_visibility(false)`),
+      "NOT_A_FOUNDER",
+    );
+
+    const still = await own(
+      `select founder_public from public.billing_purchases where id = $1`, [bought.purchaseId],
+    );
+    assert(still === true, "他人に公開設定を変えられた");
+
+    // 引数で他人を指す方法そのものが無い（引数は1つだけ）
+    const args = await own(
+      `select p.pronargs::int from pg_proc p join pg_namespace n on n.oid = p.pronamespace
+        where n.nspname = 'public' and p.proname = 'set_my_founder_visibility'`,
+    );
+    assert(args === 1, `他人を指せる引数がある（引数 ${args} 個）`);
+  });
+
+  await test("T", "W22 Webhook が使う関数は、利用者から1本も呼べない", async () => {
+    // **署名の検証そのものは HTTP の受け口の仕事**で、ここには届かない。
+    // ここで見るのは「合図を装って DB を直接叩けないこと」まで。
+    const u = await makeMember(db, "t-fakehook");
+    const calls = [
+      `select public.billing_complete_checkout(
+         'cs_x', '00000000-0000-0000-0000-000000000000'::uuid,
+         'founding_creator_v0', 'payment', 'paid', 3000, 'jpy', 'pi_x')`,
+      `select public.billing_expire_checkout('cs_x')`,
+      `select public.billing_mark_refund_pending('pi_x', 're_x')`,
+      `select public.billing_apply_refund_result('pi_x', 're_x', 'succeeded')`,
+      `select public.billing_mark_dispute('pi_x', 'lost')`,
+      `select public.billing_claim_webhook_event('evt_x', 't', null, false, now())`,
+      `select public.billing_finish_webhook_event('evt_x')`,
+      `select public.billing_attach_checkout(
+         '00000000-0000-0000-0000-000000000000'::uuid, null, 'cs_x', now())`,
+      `select public.billing_upsert_customer($1, 'cus_x')`,
+    ];
+
+    for (const sql of calls) {
+      for (const who of [ANON, asMember(u)]) {
+        await expectFailure(
+          () => value(db, who, sql, sql.includes("$1") ? [u] : []),
+          "permission denied",
+        );
+      }
+    }
+  });
+
+  await test("T", "W23 申し立て中は枠を押さえたまま、負けたら権利を取り上げる", async () => {
+    const u = await makeMember(db, "t-dispute");
+    const bought = await buy(u, "w23");
+    const before = await usedSlots();
+
+    const open = await value(
+      db, SVC, `select public.billing_mark_dispute($1, 'needs_response')`, [bought.intentId],
+    );
+    assert(open.result === "disputed", `申し立て中にならない（${open.result}）`);
+    assert((await usedSlots()) === before, "申し立て中に枠が戻ってしまった");
+    assert((await liveGrants(u)) === 2, "申し立て中に権利が消えた");
+
+    // 運営の勝ちなら元へ戻る
+    const won = await value(
+      db, SVC, `select public.billing_mark_dispute($1, 'won')`, [bought.intentId],
+    );
+    assert(won.result === "restored", `勝ったのに戻らない（${won.result}）`);
+
+    // 負けたら取り上げ、枠は戻る
+    await value(db, SVC, `select public.billing_mark_dispute($1, 'needs_response')`,
+      [bought.intentId]);
+    const lost = await value(
+      db, SVC, `select public.billing_mark_dispute($1, 'lost')`, [bought.intentId],
+    );
+    assert(lost.result === "reversed", `負けたのに取り上げていない（${lost.result}）`);
+    assert((await liveGrants(u)) === 0, "負けたのに権利が残っている");
+    assert((await usedSlots()) === before - 1, "負けたのに枠が戻っていない");
+
+    const rows = await value(db, ANON, `select public.list_founders($1)`, [FOUNDER]);
+    const me = rows.find((x) => x.founder_number === bought.founder_number);
+    assert(me.kind === "void", `一覧が欠番になっていない（${me.kind}）`);
+  });
+
+  await test("T", "W24 残り枠は、予約中も数えたうえで返る", async () => {
+    const st = await value(db, ANON, `select public.get_founder_offer_status($1)`, [FOUNDER]);
+    const counted = await own(
+      `select count(*)::int from public.billing_purchases p
+         join public.billing_offers o on o.id = p.offer_id
+        where o.code = $1
+          and p.status in ('reserved','paid','refund_pending','disputed')`, [FOUNDER],
+    );
+    assert(st.used === counted, `枠の勘定が合わない（返り値 ${st.used} / 実測 ${counted}）`);
+    assert(st.remaining === Math.max(30 - counted, 0),
+      `残りの計算が合わない（${st.remaining}）`);
+    // **決済ページの ID も URL も返さない**
+    assert(!JSON.stringify(st).includes("cs_test"),
+      "残り枠の返り値に決済ページの ID が入っている");
+  });
+
+  await test("T", "W25 退会しても、購入の記録は残り、権限だけが消える", async () => {
+    const u = await makeMember(db, "t-leave");
+    const bought = await buy(u, "w25");
+
+    await db.query(`delete from public.profiles where id = $1`, [u]);
+
+    const row = await own(
+      `select jsonb_build_object('status', p.status, 'profile_id', p.profile_id,
+                                 'number', p.founder_number, 'amount', p.amount)
+         from public.billing_purchases p where p.id = $1`, [bought.purchaseId],
+    );
+    assert(row.status === "paid", `購入の記録が消えた（${row.status}）`);
+    assert(row.profile_id === null, "退会したのに結び付きが残っている");
+    assert(row.number === bought.founder_number, "番号が消えた");
+    assert(row.amount === 3000, "金額の記録が消えた");
+
+    // 権限の行は profiles と一緒に消える
+    const grants = await own(
+      `select count(*)::int from public.billing_entitlements where source_purchase_id = $1`,
+      [bought.purchaseId],
+    );
+    assert(grants === 0, "退会しても権限の行が残っている");
+
+    // 一覧では名前を出しようが無いので匿名希望と同じ見え方
+    const rows = await value(db, ANON, `select public.list_founders($1)`, [FOUNDER]);
+    const me = rows.find((x) => x.founder_number === bought.founder_number);
+    assert(me.kind === "anonymous", `退会した人の見え方が違う（${me.kind}）`);
+  });
+
+  await test("T", "W26 運営は、事故で入れなくなったアカウントの購入を結び直せる", async () => {
+    // **譲渡ではない。**本人だと確かめられたときの救済だけ。
+    // 番号・金額・支払いの記録は動かさず、権限の宛先だけが移る。
+    const before = await makeMember(db, "t-move-from");
+    const after = await makeMember(db, "t-move-to");
+    const admin = await makeMember(db, "t-move-admin");
+    const bought = await buy(before, "w26");
+
+    // 監査記録の表は管理 v0 の migration が作る（別の作業線）。
+    // **記録を残せない環境では、結び直しは通らないほうが正しい。**
+    // 課金だけを当てた環境では、断られることを確かめてここで終える。
+    const hasAudit = await own(
+      `select (to_regclass('public.admin_audit_log') is not null)`,
+    );
+    if (!hasAudit) {
+      await expectFailure(
+        () => value(db, SVC,
+          `select public.billing_reassign_purchase($1, $2, $3, '記録が無いときは断る')`,
+          [admin, bought.purchaseId, after]),
+        "AUDIT_LOG_MISSING",
+      );
+      assert((await liveGrants(before)) === 2, "断られたのに権利が動いている");
+      assert((await liveGrants(after)) === 0, "断られたのに移った先へ権利が付いている");
+      return;
+    }
+
+    const out = await value(
+      db, SVC,
+      `select public.billing_reassign_purchase($1, $2, $3, 'メールアドレスを変更できず入れなくなったため')`,
+      [admin, bought.purchaseId, after],
+    );
+    assert(out.to_profile === after, "移した先が違う");
+    assert(out.founder_number === bought.founder_number, "番号が動いてしまった");
+
+    assert((await liveGrants(before)) === 0, "移す前の人に権利が残っている");
+    assert((await liveGrants(after)) === 2, "移した先に権利が渡っていない");
+
+    const row = await own(
+      `select jsonb_build_object('pid', p.profile_id, 'num', p.founder_number,
+                                 'amount', p.amount, 'pi', p.stripe_payment_intent_id)
+         from public.billing_purchases p where p.id = $1`, [bought.purchaseId],
+    );
+    assert(row.pid === after, "購入の持ち主が移っていない");
+    assert(row.num === bought.founder_number, "番号が変わった");
+    assert(row.amount === 3000 && row.pi === bought.intentId, "お金の記録が動いた");
+
+    // 運営が何をしたかが、既存の監査記録に1件だけ残る
+    const audit = await own(
+      `select jsonb_build_object('n', count(*), 'old', min(old_value), 'new', min(new_value))
+         from public.admin_audit_log
+        where action = 'reassign_purchase' and target_id = $1`, [bought.purchaseId],
+    );
+    assert(audit.n === 1, `監査記録が ${audit.n} 件`);
+    assert(audit.old === before && audit.new === after, "監査記録の前後が違う");
+  });
+
+  await test("T", "W26-b 結び直しは、理由なし・ゲスト・二重所持・取り消し済みでは通らない", async () => {
+    const admin = await makeMember(db, "t-move-admin2");
+    const owner = await makeMember(db, "t-move-owner2");
+    const bought = await buy(owner, "w26b");
+    const target = await makeMember(db, "t-move-target2");
+
+    // 理由が空
+    await expectFailure(
+      () => value(db, SVC, `select public.billing_reassign_purchase($1, $2, $3, '   ')`,
+        [admin, bought.purchaseId, target]),
+      "REASON_REQUIRED",
+    );
+    // ゲストへは移せない
+    const guest = await makeGuest(db);
+    await expectFailure(
+      () => value(db, SVC, `select public.billing_reassign_purchase($1, $2, $3, '理由')`,
+        [admin, bought.purchaseId, guest]),
+      "ACCOUNT_NOT_ELIGIBLE",
+    );
+    // すでに持っている人へは移せない
+    const holder = await makeMember(db, "t-move-holder2");
+    await buy(holder, "w26c");
+    await expectFailure(
+      () => value(db, SVC, `select public.billing_reassign_purchase($1, $2, $3, '理由')`,
+        [admin, bought.purchaseId, holder]),
+      "ALREADY_OWNED",
+    );
+
+    // 取り消し済みの購入は移せない
+    await value(db, SVC, `select public.billing_mark_refund_pending($1, 're_test_w26b')`,
+      [bought.intentId]);
+    await value(db, SVC,
+      `select public.billing_apply_refund_result($1, 're_test_w26b', 'succeeded')`,
+      [bought.intentId]);
+    await expectFailure(
+      () => value(db, SVC, `select public.billing_reassign_purchase($1, $2, $3, '理由')`,
+        [admin, bought.purchaseId, target]),
+      "PURCHASE_NOT_LIVE",
+    );
+
+    // 利用者からは呼べない
+    await expectFailure(
+      () => value(db, asMember(owner),
+        `select public.billing_reassign_purchase($1, $2, $3, '理由')`,
+        [owner, bought.purchaseId, target]),
+      "permission denied",
+    );
+  });
+
+  } // ← T. 課金 の入れ物ここまで
+
+
 
   // =========================================================================
   // U. 形状アシスト（D191）
