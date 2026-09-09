@@ -3,13 +3,13 @@
 import { useState } from "react";
 import { SubmitButton } from "@/app/_pending";
 import {
-  ACTUAL_TIME_CHOICES,
   COMPLETENESS_CHOICES,
   DEFAULT_COMPLETENESS,
   DIVISIONS,
   MAX_IMAGE_BYTES,
   type Division,
 } from "@/features/work/types";
+import type { ProductionTime } from "@/features/work/types";
 import { createWorkAction } from "./actions";
 import { btnPrimary, btnSecondary, field, surface } from "@/app/_surface";
 
@@ -51,7 +51,8 @@ export function WorkForm({
   production,
 }: {
   promptId: string;
-  agreement: AgreementProps;
+  /** サーバーが計測した制作時間。**入力欄ではない。出すだけ** */
+  production: ProductionTime | null;
 }) {
   const [division, setDivision] = useState<Division>("original");
   const [fileName, setFileName] = useState<string | null>(null);
@@ -77,7 +78,7 @@ export function WorkForm({
   }
 
   return (
-    <form action={createWorkAction} className={`${surface} space-y-8`}>
+    <form action={createWorkAction} data-form="work" className={`${surface} space-y-8`}>
       <input type="hidden" name="promptId" value={promptId} />
 
       {/* --- 画像 ------------------------------------------------------------ */}
@@ -214,16 +215,41 @@ export function WorkForm({
         </div>
       ) : null}
 
-      {/* --- 実制作時間 ------------------------------------------------------ */}
-      <div className="space-y-3">
-        <Label hint="自己申告です。公開したあとは変更できません">実制作時間</Label>
-        <select name="actualTimeSeconds" defaultValue="" className={field}>
-          {ACTUAL_TIME_CHOICES.map((c) => (
-            <option key={c.label} value={c.value}>
-              {c.label}
-            </option>
-          ))}
-        </select>
+      {/* --- 実制作時間（計測値。入力欄ではない） ----------------------------- */}
+      {/*
+        【2026-09-09 に自己申告をやめた】
+          利用者が任意の時間を選んで記録を書き換えられる形にしない。
+          ここに出すのはサーバーが計測した値で、送信もしない。
+          受け口（DB のトリガー）も、送られてきた値を受け取らず計測値で上書きする。
+      */}
+      <div className="space-y-2" data-field="production-time">
+        <Label hint="サーバーが計測した値です。申告や変更はできません">
+          制作時間の記録
+        </Label>
+        {production ? (
+          <dl className="grid grid-cols-[auto_1fr] gap-x-4 gap-y-1 text-sm">
+            <dt className="text-faint">最初に選んだ制作時間</dt>
+            <dd className="tabular-nums" data-field="chosen-limit">
+              {production.chosen_limit_seconds === null
+                ? "無制限"
+                : formatSpan(production.chosen_limit_seconds)}
+            </dd>
+
+            <dt className="text-faint">延長</dt>
+            <dd className="tabular-nums" data-field="granted">
+              {production.renew_count === 0
+                ? "なし"
+                : `${production.renew_count} 回・合計 ${formatSpan(production.granted_seconds)}`}
+            </dd>
+
+            <dt className="text-faint">実際にかかった時間</dt>
+            <dd className="tabular-nums font-bold" data-field="elapsed">
+              {formatSpan(production.elapsed_seconds)}
+            </dd>
+          </dl>
+        ) : (
+          <p className="text-sm text-faint">計測値を読めませんでした。</p>
+        )}
         <p className="text-xs text-faint">
           時間別ランキングの分類には、お題を引いたときに選んだ制限時間を使います。
         </p>

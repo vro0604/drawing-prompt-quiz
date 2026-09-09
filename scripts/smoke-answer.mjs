@@ -67,7 +67,7 @@ const original = await drawPrompt(author, "hard");
 let page = await submitWork(
   author,
   original.promptId,
-  { title: "スモーク・クイズ対象", division: "original", actualTimeSeconds: "3600" },
+  { title: "スモーク・クイズ対象", division: "original" },
   makePng(100, 70),
 );
 const workId = /^\/works\/([0-9a-f-]{36})/.exec(page.path)?.[1];

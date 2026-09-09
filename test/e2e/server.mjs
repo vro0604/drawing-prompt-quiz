@@ -126,6 +126,13 @@ export async function startApp({ port = 3210, log = false } = {}) {
     // 管理画面に入れる1人。seed が作った運営者の id をそのまま渡す。
     // **この値と一致しない人は /admin を開けない**ことを、browser.mjs が確かめる。
     ADMIN_USER_ID: seeded.admin,
+    // プッシュ通知の鍵。**その場で使い捨てにする値で、本番の鍵ではない。**
+    // これが空だと「通知を受け取りますか？」の案内そのものが出ないので、
+    // 案内の出る場所・出ない場所を確かめられなくなる。
+    // 送信はしない（掃除を回さないため）ので、公開鍵だけあればよい。
+    NEXT_PUBLIC_VAPID_PUBLIC_KEY:
+      "BJ6V9QYmXGWKplaYBCSzl0m6wbzhhat4rHMCSs5AvBogJ8uXlYGuBSxJQwznZGd_xVq3n-PIccxEt2RF-Lu9Tx4",
+
     // CAPTCHA は Cloudflare が公開している**検査用の鍵**を使う。
     // 常に通る値で、本番の鍵ではない（check-env.mjs が本番では弾く）。
     NEXT_PUBLIC_TURNSTILE_SITE_KEY: "1x00000000000000000000AA",

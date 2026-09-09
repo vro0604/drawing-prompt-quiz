@@ -131,6 +131,30 @@ const REQUIRED = [
   },
 ];
 
+/**
+ * あると機能が増えるが、無くてもサイトは動くもの（2026-09-09）。
+ *
+ * **足りなくてもビルドを止めない。**プッシュ通知の鍵がその例で、
+ * 無ければプッシュだけが送られなくなる。知らせそのものは DB に残り、
+ * 次にサイトを開いたときに画面へ出る。
+ *
+ * 鍵の作り方は docs/web-push-setup.md にある。
+ */
+const OPTIONAL = [
+  {
+    name: "NEXT_PUBLIC_VAPID_PUBLIC_KEY",
+    label: "プッシュ通知（ブラウザへ渡す公開鍵）",
+  },
+  { name: "VAPID_PUBLIC_KEY", label: "プッシュ通知（送信時の公開鍵）" },
+  { name: "VAPID_PRIVATE_KEY", label: "プッシュ通知（送信時の秘密鍵）" },
+  {
+    name: "VAPID_SUBJECT",
+    label: "プッシュ通知の連絡先（mailto: か https: で始める）",
+    check: (v) =>
+      /^(mailto:|https:\/\/)/.test(v) ? null : "mailto: か https:// で始めてください",
+  },
+];
+
 const problems = [];
 const lines = [];
 
@@ -155,6 +179,28 @@ for (const item of REQUIRED) {
   lines.push(`  ${GREEN}✓${RESET} ${item.name} ${DIM}設定あり（${value.length}文字）${RESET}`);
 }
 
+// --- あると機能が増えるもの。足りなくても止めない -------------------------
+const optionalLines = [];
+let optionalMissing = 0;
+
+for (const item of OPTIONAL) {
+  const value = (env[item.name] ?? "").trim();
+
+  if (value === "") {
+    optionalMissing += 1;
+    optionalLines.push(`  ${DIM}－ ${item.name} 未設定 — ${item.label}${RESET}`);
+    continue;
+  }
+
+  const reason = item.check ? item.check(value) : null;
+  if (reason) {
+    optionalLines.push(`  ${YELLOW}△${RESET} ${item.name} ${DIM}${reason}${RESET}`);
+    continue;
+  }
+
+  optionalLines.push(`  ${GREEN}✓${RESET} ${item.name} ${DIM}設定あり（${value.length}文字）${RESET}`);
+}
+
 // 秘密が NEXT_PUBLIC_ で公開されていないか。
 // これは本番かどうかに関係なく、**いつでも致命的**。
 const leaked = Object.keys(env).filter(
@@ -165,6 +211,15 @@ console.log("");
 console.log(`${BOLD}[環境変数]${RESET} ${DIM}${strict ? "本番と同じ厳しさ" : "参考表示（止まりません）"}${RESET}`);
 console.log("");
 for (const l of lines) console.log(l);
+
+console.log("");
+console.log(`${BOLD}[任意]${RESET} ${DIM}無くてもサイトは動く（足りなくても止まりません）${RESET}`);
+console.log("");
+for (const l of optionalLines) console.log(l);
+if (optionalMissing === OPTIONAL.length) {
+  console.log(`  ${DIM}プッシュ通知は送られません。知らせは画面内にだけ出ます${RESET}`);
+  console.log(`  ${DIM}鍵の作り方: docs/web-push-setup.md${RESET}`);
+}
 
 if (leaked.length > 0) {
   console.log("");

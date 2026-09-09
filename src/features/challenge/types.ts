@@ -32,17 +32,38 @@ export type ActiveChallenge = {
 
   is_unlimited: boolean;
   has_deadline: boolean;
+  /** 予定終了時刻。**作りかけを壊す期限ではない**（過ぎても挑戦は続く） */
   deadline_at: string | null;
-  /** 期限までの残り秒。過ぎていれば負 */
+  /** 予定終了時刻までの残り秒。過ぎていれば負 */
   seconds_left: number | null;
+  /** 予定終了時刻を過ぎてからの秒。過ぎていなければ 0 */
   overrun_seconds: number;
-  /** 猶予が終わるまでの秒 */
-  grace_left_seconds: number | null;
+  /** 予定終了時刻を過ぎているか。過ぎていても失敗ではない */
+  is_overrun: boolean;
 
+  /**
+   * within   … 制作時間内
+   * overrun  … 制作時間超過中（挑戦は続いている）
+   * discarded… 長い放置で自動破棄済み
+   * finished … 投稿・放棄で終わった
+   */
+  phase: "within" | "overrun" | "discarded" | "finished";
+
+  /** 長い放置で自動破棄されたか。**予定終了時刻の超過ではここは立たない** */
+  is_discarded: boolean;
+  discarded_at: string | null;
+
+  /** この挑戦で最後に意味のある操作があった時刻 */
+  last_activity_at: string;
+  /** 放置の予告が出る時刻（最終操作から24時間） */
+  inactivity_warn_at: string | null;
+  /** 自動破棄される時刻（最終操作から48時間） */
+  auto_discard_at: string | null;
+  /** 自動破棄までの残り秒 */
+  seconds_until_discard: number | null;
+
+  /** 時刻の窓は無い。進行中で期限を持てば、いつでも延ばせる */
   can_renew: boolean;
-  renew_opens_at: string | null;
-  grace_ends_at: string | null;
-  is_expired: boolean;
   renew_count: number;
   time_limit_seconds: number | null;
 
@@ -70,4 +91,40 @@ export function frameLabel(seconds: number | null): string {
   if (seconds % 3600 === 0) return `${seconds / 3600}時間枠`;
   if (seconds % 60 === 0) return `${seconds / 60}分枠`;
   return `${seconds}秒枠`;
+}
+
+/**
+ * 「時間を延ばす」を押したときにサーバーが返すもの。
+ *
+ * 帯は、これをそのまま文にする。**押しただけで成功と書かない**ので、
+ * 延ばした量と新しい終了予定が返ってきたときにだけ「延長しました」と出せる。
+ */
+export type RenewResult = ActiveChallenge & {
+  renewed: true;
+  /** 今回足された秒数 */
+  granted_seconds: number;
+  deadline_before: string | null;
+  deadline_after: string | null;
+};
+
+/** 秒を「1時間30分」「22分30秒」の形にする。延長した量を文にするときに使う */
+export function spanLabel(seconds: number): string {
+  const s = Math.max(0, Math.floor(seconds));
+  const h = Math.floor(s / 3600);
+  const m = Math.floor((s % 3600) / 60);
+  const sec = s % 60;
+  const parts: string[] = [];
+  if (h > 0) parts.push(`${h}時間`);
+  if (m > 0) parts.push(`${m}分`);
+  if (sec > 0 && h === 0) parts.push(`${sec}秒`);
+  return parts.length > 0 ? parts.join("") : "0秒";
+}
+
+/** 時刻を「17:04」の形にする。ずれないよう、渡すのはサーバーが作った ISO 文字列 */
+export function hhmm(iso: string | null): string {
+  if (!iso) return "";
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return "";
+  const two = (n: number) => String(n).padStart(2, "0");
+  return `${two(d.getHours())}:${two(d.getMinutes())}`;
 }

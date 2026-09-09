@@ -1,6 +1,6 @@
 import { createSupabaseServerClient } from "@/lib/supabase/server";
 import { readableRpcError } from "@/features/draft/rpc";
-import type { ActiveChallenge } from "@/features/challenge/types";
+import type { ActiveChallenge, RenewResult } from "@/features/challenge/types";
 
 /**
  * いま進行中の制作挑戦を読む／時間を延ばす。サーバー専用。
@@ -29,10 +29,10 @@ export async function fetchActiveChallenge(): Promise<ActiveChallenge | null> {
  * **どの挑戦かを画面から渡さない。**渡すと、他人の ID を送られたときの
  * 判定を1か所増やすことになる。DB 側が「その人のいまの挑戦」を自分で決める。
  */
-export async function callRenewCurrentChallenge(): Promise<ActiveChallenge | null> {
+export async function callRenewCurrentChallenge(): Promise<RenewResult | null> {
   const supabase = await createSupabaseServerClient();
   const { data, error } = await supabase.rpc("renew_current_challenge");
 
   if (error) throw new Error(readableRpcError(error.message));
-  return (data as ActiveChallenge | null) ?? null;
+  return (data as RenewResult | null) ?? null;
 }

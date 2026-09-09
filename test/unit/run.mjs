@@ -25,6 +25,10 @@
  *   データの側だけで、これは操作方法がどちらに決まっても変わらない。
  */
 
+import { createDecipheriv, createECDH, createHmac, randomBytes } from "node:crypto";
+import { hhmm, spanLabel } from "../../src/features/challenge/types.ts";
+import { isInterrupting, unacknowledged } from "../../src/features/notify/types.ts";
+import { encryptPayload } from "../../src/features/notify/push.ts";
 import {
   HOLD_MS,
   IDLE,
@@ -80,6 +84,14 @@ import {
   toSentences,
   toggleBreak,
 } from "../../src/features/flavor/compose.ts";
+import {
+  THRESHOLDS,
+  isWorse,
+  shouldBlink,
+  warnAnnouncement,
+  warnLabel,
+  warnLevel,
+} from "../../src/features/challenge/warning.ts";
 import { recordCount } from "../counts.mjs";
 
 const results = [];
@@ -710,6 +722,19 @@ test("時計", "枠の長さが分からないときは、秒だけで見る", (
   assert(warnLevel(20 * 60, null) === "calm", warnLevel(20 * 60, null));
 });
 
+test("時計", "超過と自動破棄は別の段階（2026-09-09）", () => {
+  // 超過は失敗ではない。**挑戦は続いていて、投稿も延長もできる**
+  assert(warnLevel(-10, 3600) === "over", "超過が別扱いになっていない");
+
+  // 自動破棄は「長いあいだ操作が無かった」ときだけ。超過では立たない
+  assert(warnLevel(-10, 3600, true) === "discarded", "自動破棄が別扱いになっていない");
+  assert(warnLevel(100, 3600, true) === "discarded", "残りがあっても自動破棄が優先されない");
+  assert(
+    warnLevel(-100000, 3600) === "over",
+    "どれだけ超過しても自動破棄にはならないはず",
+  );
+});
+
 test("時計", "点滅するのは最終段階と超過だけ", () => {
   assert(shouldBlink("danger") === true, "最終段階で点滅しない");
   assert(shouldBlink("over") === true, "超過で点滅しない");
@@ -744,6 +769,107 @@ test("時計", "しきい値は1か所にあり、危険なほど小さい", () 
 /* ===========================================================================
  * 超過の言い方と、プッシュ通知の封（2026-09-09）
  * ========================================================================= */
+
+test("超過", "延ばした量を、人が読める言い方にする", () => {
+  assert(spanLabel(1350) === "22分30秒" || spanLabel(1350) === "22分",
+    `1350秒が「${spanLabel(1350)}」になっている`);
+  assert(spanLabel(2700) === "45分", `2700秒が「${spanLabel(2700)}」`);
+  assert(spanLabel(3600) === "1時間", `3600秒が「${spanLabel(3600)}」`);
+  assert(spanLabel(5400) === "1時間30分", `5400秒が「${spanLabel(5400)}」`);
+  assert(spanLabel(0) === "0秒", `0秒が「${spanLabel(0)}」`);
+  assert(spanLabel(-5) === "0秒", "負の秒が0秒になっていない");
+});
+
+test("超過", "新しい終了予定を時刻の形にする", () => {
+  const iso = new Date(2026, 8, 9, 17, 4, 0).toISOString();
+  assert(hhmm(iso) === "17:04", `「${hhmm(iso)}」になっている`);
+  assert(hhmm(null) === "", "時刻が無いときに空にならない");
+  assert(hhmm("これは時刻ではない") === "", "読めない値で落ちている");
+});
+
+test("知らせ", "未確認だけを前へ出し、延長の成功は割り込ませない", () => {
+  const list = [
+    { id: 1, kind: "inactivity_discard", acknowledged_at: null },
+    { id: 2, kind: "deadline_overrun", acknowledged_at: null },
+    { id: 3, kind: "deadline_extended", acknowledged_at: null },
+    { id: 4, kind: "inactivity_warning", acknowledged_at: "2026-09-09T00:00:00Z" },
+  ];
+
+  const open = unacknowledged(list);
+  assert(open.length === 3, `未確認が ${open.length} 件（3件のはず）`);
+  assert(open.every((n) => n.id !== 4), "確認済みが混ざっている");
+
+  const shown = open.filter(isInterrupting);
+  assert(shown.length === 2, `前へ出すのが ${shown.length} 件（2件のはず）`);
+  assert(shown.every((n) => n.kind !== "deadline_extended"),
+    "延長の成功が割り込んでいる");
+});
+
+test("プッシュ", "封をした中身は、受け取る端末の鍵だけで開く", () => {
+  // ブラウザの代わりに、その場で鍵を作る
+  const ua = createECDH("prime256v1");
+  ua.generateKeys();
+  const authSecret = randomBytes(16);
+
+  const message = JSON.stringify({ title: "題", body: "本文", url: "/", tag: "t" });
+  const sealed = encryptPayload(
+    message,
+    ua.getPublicKey().toString("base64url"),
+    authSecret.toString("base64url"),
+  );
+
+  // 受け取る側の手順（RFC 8291 / RFC 8188）をそのままなぞる
+  const salt = sealed.subarray(0, 16);
+  const idlen = sealed[20];
+  const asPublic = sealed.subarray(21, 21 + idlen);
+  const body = sealed.subarray(21 + idlen);
+
+  const shared = ua.computeSecret(asPublic);
+  const hmac = (key, data) => createHmac("sha256", key).update(data).digest();
+
+  const prkKey = hmac(authSecret, shared);
+  const ikm = hmac(
+    prkKey,
+    Buffer.concat([
+      Buffer.from("WebPush: info\0", "utf8"),
+      ua.getPublicKey(),
+      asPublic,
+      Buffer.from([1]),
+    ]),
+  );
+  const prk = hmac(salt, ikm);
+  const cek = hmac(
+    prk,
+    Buffer.concat([Buffer.from("Content-Encoding: aes128gcm\0", "utf8"), Buffer.from([1])]),
+  ).subarray(0, 16);
+  const nonce = hmac(
+    prk,
+    Buffer.concat([Buffer.from("Content-Encoding: nonce\0", "utf8"), Buffer.from([1])]),
+  ).subarray(0, 12);
+
+  const decipher = createDecipheriv("aes-128-gcm", cek, nonce);
+  decipher.setAuthTag(body.subarray(body.length - 16));
+  const opened = Buffer.concat([
+    decipher.update(body.subarray(0, body.length - 16)),
+    decipher.final(),
+  ]);
+
+  // 最後の1バイトは詰め物の目印
+  const text = opened.subarray(0, opened.length - 1).toString("utf8");
+  assert(text === message, `開けた中身が違う: ${text}`);
+});
+
+test("プッシュ", "封は毎回違う（同じ文でも同じ形にならない）", () => {
+  const ua = createECDH("prime256v1");
+  ua.generateKeys();
+  const pub = ua.getPublicKey().toString("base64url");
+  const auth = randomBytes(16).toString("base64url");
+
+  const a = encryptPayload("同じ文", pub, auth);
+  const b = encryptPayload("同じ文", pub, auth);
+  assert(!a.equals(b), "毎回同じ形になっている（塩か使い捨ての鍵が固定）");
+});
+
 
 const passed = results.filter((r) => r.ok).length;
 const failed = results.filter((r) => !r.ok);

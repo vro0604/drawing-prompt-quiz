@@ -76,18 +76,27 @@ export function completenessLabel(value: string): string {
   return COMPLETENESS_CHOICES.find((c) => c.value === value)?.label ?? value;
 }
 
-/** 実制作時間の選択肢。空 = 申告しない。DB の CHECK は 1〜600000 秒 */
-export const ACTUAL_TIME_CHOICES: { value: string; label: string }[] = [
-  { value: "", label: "申告しない" },
-  { value: "600", label: "10分" },
-  { value: "1800", label: "30分" },
-  { value: "3600", label: "1時間" },
-  { value: "7200", label: "2時間" },
-  { value: "10800", label: "3時間" },
-  { value: "21600", label: "6時間" },
-  { value: "43200", label: "12時間" },
-  { value: "86400", label: "1日以上" },
-];
+/**
+ * 制作時間の計測値（get_production_time の戻り値。2026-09-09）。
+ *
+ * 【自己申告をやめた】
+ *   2026-09-09 より前は、投稿するときに「実制作時間」を選ぶ欄があった。
+ *   選んだ値がそのまま記録になるので、記録を好きに書き換えられた。
+ *   いまは3つともサーバーが持っている値から作る。
+ *
+ *     chosen_limit_seconds  最初に選んだ制作時間（prompts.time_limit_seconds）
+ *     granted_seconds       延長で足された合計（challenge_renewals の履歴から）
+ *     elapsed_seconds       実際にかかった時間（開始から投稿まで）
+ *
+ *   投稿画面はこれを表示するだけで、送信もしない。
+ */
+export type ProductionTime = {
+  chosen_limit_seconds: number | null;
+  renew_count: number;
+  granted_seconds: number;
+  elapsed_seconds: number;
+  is_measured: true;
+};
 
 /**
  * 一覧の絞り込みタブ。

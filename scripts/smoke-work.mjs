@@ -75,7 +75,6 @@ let page = await submitWork(
   {
     title: "スモークテスト・オリジナル",
     division: "original",
-    actualTimeSeconds: "3600",
   },
   makePng(120, 80),
 );
@@ -87,7 +86,9 @@ must(
   "ゲストのときに引いたお題でそのまま投稿できた",
 );
 must(/オリジナル/.test(textOf(page.html)), "部門が出ている");
-must(/1時間/.test(textOf(page.html)), "実制作時間が出ている");
+// 【2026-09-09】実制作時間は自己申告ではなく計測値になった。
+// 引いてすぐ投稿しているので、出るのは数秒〜数分。**値ではなく項目名で見る**
+must(/実制作時間（計測値）/.test(textOf(page.html)), "実制作時間の欄が計測値として出ている");
 must(
   new RegExp(`/storage/v1/object/public/works/${guestId}/${publicWorkId}\\.png`).test(
     decodeURIComponent(page.html),
@@ -130,7 +131,6 @@ page = await submitWork(
     sourceTitle: "架空の元作品",
     sourceCharacter: "架空のキャラクター",
     fanartNote: "独自解釈を含みます",
-    actualTimeSeconds: "1800",
     saveAs: "draft",
   },
   makePng(64, 64),

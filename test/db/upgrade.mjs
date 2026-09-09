@@ -337,9 +337,15 @@ async function main() {
       Number(first.would_get_deadline) >= 1,
       `遡及の対象が ${first.would_get_deadline} 件（1件以上のはず）`,
     );
+    // 【2026-09-09】超過で失敗になるお題はもう無い。
+    // 数えるのは「遡及すると超過中の表示になるお題」で、投稿は止まらない
     assert(
-      Number(first.would_fail) >= 1,
-      `30日前のお題が would_fail に数えられていない（${first.would_fail} 件）`,
+      Number(first.would_be_overrun) >= 1,
+      `30日前のお題が would_be_overrun に数えられていない（${first.would_be_overrun} 件）`,
+    );
+    assert(
+      Number(first.would_fail) === 0,
+      `遡及で投稿できなくなるお題が ${first.would_fail} 件ある（0のはず）`,
     );
 
     // 点検で1行も書き換わっていないこと
@@ -362,21 +368,29 @@ async function main() {
     );
     assert(rows[0].n >= 1, "遡及SQLを流しても期限が入っていない");
 
-    const { rows: overdue } = await db.query(
-      `select (public.cleanup_status() ->> 'overdue_prompts')::int as n`,
+    // 【2026-09-09 に意味が変わった】
+    //   予定終了時刻を過ぎただけでは失敗にしない。数えるのは
+    //   「まだ知らせていない超過」で、失敗の予備軍ではない。
+    const { rows: overrun } = await db.query(
+      `select (public.cleanup_status() ->> 'unnotified_overrun')::int as n`,
     );
-    // 30日前に引いた10分・1時間のお題なので、猶予も過ぎている
-    assert(overdue[0].n >= 1, "30日前のお題が猶予切れとして数えられていない");
+    assert(overrun[0].n >= 1, "30日前のお題が「未通知の超過」として数えられていない");
   });
 
-  await test("掃除を回すと猶予切れが失敗になり、作品には触れない", async () => {
+  await test("掃除は超過を知らせるだけで、失敗にも破棄にもしない", async () => {
     const worksBefore = await db.query(`select count(*)::int as n from public.works`);
 
-    const n = await asRole(db, { role: "service_role", uid: null }, async (c) => {
-      const r = await c.query(`select public.expire_overdue_prompts(500) as n`);
+    const notified = await asRole(db, { role: "service_role", uid: null }, async (c) => {
+      const r = await c.query(`select public.notify_overrun_challenges(500) as n`);
       return r.rows[0].n;
     });
-    assert(n >= 1, "掃除が猶予切れのお題を拾わなかった");
+    assert(notified >= 1, "掃除が超過したお題を拾わなかった");
+
+    // **失敗にも破棄にもならない。**古いお題でも、状態は 'active' のまま
+    const { rows: failed } = await db.query(
+      `select count(*)::int as n from public.prompts where status in ('failed','discarded')`,
+    );
+    assert(failed[0].n === 0, `超過だけで ${failed[0].n} 件が終了状態になった`);
 
     const worksAfter = await db.query(`select count(*)::int as n from public.works`);
     assert(
@@ -384,7 +398,7 @@ async function main() {
       "掃除で作品の行が動いた（D163 違反）",
     );
 
-    // 投稿済みのお題は 'submitted' のままで、失敗にならない
+    // 投稿済みのお題は 'submitted' のまま
     const submitted = await db.query(
       `select status from public.prompts where id = $1`,
       [drafted.prompt_id],
@@ -393,6 +407,22 @@ async function main() {
       submitted.rows[0].status === "submitted",
       `投稿済みのお題が ${submitted.rows[0].status} になった`,
     );
+  });
+
+  await test("古いお題でも、規則を入れた直後は自動破棄されない", async () => {
+    // 放置の起点は「最終操作」と「規則を入れた時刻」の遅いほう。
+    // migration を当てた瞬間に、30日前の作りかけが一斉に消えないこと
+    const n = await asRole(db, { role: "service_role", uid: null }, async (c) => {
+      const r = await c.query(`select public.discard_inactive_challenges(500) as n`);
+      return r.rows[0].n;
+    });
+    assert(n === 0, `当てた直後に ${n} 件が自動破棄された`);
+
+    const { rows } = await db.query(
+      `select count(*)::int as n from public.notification_events
+        where kind in ('inactivity_warning','inactivity_discard')`,
+    );
+    assert(rows[0].n === 0, `当てた直後に放置の知らせが ${rows[0].n} 件出た`);
   });
 
   await test("旧方式のモードは、一般利用者から見えなくなる", async () => {

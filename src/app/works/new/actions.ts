@@ -137,7 +137,9 @@ export async function createWorkAction(form: FormData): Promise<void> {
       sourceTitle: orNull(str(form, "sourceTitle")),
       sourceCharacter: orNull(str(form, "sourceCharacter")),
       fanartNote: orNull(str(form, "fanartNote")),
-      actualTimeSeconds: parseSeconds(str(form, "actualTimeSeconds")),
+      // **申告値は送らない（2026-09-09）。**
+      // DB のトリガーが、お題の開始からの実経過で必ず上書きする
+      actualTimeSeconds: null,
       isPublished,
     });
   } catch (e) {
@@ -168,9 +170,3 @@ export async function createWorkAction(form: FormData): Promise<void> {
   redirect(`/works/${workId}`);
 }
 
-/** 実制作時間の入力を秒に直す。空・数字以外は「申告しない」扱い */
-function parseSeconds(raw: string): number | null {
-  if (raw === "") return null;
-  const parsed = Number.parseInt(raw, 10);
-  return Number.isFinite(parsed) ? parsed : null;
-}

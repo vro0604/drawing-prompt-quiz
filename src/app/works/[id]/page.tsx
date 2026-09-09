@@ -220,7 +220,7 @@ function MetaList({
     ...(origin === "art_first"
       ? []
       : [{ label: "お題の制作時間", value: formatDuration(timeLimitSeconds) }]),
-    { label: "実制作時間（自己申告）", value: formatActualTime(actualTimeSeconds) },
+    { label: "実制作時間（計測値）", value: formatActualTime(actualTimeSeconds) },
     { label: "投稿日", value: formatDateTime(createdAt) },
   ];
 

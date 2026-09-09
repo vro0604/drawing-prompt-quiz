@@ -131,7 +131,7 @@ const promptA = await drawPrompt(artist, "hard", "1800");
 let page = await submitWork(
   artist,
   promptA.promptId,
-  { title: `プロフィール作品${stamp}`, division: "original", actualTimeSeconds: "3600" },
+  { title: `プロフィール作品${stamp}`, division: "original" },
   makePng(90, 70),
 );
 const workId = /^\/works\/([0-9a-f-]{36})/.exec(page.path)?.[1];

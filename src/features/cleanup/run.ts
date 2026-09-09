@@ -1,4 +1,5 @@
 import { createSupabaseAdminClient } from "@/lib/supabase/admin";
+import { pushConfig, sendPush } from "@/features/notify/push";
 
 /**
  * 定期的な掃除の中身（Step 16）。
@@ -36,6 +37,7 @@ const LIMITS = {
   images: 100,
   deletions: 50,
   guests: 100,
+  push: 200,
 };
 
 export async function runCleanup(): Promise<CleanupResult> {
@@ -81,25 +83,93 @@ export async function runCleanup(): Promise<CleanupResult> {
     return (data as number) ?? 0;
   });
 
-  // 猶予を使い切った制作挑戦を失敗にする（D163）。
-  // **作品画像にも作品行にも触れない。**prompts の状態を変えるだけ。
-  await step("時間切れのお題", async () => {
-    const { data, error } = await admin.rpc("expire_overdue_prompts", {
+  // --- 制作時間まわり（2026-09-09 に「超過＝失敗」をやめた） --------------
+  //
+  // 【順番が意味を持つ】
+  //   1. 予定終了時刻の超過を知らせる（**失敗にはしない**）
+  //   2. 24時間の放置を予告する（48時間に達したものは除く）
+  //   3. 48時間の放置を自動破棄する
+  //   2 が 3 を除いているので、長く放置された作りかけへ
+  //   「あと1日で消えます」と「消しました」を同時に送ることはない。
+
+  await step("予定超過の知らせ", async () => {
+    const { data, error } = await admin.rpc("notify_overrun_challenges", {
       p_limit: LIMITS.prompts,
     });
     if (error) throw new Error(error.message);
     return (data as number) ?? 0;
   });
 
-  // 猶予を使い切ったドラフトも失敗にする（2026-09-05）。
-  // お題の確定前に時間切れになった挑戦は、prompts に行が無いので
-  // expire_overdue_prompts では拾えない。
-  await step("時間切れのドラフト", async () => {
-    const { data, error } = await admin.rpc("expire_overdue_drafts", {
-      p_limit: LIMITS.drafts,
+  await step("放置の予告", async () => {
+    const { data, error } = await admin.rpc("notify_inactive_challenges", {
+      p_limit: LIMITS.prompts,
     });
     if (error) throw new Error(error.message);
     return (data as number) ?? 0;
+  });
+
+  // **作品画像にも作品行にも触れない。**作りかけの状態を変えるだけ。
+  await step("放置の自動破棄", async () => {
+    const { data, error } = await admin.rpc("discard_inactive_challenges", {
+      p_limit: LIMITS.prompts,
+    });
+    if (error) throw new Error(error.message);
+    return (data as number) ?? 0;
+  });
+
+  // --- 溜まっているプッシュを送る ----------------------------------------
+  //
+  // 出来事は上の3つが DB へ書いた。ここはそれを配るだけ。
+  // **送れなくても出来事は消えない。**次にサイトを開けば知らせの帯に出る。
+  await step("プッシュ送信", async () => {
+    if (!pushConfig()) return "VAPID の鍵が未設定のため送りません";
+
+    const { data, error } = await admin.rpc("list_pending_push", {
+      p_limit: LIMITS.push,
+    });
+    if (error) throw new Error(error.message);
+
+    const rows = (data ?? []) as {
+      delivery_id: number;
+      endpoint: string;
+      p256dh: string;
+      auth: string;
+      title: string;
+      body: string;
+      url: string;
+      tag: string;
+    }[];
+
+    let sent = 0;
+
+    for (const row of rows) {
+      const outcome = await sendPush(
+        { endpoint: row.endpoint, p256dh: row.p256dh, auth: row.auth },
+        { title: row.title, body: row.body, url: row.url, tag: row.tag },
+      );
+
+      if (outcome.ok) {
+        await admin.rpc("mark_push_result", { p_delivery_id: row.delivery_id, p_ok: true });
+        sent += 1;
+        continue;
+      }
+
+      // 宛先そのものが無くなっていたら、以後そこへは送らない
+      if (outcome.gone) {
+        await admin.rpc("expire_push_subscription", {
+          p_endpoint: row.endpoint,
+          p_error: outcome.error,
+        });
+      }
+
+      await admin.rpc("mark_push_result", {
+        p_delivery_id: row.delivery_id,
+        p_ok: false,
+        p_error: outcome.error,
+      });
+    }
+
+    return sent;
   });
 
   // 期限を過ぎた「いまの流れの中だけ」の持ち出しを消す（2026-09-05）。

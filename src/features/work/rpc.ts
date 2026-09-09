@@ -7,6 +7,7 @@ import {
   type Division,
   type MyWork,
   type MyWorkResult,
+  type ProductionTime,
   type PublicWorkListItem,
   type WorkDetail,
   type WorkWriteResult,
@@ -350,4 +351,20 @@ export async function removeWorkImage(path: string): Promise<boolean> {
  */
 export function workImageUrl(imagePath: string): string {
   return `${SUPABASE_URL}/storage/v1/object/public/${WORKS_BUCKET}/${imagePath}`;
+}
+
+/**
+ * 制作時間の計測値を読む（2026-09-09）。
+ *
+ * 投稿画面がこれを表示するだけで、利用者は入力しない。
+ * 読めなかったときは null を返す（画面は「読めませんでした」と出す）。
+ */
+export async function fetchProductionTime(promptId: string): Promise<ProductionTime | null> {
+  const supabase = await createSupabaseServerClient();
+  const { data, error } = await supabase.rpc("get_production_time", {
+    p_prompt_id: promptId,
+  });
+
+  if (error) return null;
+  return (data as ProductionTime | null) ?? null;
 }

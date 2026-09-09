@@ -475,3 +475,51 @@ export async function finishDraft(db, uid, sessionId) {
     return done.rows[0].s;
   });
 }
+
+/**
+ * 放置の起点（最終有効操作）を過去へずらす。時間を待たずに24時間・48時間を試す。
+ *
+ * **アプリの経路ではない。**本番では、行が書き換わったときにトリガーが
+ * 現在時刻を入れる。ここは試験の準備としてだけ直接書き換える。
+ */
+export async function setLastActivity(db, { promptId = null, sessionId = null }, secondsAgo) {
+  const table = promptId ? "prompts" : "draft_sessions";
+  await db.query(
+    `update public.${table}
+        set last_activity_at = clock_timestamp() - make_interval(secs => $2)
+      where id = $1`,
+    [promptId ?? sessionId, secondsAgo],
+  );
+}
+
+/**
+ * 「放置の規則を入れた時刻」を過去へずらす。
+ *
+ * 破棄の起点は「最終有効操作」と「規則を入れた時刻」の**遅いほう**なので、
+ * 規則を入れたばかりだと何も破棄されない（当てた直後の一斉破棄を防ぐ仕掛け）。
+ * 放置そのものを試すときは、ここを先に過去へ動かす。
+ */
+export async function agePolicy(db, days = 30) {
+  await db.query(
+    `update public.draft_lifecycle_policy
+        set updated_at = clock_timestamp() - make_interval(days => $1)`,
+    [days],
+  );
+}
+
+/** 規則を入れた時刻を「たったいま」に戻す（当てた直後を再現する） */
+export async function freshPolicy(db) {
+  await db.query(`update public.draft_lifecycle_policy set updated_at = clock_timestamp()`);
+}
+
+/** 掃除の3本を service_role で回し、それぞれの件数を返す */
+export async function runChallengeSweep(db) {
+  const one = async (fn) =>
+    Number((await db.query(`select public.${fn}(500) as n`)).rows[0].n);
+
+  return {
+    overrun: await one("notify_overrun_challenges"),
+    warned: await one("notify_inactive_challenges"),
+    discarded: await one("discard_inactive_challenges"),
+  };
+}

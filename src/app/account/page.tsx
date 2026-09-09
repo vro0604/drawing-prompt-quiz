@@ -1,5 +1,6 @@
 import Link from "next/link";
 import { getCurrentUser, getMyProfile } from "@/features/auth/session";
+import { fetchCurrentDocuments } from "@/features/account/rpc";
 import { SubmitButton } from "@/app/_pending";
 import {
   fetchMySpecialties,
@@ -11,6 +12,7 @@ import { EMPTY_VOCABULARY, type Vocabulary } from "@/features/vocab/types";
 import type { PickedTag } from "@/features/vocab/picker";
 import { EMPTY_SPECIALTIES, type Specialties } from "@/features/profile/types";
 import { ProfileForm } from "./_profile-form";
+import { NotificationHistory } from "./_notification-history";
 import type { Profile } from "@/types/database";
 import {
   registerAction,
@@ -400,6 +402,26 @@ export default async function AccountPage({
             </form>
           </section>
         </>
+      ) : null}
+
+      {/* --- 知らせ（2026-09-09）------------------------------------------------
+
+          本文の上に出る帯（_notices.tsx）は、未確認のものだけを出して、
+          「確認しました」を押すと消える。**読み返す場所が無いと、
+          消した瞬間に内容が失われる。**ここは確認済みも含めて並べる。
+          ブラウザの通知を止める操作も、同じまとまりに置く。 */}
+      {isRegistered ? (
+        <section className={`${surface} space-y-4`}>
+          <div className="space-y-1">
+            <h2 className="text-sm font-bold">知らせ</h2>
+            <p className="text-xs text-faint">
+              制作予定時間の超過・制作途中のお題の放置・自動破棄をお知らせします。
+              お題の語や答えは、知らせにも通知にも入りません。
+            </p>
+          </div>
+
+          <NotificationHistory />
+        </section>
       ) : null}
 
       {/* --- アカウント（サインアウト・退会）------------------------------------

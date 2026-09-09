@@ -2019,10 +2019,10 @@ export const checks = [
     // update_my_profile … ID の先取りを防ぐ（001 が handle を列権限から外した意図）
     // toggle_like / toggle_save … 人気ランキングを成立させる（D7）
     //
-    // Postgres のロールでは匿名ゲストと登録ユーザーを区別できないので、
-    // set_my_avatar / set_my_specialties / enqueue_my_avatar_cleanup …
-    //   ゲストのプロフィールは他人から見えないので、設定できても出ない（D176）
+    // set_my_avatar / set_my_specialties … ゲストのプロフィールは他人から
+    //   見えないので、設定できても出ない状態だけが残る（D176）
     //
+    // Postgres のロールでは匿名ゲストと登録ユーザーを区別できないので、
     // この防御は関数の中の1行だけで成り立っている。消えても表面上は動く。
     expected: MEMBER_RPCS.length,
     sql: `select count(*)::int from pg_proc p
@@ -3394,8 +3394,8 @@ export const roleProbes = [
   {
     role: "anon",
     mode: "denied",
-    label: "anon → expire_overdue_prompts（掃除）",
-    sql: `select public.expire_overdue_prompts(1)`,
+    label: "anon → notify_overrun_challenges（掃除）",
+    sql: `select public.notify_overrun_challenges(1)`,
   },
   {
     role: "anon",
@@ -3418,8 +3418,32 @@ export const roleProbes = [
   {
     role: "anon",
     mode: "denied",
-    label: "anon → expire_overdue_drafts（掃除）",
-    sql: `select public.expire_overdue_drafts(1)`,
+    label: "anon → discard_inactive_challenges（掃除）",
+    sql: `select public.discard_inactive_challenges(1)`,
+  },
+  {
+    role: "anon",
+    mode: "denied",
+    label: "anon → notify_inactive_challenges（掃除）",
+    sql: `select public.notify_inactive_challenges(1)`,
+  },
+  {
+    role: "anon",
+    mode: "denied",
+    label: "anon → get_my_notifications（自分あての知らせ）",
+    sql: `select public.get_my_notifications(1)`,
+  },
+  {
+    role: "anon",
+    mode: "denied",
+    label: "anon → save_push_subscription（プッシュの宛先）",
+    sql: `select public.save_push_subscription('x', 'y', 'z')`,
+  },
+  {
+    role: "anon",
+    mode: "denied",
+    label: "anon → list_pending_push（送る側だけ）",
+    sql: `select public.list_pending_push(1)`,
   },
   {
     role: "anon",
@@ -3443,7 +3467,7 @@ export const roleProbes = [
     role: "anon",
     mode: "denied",
     label: "anon → timer_core_json（内部専用）",
-    sql: `select public.timer_core_json('active', 60, now(), now(), 0, null, null)`,
+    sql: `select public.timer_core_json('active', 60, now(), now(), 0, null, null, now(), null)`,
   },
   {
     role: "anon",

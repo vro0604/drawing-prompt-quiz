@@ -184,7 +184,7 @@ section("3. 作品を投稿する（オリジナル部門）");
 const posted = await submitWork(
   author,
   prompt.promptId,
-  { title: "本番切替の確認・削除予定", division: "original", actualTimeSeconds: "600" },
+  { title: "本番切替の確認・削除予定", division: "original" },
   makePng(120, 80),
 );
 const workId = /^\/works\/([0-9a-f-]{36})/.exec(posted.path)?.[1];

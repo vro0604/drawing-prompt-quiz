@@ -1,6 +1,7 @@
 import Link from "next/link";
 import { getCurrentUser } from "@/features/auth/session";
 import { fetchCurrentDraft, fetchDraftModes } from "@/features/draft/rpc";
+import { PushOptIn } from "@/app/_push-optin";
 import { fetchSavedElements } from "@/features/carry/rpc";
 import { EMPTY_SAVED, type SavedElements } from "@/features/carry/types";
 import type { DraftState } from "@/features/draft/types";
@@ -92,6 +93,10 @@ export default async function PlayPage({
       ) : (
         <StartForm modes={modes} saved={savedElements} signedIn={user !== null} />
       )}
+
+      {/* 通知の許可は、制作が始まっている場面でだけ尋ねる。
+          まだ引いていない人には出さない（_push-optin.tsx） */}
+      {draft ? <PushOptIn /> : null}
 
       {/* もう描いてある絵を出したい人の行き先。**お題を引く操作の下に置く。**
           この画面はお題を引くための画面なので、入口を上に置くと

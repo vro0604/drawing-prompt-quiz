@@ -495,6 +495,15 @@ export async function openFlavorHintAction(form: FormData): Promise<void> {
  *   **2つ目以降が黙って消えて、作者が作った並びと違うものが保存される。**
  *   落としてよいのは、意味の無い値（数でない・負）だけ。
  */
+function numberList(raw: string): number[] {
+  const out: number[] = [];
+  for (const part of raw.split(",")) {
+    const n = Number.parseInt(part.trim(), 10);
+    if (Number.isSafeInteger(n) && n >= 0) out.push(n);
+  }
+  return out;
+}
+
 export async function setFlavorTextAction(form: FormData): Promise<void> {
   const workId = str(form, "workId");
 

@@ -15,6 +15,10 @@ import { carryFromPromptAction, renewDeadlineAction } from "./actions";
  *   帯はサーバー時刻と自分を同期させたうえで秒を描き、
  *   タブが背面にいた時間も、閉じていた時間も経過に入る。
  *
+ *   **このページでは、その帯が大きい形になる（P5）。**残り時間が
+ *   画面いちばん上に、いちばん大きな字で出る。ここはその下に置かれる面なので、
+ *   同じ数を二重に出さないことがいっそう大事になる。
+ *
  *   **ここは動かない値だけを出す。**開いた瞬間の経過・残り・期限の時刻と、
  *   更新の意味の説明。動く数と動かない数が同じ場所に並ぶと、
  *   どちらが本当か読めなくなるので、役割で分ける。
@@ -91,17 +95,20 @@ export function TimerBox({
     );
   }
 
-  // --- 挑戦が終わっている ---------------------------------------------------
+  // --- 長い放置で自動破棄された ---------------------------------------------
   //
-  // status が 'failed' になるのは掃除が回ったあと。それを待たずに
-  // **その場で計算した is_expired** で終了を出す。
+  // 掃除が status を 'discarded' にするのを待たずに、
+  // **その場で計算した is_discarded** で出す。
   // 待つと「投稿ボタンは出ているのに押すと断られる」画面になる。
-  if (timer.status === "failed" || timer.is_expired) {
+  //
+  // 【予定終了時刻の超過ではここへ来ない（2026-09-09）】
+  //   超過しても挑戦は続く。ここへ来るのは、48時間何も操作しなかったときだけ。
+  if (timer.status === "discarded" || timer.status === "failed" || timer.is_discarded) {
     return (
       <section className={`${surface} space-y-3`}>
-        <h2 className="text-sm font-bold">この挑戦は終了しました</h2>
+        <h2 className="text-sm font-bold">この制作は自動的に破棄されました</h2>
         <p className={noticeError}>
-          時間を延ばさないまま猶予を過ぎたため、このお題では投稿できません。
+          2日間操作がなかったため、制作途中のお題を自動的に破棄しました。
           描いた絵やこれまでの記録が消えることはありません。
         </p>
         <p className="text-xs text-faint">
@@ -144,9 +151,19 @@ export function TimerBox({
       </div>
 
       {overrun ? (
-        <p className={noticeError}>
-          期限を過ぎています。{at(timer.grace_ends_at)} までに時間を延ばさないと、
-          この挑戦は終了します。作品や記録が消えることはありません。
+        <p className={noticeError} data-field="overrun-note">
+          制作予定時間を超過しています。
+          <strong>制作はそのまま続けられます。</strong>
+          必要なら下のボタンで延長できます。超過しても、この挑戦が失敗になることは
+          ありません。
+        </p>
+      ) : null}
+
+      {timer.auto_discard_at ? (
+        <p className={noticeMuted} data-field="discard-note">
+          制作途中のお題は、最後の操作から2日間まったく操作が無いと自動的に
+          破棄されます（いまの予定は {at(timer.auto_discard_at)}）。
+          制作を続けているあいだは、この期限は数え直されます。
         </p>
       ) : null}
 
@@ -160,14 +177,15 @@ export function TimerBox({
             制作時間を延ばす
           </SubmitButton>
           <p className="text-xs text-faint">
-            押した時刻から、元の制限時間の 3/4 が新しい期限になります。
-            いま残っている時間は繰り越されません。回数に上限はありません。
+            いまの終了予定に、元の制限時間の 3/4 が足されます。
+            残っている時間は捨てられません。超過中に押したときは、
+            押した時刻から数え直します。押せる時刻の決まりは無く、回数に上限も
+            ありません。
           </p>
         </form>
       ) : (
         <p className={noticeMuted}>
-          {at(timer.renew_opens_at)} から「制作時間を延ばす」を押せるようになります。
-          押せる間に延ばせば、何度でも続けられます。
+          制作時間が無制限のお題なので、延長はありません。
         </p>
       )}
     </section>

@@ -827,268 +827,534 @@ async function main() {
   });
 
   /* ---------------------------------------------------------------------
-   * D. 制作時間（D163）
+   * D. 制作時間（2026-09-09 に「超過＝失敗」をやめた）
+   *
+   *   予定終了時刻（deadline_at）は**予定**であって、作りかけを壊す期限ではない。
+   *   過ぎても失敗にならず、投稿も延長もできる。
+   *   作りかけが消える理由は「長いあいだ操作が無かった」だけで、
+   *   これは予定終了時刻とはまったく別の時計（最終有効操作から24時間・48時間）。
    * ------------------------------------------------------------------- */
 
-  await test("D", "初期の期限は挑戦の開始時刻＋T", async () => {
+  await test("D", "予定終了時刻は挑戦の開始時刻＋T", async () => {
     const u = await makeMember(db, "time-one");
     const p = await drawPrompt(db, u, { timeLimit: 3600 });
     const t = await value(db, asMember(u), `select public.get_prompt_timer($1)`, [p.prompt_id]);
 
-    assert(t.has_deadline === true, "期限が入っていない");
+    assert(t.has_deadline === true, "予定終了時刻が入っていない");
     assert(t.seconds_left > 3500 && t.seconds_left <= 3600, `残り ${t.seconds_left} 秒`);
-    assert(t.can_renew === false, "始めた直後から更新できてしまう");
+    assert(t.phase === "within", `段階が ${t.phase}（within のはず）`);
+    assert(t.is_overrun === false, "始まった直後に超過扱いになっている");
   });
 
-  await test("D", "残りが 0.25T になるまで更新できない", async () => {
-    const u = await makeMember(db, "time-two");
-    const p = await drawPrompt(db, u, { timeLimit: 3600 });
+  await test("D", "予定終了の直前は、ふつうに残りが減っていく", async () => {
+    const u = await makeMember(db, "time-countdown");
+    const p = await drawPrompt(db, u, { timeLimit: 1800 });
+    await shiftDeadline(db, p.prompt_id, 1790);
 
-    await expectFailure(
-      () => value(db, asMember(u), `select public.renew_prompt_deadline($1)`, [p.prompt_id]),
-      "RENEW_TOO_EARLY",
-    );
-
-    // 残り 14分（0.25T = 15分 より少ない）へ進める
-    await shiftDeadline(db, p.prompt_id, 3600 - 840);
     const t = await value(db, asMember(u), `select public.get_prompt_timer($1)`, [p.prompt_id]);
-    assert(t.can_renew === true, "0.25T を切っても更新できない");
+    assert(t.seconds_left > 0 && t.seconds_left <= 10, `残り ${t.seconds_left} 秒`);
+    assert(t.phase === "within", `段階が ${t.phase}（within のはず）`);
+    assert(t.overrun_seconds === 0, "まだ超過していないのに超過秒が入っている");
   });
 
-  await test("D", "更新すると 更新時刻＋0.75T になり、残りは繰り越さない", async () => {
-    const u = await makeMember(db, "time-three");
-    const p = await drawPrompt(db, u, { timeLimit: 3600 });
-    await shiftDeadline(db, p.prompt_id, 3600 - 840); // 残り14分
+  await test("D", "予定終了を過ぎても失敗にならず、超過した量が出る", async () => {
+    const u = await makeMember(db, "time-overrun");
+    const p = await drawPrompt(db, u, { timeLimit: 1800 });
+    await shiftDeadline(db, p.prompt_id, 1800 + 512);
 
-    const after = await value(db, asMember(u), `select public.renew_prompt_deadline($1)`, [
-      p.prompt_id,
-    ]);
-
-    // 0.75 × 3600 = 2700秒。残っていた 840秒は足されない
+    const t = await value(db, asMember(u), `select public.get_prompt_timer($1)`, [p.prompt_id]);
+    assert(t.phase === "overrun", `段階が ${t.phase}（overrun のはず）`);
+    assert(t.is_overrun === true, "超過として返っていない");
+    assert(t.status === "active", `状態が ${t.status}（active のままのはず）`);
+    assert(t.is_discarded === false, "超過しただけで破棄扱いになっている");
     assert(
-      after.seconds_left > 2600 && after.seconds_left <= 2700,
-      `更新後の残りが ${after.seconds_left} 秒（2700秒前後のはず。繰り越していないか）`,
+      t.overrun_seconds >= 505 && t.overrun_seconds <= 525,
+      `超過が ${t.overrun_seconds} 秒（512秒前後のはず）`,
     );
-    assert(after.renew_count === 1, "更新回数が増えていない");
+    assert(t.seconds_left < 0, "超過中なのに残りが負になっていない");
   });
 
-  await test("D", "続けて2回押しても2回ぶん増えない", async () => {
-    const u = await makeMember(db, "time-four");
-    const p = await drawPrompt(db, u, { timeLimit: 3600 });
-    await shiftDeadline(db, p.prompt_id, 3600 - 840);
+  await test("D", "超過中でも投稿できる", async () => {
+    const u = await makeMember(db, "time-overrun-post");
+    const p = await drawPrompt(db, u, { timeLimit: 600 });
+    await shiftDeadline(db, p.prompt_id, 600 + 3600);   // 1時間超過
 
-    await value(db, asMember(u), `select public.renew_prompt_deadline($1)`, [p.prompt_id]);
-    await expectFailure(
-      () => value(db, asMember(u), `select public.renew_prompt_deadline($1)`, [p.prompt_id]),
-      "RENEW_TOO_EARLY",
-    );
-
-    const t = await value(db, asMember(u), `select public.get_prompt_timer($1)`, [p.prompt_id]);
-    assert(t.renew_count === 1, `更新回数が ${t.renew_count}（1のはず）`);
+    const workId = await postWork(db, u, p.prompt_id, "超過してから出した作品");
+    assert(workId, "超過中に投稿できなかった");
   });
 
-  await test("D", "0秒を過ぎても猶予の中なら投稿できる", async () => {
-    const u = await makeMember(db, "time-five");
-    const p = await drawPrompt(db, u, { timeLimit: 3600 });
-    // 期限を1000秒過ぎた状態。猶予は 0.5T = 1800秒あるのでまだ中
-    await shiftDeadline(db, p.prompt_id, 4600);
+  await test("D", "超過中でも帯に出続ける（挑戦が続いている）", async () => {
+    const u = await makeMember(db, "time-overrun-bar");
+    const p = await drawPrompt(db, u, { timeLimit: 600 });
+    await shiftDeadline(db, p.prompt_id, 600 + 1800);
 
-    const t = await value(db, asMember(u), `select public.get_prompt_timer($1)`, [p.prompt_id]);
-    assert(t.seconds_left < 0, "超過になっていない");
-    assert(t.overrun_seconds > 0, "超過時間が数えられていない");
-    assert(t.is_expired === false, "猶予の中なのに終了扱いになっている");
-    assert(t.can_renew === true, "猶予の中で更新できない");
-
-    const workId = await postWork(db, u, p.prompt_id, "猶予中の投稿");
-    assert(workId, "猶予の中で投稿できなかった");
+    const ch = await value(db, asMember(u), `select public.get_active_challenge()`);
+    assert(ch !== null, "超過したら帯から消えた");
+    assert(ch.is_finished === false, "超過で終了扱いになっている");
+    assert(ch.phase === "overrun", `段階が ${ch.phase}`);
+    assert(ch.can_renew === true, "超過中に延長できない");
   });
 
-  await test("D", "猶予を使い切ると投稿できず、挑戦が失敗になる", async () => {
-    const u = await makeMember(db, "time-six");
-    const p = await drawPrompt(db, u, { timeLimit: 3600 });
-    // 期限を 1801秒 過ぎた状態（猶予 1800秒 を超える）
-    await shiftDeadline(db, p.prompt_id, 3600 + 1801);
-
-    const before = await db.query(`select count(*)::int as n from public.works`);
-
-    await expectFailure(
-      () => postWork(db, u, p.prompt_id, "猶予切れの投稿"),
-      "PROMPT_EXPIRED",
-    );
-
-    const after = await db.query(`select count(*)::int as n from public.works`);
-    assert(after.rows[0].n === before.rows[0].n, "失敗したのに作品の行が増えている");
-
-    // 投稿を断ったトランザクションは丸ごと巻き戻るので、
-    // 断った瞬間に status までは書き換わらない。**書き換わったことにしない。**
-    // 終了として扱われているかは、その場で計算する is_expired で見る。
-    const t = await value(db, asMember(u), `select public.get_prompt_timer($1)`, [p.prompt_id]);
-    assert(t.is_expired === true, "猶予を過ぎたのに終了扱いになっていない");
-    assert(t.can_renew === false, "猶予を過ぎたのに更新できる");
-
-    // status が 'failed' になるのは掃除が回ったあと
-    const n = await value(
-      db,
-      { role: "service_role", uid: null },
-      `select public.expire_overdue_prompts(500)`,
-    );
-    assert(n >= 1, "掃除が猶予切れのお題を拾わなかった");
-
-    const status = await db.query(`select status, failed_at from public.prompts where id = $1`, [
-      p.prompt_id,
-    ]);
-    assert(status.rows[0].status === "failed", "掃除のあとも失敗になっていない");
-    assert(status.rows[0].failed_at !== null, "失敗した時刻が残っていない");
-
-    // 失敗しても作品データには触れない（D163）
-    const after2 = await db.query(`select count(*)::int as n from public.works`);
-    assert(after2.rows[0].n === before.rows[0].n, "失敗の処理で作品の行が動いている");
-  });
-
-  await test("D", "猶予を使い切ったあとは更新できない", async () => {
-    const u = await makeMember(db, "time-seven");
-    const p = await drawPrompt(db, u, { timeLimit: 3600 });
-    await shiftDeadline(db, p.prompt_id, 3600 + 1801);
-
-    await expectFailure(
-      () => value(db, asMember(u), `select public.renew_prompt_deadline($1)`, [p.prompt_id]),
-      "RENEW_TOO_LATE",
-    );
-  });
-
-  await test("D", "掃除が猶予切れのお題を失敗にする", async () => {
-    const u = await makeMember(db, "time-eight");
-    const p = await drawPrompt(db, u, { timeLimit: 3600 });
-    await shiftDeadline(db, p.prompt_id, 3600 + 1801);
-
-    const n = await value(db, { role: "service_role", uid: null }, `select public.expire_overdue_prompts(500)`);
-    assert(n >= 1, `掃除が ${n} 件（1件以上のはず）`);
-
-    const status = await db.query(`select status from public.prompts where id = $1`, [
-      p.prompt_id,
-    ]);
-    assert(status.rows[0].status === "failed", "掃除で失敗にならなかった");
-  });
-
-  await test("D", "無制限には期限も更新も失敗も無い", async () => {
-    const u = await makeMember(db, "time-nine");
-    const p = await drawPrompt(db, u, { timeLimit: null });
-
-    const t = await value(db, asMember(u), `select public.get_prompt_timer($1)`, [p.prompt_id]);
-    assert(t.is_unlimited === true, "無制限として扱われていない");
-    assert(t.has_deadline === false, "無制限に期限が入っている");
-    assert(t.can_renew === false, "無制限で更新できてしまう");
-
-    await expectFailure(
-      () => value(db, asMember(u), `select public.renew_prompt_deadline($1)`, [p.prompt_id]),
-      "UNLIMITED_NO_RENEW",
-    );
-
-    // 掃除の対象にもならない
-    const before = await db.query(`select status from public.prompts where id = $1`, [
-      p.prompt_id,
-    ]);
-    await value(db, { role: "service_role", uid: null }, `select public.expire_overdue_prompts(500)`);
-    const after = await db.query(`select status from public.prompts where id = $1`, [
-      p.prompt_id,
-    ]);
-    assert(
-      before.rows[0].status === after.rows[0].status,
-      "無制限のお題が掃除で状態を変えられた",
-    );
-
-    const workId = await postWork(db, u, p.prompt_id, "無制限の投稿");
-    assert(workId, "無制限で投稿できなかった");
-  });
-
-  await test("D", "更新の回数に上限が無い（何度でも延ばせる）", async () => {
-    // D163 は「更新回数は無制限」と決めている。**回数で止まらないこと**を見る。
-    const u = await makeMember(db, "time-many");
-    const p = await drawPrompt(db, u, { timeLimit: 3600 });
-
-    for (let i = 1; i <= 5; i += 1) {
-      // 残りを 0.25T 未満（14分）にしてから押す
-      const t = await value(db, asMember(u), `select public.get_prompt_timer($1)`, [
-        p.prompt_id,
-      ]);
-      await shiftDeadline(db, p.prompt_id, t.seconds_left - 840);
-
-      const after = await value(db, asMember(u), `select public.renew_prompt_deadline($1)`, [
-        p.prompt_id,
-      ]);
-      assert(after.renew_count === i, `${i}回目の更新で回数が ${after.renew_count}`);
-      assert(
-        after.seconds_left > 2600 && after.seconds_left <= 2700,
-        `${i}回目の残りが ${after.seconds_left} 秒（毎回 0.75T のはず）`,
-      );
-    }
-  });
-
-  await test("D", "最終猶予の中でも延ばせる（超過してからでも間に合う）", async () => {
-    const u = await makeMember(db, "time-grace-renew");
-    const p = await drawPrompt(db, u, { timeLimit: 3600 });
-    // 期限を1000秒過ぎた状態。猶予 1800秒 の中
-    await shiftDeadline(db, p.prompt_id, 4600);
+  await test("D", "予定終了の前でも延長できる（残り時間に足される）", async () => {
+    const u = await makeMember(db, "renew-before");
+    const p = await drawPrompt(db, u, { timeLimit: 1800 });
 
     const before = await value(db, asMember(u), `select public.get_prompt_timer($1)`, [
       p.prompt_id,
     ]);
-    assert(before.seconds_left < 0 && before.is_expired === false, "猶予の中になっていない");
+    assert(before.can_renew === true, "始まった直後に延長できない");
 
     const after = await value(db, asMember(u), `select public.renew_prompt_deadline($1)`, [
       p.prompt_id,
     ]);
-    assert(after.renew_count === 1, "猶予の中で更新回数が増えていない");
-    assert(
-      after.seconds_left > 2600 && after.seconds_left <= 2700,
-      `猶予中の更新後が ${after.seconds_left} 秒（0.75T のはず）`,
-    );
-    assert(after.is_expired === false, "更新したのに終了扱いのまま");
 
-    // **総経過は減らない。**超過していた分も含めて数え続ける
+    // 0.75T = 1350秒。残っていた時間は捨てない
     assert(
-      after.elapsed_seconds >= before.elapsed_seconds,
-      `総経過が ${before.elapsed_seconds} → ${after.elapsed_seconds} に減った`,
+      after.granted_seconds === 1350,
+      `足された秒が ${after.granted_seconds}（1350のはず）`,
+    );
+    assert(
+      after.seconds_left > before.seconds_left + 1300,
+      `残りが ${after.seconds_left} 秒（${before.seconds_left} + 1350 前後のはず）`,
     );
   });
 
-  await test("D", "挑戦に失敗しても、制作物も履歴も消えず、次のお題を引ける", async () => {
-    const u = await makeMember(db, "time-after-fail");
+  await test("D", "予定終了の直後でも延長できる（いまから0.75T）", async () => {
+    const u = await makeMember(db, "renew-just-after");
+    const p = await drawPrompt(db, u, { timeLimit: 1800 });
+    await shiftDeadline(db, p.prompt_id, 1800 + 30);
 
-    // 先に1件投稿しておく。**罰として消されないこと**を見るため
-    const kept = await drawPrompt(db, u, { timeLimit: 3600 });
-    const keptWork = await postWork(db, u, kept.prompt_id, "失敗前に投稿した作品");
-
-    const p = await drawPrompt(db, u, { timeLimit: 3600 });
-    await shiftDeadline(db, p.prompt_id, 3600 + 1801);
-    await value(
-      db,
-      { role: "service_role", uid: null },
-      `select public.expire_overdue_prompts(500)`,
-    );
-
-    const status = await db.query(`select status from public.prompts where id = $1`, [
+    const after = await value(db, asMember(u), `select public.renew_prompt_deadline($1)`, [
       p.prompt_id,
     ]);
-    assert(status.rows[0].status === "failed", "失敗になっていない");
+    assert(
+      after.seconds_left > 1340 && after.seconds_left <= 1350,
+      `残りが ${after.seconds_left} 秒（1350前後のはず）`,
+    );
+    assert(after.phase === "within", `延長したのに段階が ${after.phase}`);
+  });
 
-    // 失敗したお題の行も、候補も履歴も残っている
-    const stillThere = await db.query(
-      `select count(*)::int as n from public.prompt_cards where prompt_id = $1`,
+  await test("D", "数分・数時間の超過からでも延長できる", async () => {
+    const u = await makeMember(db, "renew-late");
+    const p = await drawPrompt(db, u, { timeLimit: 1800 });
+
+    // 旧実装ではここで RENEW_TOO_LATE になり、二度と延長できなかった
+    await shiftDeadline(db, p.prompt_id, 1800 + 6 * 3600);
+
+    const after = await value(db, asMember(u), `select public.renew_prompt_deadline($1)`, [
+      p.prompt_id,
+    ]);
+    assert(after.seconds_left > 1340, `残りが ${after.seconds_left} 秒`);
+    assert(after.renew_count === 1, `延長回数が ${after.renew_count}`);
+  });
+
+  await test("D", "読み直しても、延長後の予定終了時刻のまま", async () => {
+    const u = await makeMember(db, "renew-reload");
+    const p = await drawPrompt(db, u, { timeLimit: 1800 });
+
+    const after = await value(db, asMember(u), `select public.renew_prompt_deadline($1)`, [
+      p.prompt_id,
+    ]);
+
+    const again = await value(db, asMember(u), `select public.get_prompt_timer($1)`, [
+      p.prompt_id,
+    ]);
+    assert(
+      again.deadline_at === after.deadline_at,
+      "読み直したら予定終了時刻が変わった（画面側で持っている）",
+    );
+    assert(again.renew_count === 1, "読み直したら延長回数が消えた");
+  });
+
+  await test("D", "帯と制作画面が、同じ予定終了時刻を返す", async () => {
+    const u = await makeMember(db, "renew-same");
+    const p = await drawPrompt(db, u, { timeLimit: 1800 });
+    await value(db, asMember(u), `select public.renew_current_challenge()`);
+
+    const bar = await value(db, asMember(u), `select public.get_active_challenge()`);
+    const page = await value(db, asMember(u), `select public.get_prompt_timer($1)`, [
+      p.prompt_id,
+    ]);
+
+    assert(bar.deadline_at === page.deadline_at, "帯と制作画面で予定終了時刻が違う");
+    assert(bar.renew_count === page.renew_count, "帯と制作画面で延長回数が違う");
+  });
+
+  await test("D", "延長すると、延ばした量と新しい予定終了時刻が返る", async () => {
+    const u = await makeMember(db, "renew-tell");
+    await drawPrompt(db, u, { timeLimit: 3600 });
+
+    const r = await value(db, asMember(u), `select public.renew_current_challenge()`);
+    assert(r.renewed === true, "延長できたことが返っていない");
+    assert(r.granted_seconds === 2700, `足された秒が ${r.granted_seconds}（2700のはず）`);
+    assert(r.deadline_before && r.deadline_after, "前後の予定終了時刻が返っていない");
+    assert(
+      new Date(r.deadline_after) > new Date(r.deadline_before),
+      "新しい予定終了時刻が前より遅くなっていない",
+    );
+
+    // 画面に出す文の材料になるので、履歴にも同じ1件が残る
+    const notes = await value(db, asMember(u), `select public.get_my_notifications(20)`);
+    const ext = notes.filter((n) => n.kind === "deadline_extended");
+    assert(ext.length === 1, `延長の知らせが ${ext.length} 件（1件のはず）`);
+  });
+
+  await test("D", "延長できないときは、理由が言葉で返る", async () => {
+    const u = await makeMember(db, "renew-why");
+
+    // 無制限
+    const state = await startDraftOnly(db, u, { timeLimit: null });
+    await expectFailure(
+      () => value(db, asMember(u), `select public.renew_current_challenge()`),
+      "UNLIMITED_NO_RENEW",
+    );
+    await db.query(
+      `update public.draft_sessions set status='abandoned', abandoned_at=now() where id=$1`,
+      [state.session_id],
+    );
+
+    // 進行中の挑戦が無い
+    await expectFailure(
+      () => value(db, asMember(u), `select public.renew_current_challenge()`),
+      "NO_ACTIVE_CHALLENGE",
+    );
+
+    // 放置で破棄されたあと
+    const p = await drawPrompt(db, u, { timeLimit: 600 });
+    await agePolicy(db, 30);
+    await setLastActivity(db, { promptId: p.prompt_id }, 49 * 3600);
+    await expectFailure(
+      () => value(db, asMember(u), `select public.renew_prompt_deadline($1)`, [p.prompt_id]),
+      "CHALLENGE_DISCARDED",
+    );
+    await freshPolicy(db);
+  });
+
+  await test("D", "延長の回数に上限が無い", async () => {
+    const u = await makeMember(db, "renew-many");
+    const p = await drawPrompt(db, u, { timeLimit: 600 });
+
+    for (let i = 0; i < 5; i += 1) {
+      await value(db, asMember(u), `select public.renew_prompt_deadline($1)`, [p.prompt_id]);
+    }
+
+    const t = await value(db, asMember(u), `select public.get_prompt_timer($1)`, [p.prompt_id]);
+    assert(t.renew_count === 5, `延長回数が ${t.renew_count}（5のはず）`);
+  });
+
+  await test("D", "無制限には予定終了時刻も延長も無い（放置の破棄はある）", async () => {
+    const u = await makeMember(db, "time-unlimited");
+    const p = await drawPrompt(db, u, { timeLimit: null });
+    const t = await value(db, asMember(u), `select public.get_prompt_timer($1)`, [p.prompt_id]);
+
+    assert(t.is_unlimited === true, "無制限として返っていない");
+    assert(t.has_deadline === false, "無制限に予定終了時刻が入っている");
+    assert(t.can_renew === false, "無制限に延長ボタンが出る");
+    assert(t.overrun_seconds === 0, "無制限で超過が出ている");
+    assert(t.auto_discard_at !== null, "無制限に放置の破棄が効いていない");
+  });
+
+  await test("D", "制作時間をどれだけ超過しても、それだけでは破棄されない", async () => {
+    const u = await makeMember(db, "idle-not-overrun");
+    const p = await drawPrompt(db, u, { timeLimit: 600 });
+
+    await agePolicy(db, 30);
+    // 予定終了時刻は5日ぶん過ぎている。**だが操作はたったいま**
+    await shiftDeadline(db, p.prompt_id, 600 + 5 * 86400);
+    await setLastActivity(db, { promptId: p.prompt_id }, 60);
+
+    // **全体の件数ではなく、この挑戦を見る。**
+    // 同じ試験の中で他の人の作りかけも古くなっているので、
+    // 全体の数で見ると別の理由の破棄を拾ってしまう
+    await runChallengeSweep(db);
+
+    const t = await value(db, asMember(u), `select public.get_prompt_timer($1)`, [p.prompt_id]);
+    assert(t.phase === "overrun", `段階が ${t.phase}（overrun のはず）`);
+    assert(t.status === "active", `状態が ${t.status}`);
+    assert(t.is_discarded === false, "超過しただけで破棄された");
+    await freshPolicy(db);
+  });
+
+  await test("D", "23時間59分では、放置の予告が出ない", async () => {
+    const u = await makeMember(db, "idle-23h");
+    const p = await drawPrompt(db, u, { timeLimit: 600 });
+
+    await agePolicy(db, 30);
+    await setLastActivity(db, { promptId: p.prompt_id }, 24 * 3600 - 60);
+
+    await runChallengeSweep(db);
+    const notes = await value(db, asMember(u), `select public.get_my_notifications(20)`);
+    assert(
+      notes.filter((n) => n.kind === "inactivity_warning").length === 0,
+      "24時間に達する前に予告が出た",
+    );
+    await freshPolicy(db);
+  });
+
+  await test("D", "24時間で予告が1件出る。同じ周期では二度出ない", async () => {
+    const u = await makeMember(db, "idle-24h");
+    const p = await drawPrompt(db, u, { timeLimit: 600 });
+
+    await agePolicy(db, 30);
+    await setLastActivity(db, { promptId: p.prompt_id }, 24 * 3600 + 60);
+
+    await runChallengeSweep(db);
+    await runChallengeSweep(db);   // 2回目でも増えないこと
+
+    const notes = await value(db, asMember(u), `select public.get_my_notifications(20)`);
+    const warns = notes.filter(
+      (n) => n.kind === "inactivity_warning" && n.subject_id === p.prompt_id,
+    );
+    assert(warns.length === 1, `予告が ${warns.length} 件（1件のはず。2回目で重複した）`);
+    assert(warns[0].body.includes("あと1日"), `文言が違う: ${warns[0].body}`);
+    await freshPolicy(db);
+  });
+
+  await test("D", "制作を再開すると、放置の周期が数え直されて また予告できる", async () => {
+    const u = await makeMember(db, "idle-rearm");
+    const p = await drawPrompt(db, u, { timeLimit: 600 });
+
+    await agePolicy(db, 30);
+    await setLastActivity(db, { promptId: p.prompt_id }, 24 * 3600 + 60);
+    await runChallengeSweep(db);
+
+    // 再開（延長は有効操作）。トリガーが最終操作の時刻を進める
+    await value(db, asMember(u), `select public.renew_prompt_deadline($1)`, [p.prompt_id]);
+
+    const back = await value(db, asMember(u), `select public.get_prompt_timer($1)`, [p.prompt_id]);
+    assert(
+      back.seconds_until_discard > 47 * 3600,
+      `再開したのに破棄まで ${back.seconds_until_discard} 秒しかない`,
+    );
+
+    // また24時間放置する。**さっきと違う起点にする。**
+    // 予告が同じ周期かどうかは「放置の起点（秒まで）」で見分けるので、
+    // 同じ秒に揃えると、再開したのに同じ周期と判定される
+    await setLastActivity(db, { promptId: p.prompt_id }, 25 * 3600);
+    await runChallengeSweep(db);
+
+    const notes = await value(db, asMember(u), `select public.get_my_notifications(20)`);
+    const warns = notes.filter(
+      (n) => n.kind === "inactivity_warning" && n.subject_id === p.prompt_id,
+    );
+    assert(warns.length === 2, `再開をはさんだ予告が ${warns.length} 件（2件のはず）`);
+    await freshPolicy(db);
+  });
+
+  await test("D", "47時間59分では、まだ破棄されない", async () => {
+    const u = await makeMember(db, "idle-47h");
+    const p = await drawPrompt(db, u, { timeLimit: 600 });
+
+    await agePolicy(db, 30);
+    await setLastActivity(db, { promptId: p.prompt_id }, 48 * 3600 - 60);
+
+    await runChallengeSweep(db);
+
+    const t = await value(db, asMember(u), `select public.get_prompt_timer($1)`, [p.prompt_id]);
+    assert(t.is_discarded === false, "48時間の前に破棄扱いになった");
+    assert(t.status === "active", `48時間の前に状態が ${t.status} になった`);
+    await freshPolicy(db);
+  });
+
+  await test("D", "48時間で自動破棄され、記録が1件残る", async () => {
+    const u = await makeMember(db, "idle-48h");
+    const p = await drawPrompt(db, u, { timeLimit: 600 });
+
+    await agePolicy(db, 30);
+    await setLastActivity(db, { promptId: p.prompt_id }, 48 * 3600 + 60);
+
+    await runChallengeSweep(db);
+
+    const { rows } = await db.query(
+      `select status, discarded_at from public.prompts where id = $1`,
       [p.prompt_id],
     );
-    assert(stillThere.rows[0].n > 0, "失敗したお題のカードが消えている");
+    assert(rows[0].status === "discarded", `状態が ${rows[0].status}`);
+    assert(rows[0].discarded_at !== null, "破棄の時刻が入っていない");
 
-    // 投稿済みの作品は無傷
-    const work = await db.query(
-      `select deleted_at, is_published from public.works where id = $1`,
-      [keptWork],
+    const { rows: ev } = await db.query(
+      `select user_id, subject_id, reason, acknowledged_at
+         from public.notification_events
+        where kind = 'inactivity_discard' and subject_id = $1`,
+      [p.prompt_id],
     );
-    assert(work.rows[0].deleted_at === null, "失敗の罰として作品が削除された");
+    assert(ev.length === 1, `破棄の記録が ${ev.length} 件`);
+    assert(ev[0].user_id === u, "破棄の記録に持ち主が入っていない");
+    assert(ev[0].subject_id === p.prompt_id, "破棄の記録が別のお題を指している");
+    assert(ev[0].reason === "inactivity", `理由が ${ev[0].reason}`);
+    assert(ev[0].acknowledged_at === null, "作った時点で確認済みになっている");
+    await freshPolicy(db);
+  });
 
-    // そして新しいお題を引ける
-    const next = await drawPrompt(db, u, { timeLimit: 3600 });
-    assert(next.prompt_id !== p.prompt_id, "失敗したあと新しいお題を引けない");
+  await test("D", "破棄されると帯から消え、めくることも投稿もできない", async () => {
+    const u = await makeMember(db, "idle-gone");
+    const state = await startDraftOnly(db, u, { timeLimit: 600 });
+
+    await agePolicy(db, 30);
+    await setLastActivity(db, { sessionId: state.session_id }, 48 * 3600 + 60);
+
+    // 掃除を待たずに、その時点でもう活きていない
+    const ch = await value(db, asMember(u), `select public.get_active_challenge()`);
+    assert(ch === null, "破棄の時刻を過ぎても帯に出ている");
+
+    const slot = state.slots.find((x) => !x.candidates.some((c) => c.is_chosen));
+    await expectFailure(
+      () =>
+        value(db, asMember(u), `select public.reveal_card($1, $2, 0)`, [
+          state.session_id,
+          slot.card_slot_key,
+        ]),
+      "DRAFT_DISCARDED",
+    );
+
+    await expectFailure(
+      () => value(db, asMember(u), `select public.complete_draft($1)`, [state.session_id]),
+      "DRAFT_DISCARDED",
+    );
+
+    await runChallengeSweep(db);
+    const { rows } = await db.query(`select status from public.draft_sessions where id = $1`, [
+      state.session_id,
+    ]);
+    assert(rows[0].status === "discarded", `ドラフトの状態が ${rows[0].status}`);
+
+    // 破棄されたあとは、新しい挑戦を始められる
+    const again = await startDraftOnly(db, u, { timeLimit: 600 });
+    assert(again.session_id !== state.session_id, "破棄のあと新しく引けない");
+    await freshPolicy(db);
+  });
+
+  await test("D", "破棄の知らせは次に来たときに読め、確認すると繰り返さない", async () => {
+    const u = await makeMember(db, "idle-notice");
+    const p = await drawPrompt(db, u, { timeLimit: 600 });
+
+    await agePolicy(db, 30);
+    await setLastActivity(db, { promptId: p.prompt_id }, 48 * 3600 + 60);
+    await runChallengeSweep(db);
+
+    const before = await value(db, asMember(u), `select public.get_my_notifications(20)`);
+    const notice = before.find((n) => n.kind === "inactivity_discard");
+    assert(notice, "破棄の知らせが読めない");
+    assert(notice.acknowledged_at === null, "読む前から確認済みになっている");
+    assert(notice.body.includes("2日間"), `文言が違う: ${notice.body}`);
+
+    const after = await value(db, asMember(u), `select public.acknowledge_notification($1)`, [
+      notice.id,
+    ]);
+    const same = after.find((n) => n.id === notice.id);
+    assert(same.acknowledged_at !== null, "確認しても記録されていない");
+
+    // 他人の知らせは確認できない
+    const other = await makeMember(db, "idle-notice-other");
+    await expectFailure(
+      () => value(db, asMember(other), `select public.acknowledge_notification($1)`, [notice.id]),
+      "NOTIFICATION_NOT_FOUND",
+    );
+    await freshPolicy(db);
+  });
+
+  await test("D", "作りかけの行を消したあとでも、破棄の知らせは残る", async () => {
+    const u = await makeMember(db, "idle-tombstone");
+    const state = await startDraftOnly(db, u, { timeLimit: 600 });
+
+    await agePolicy(db, 30);
+    await setLastActivity(db, { sessionId: state.session_id }, 48 * 3600 + 60);
+    await runChallengeSweep(db);
+
+    // 掃除が実体を消したあとを作る
+    await db.query(`delete from public.draft_sessions where id = $1`, [state.session_id]);
+
+    const notes = await value(db, asMember(u), `select public.get_my_notifications(20)`);
+    const notice = notes.find(
+      (n) => n.kind === "inactivity_discard" && n.subject_id === state.session_id,
+    );
+    assert(notice, "本体を消したら破棄の知らせまで消えた");
+    await freshPolicy(db);
+  });
+
+  await test("D", "破棄の期限は最終操作から数える（予定終了時刻からではない）", async () => {
+    const u = await makeMember(db, "idle-basis");
+    const p = await drawPrompt(db, u, { timeLimit: 600 });
+
+    await agePolicy(db, 30);
+    // 予定終了時刻は3日前。最終操作は1時間前
+    await shiftDeadline(db, p.prompt_id, 600 + 3 * 86400);
+    await setLastActivity(db, { promptId: p.prompt_id }, 3600);
+
+    const t = await value(db, asMember(u), `select public.get_prompt_timer($1)`, [p.prompt_id]);
+    assert(t.is_discarded === false, "予定終了時刻を破棄の条件に使っている");
+    assert(
+      t.seconds_until_discard > 46 * 3600 && t.seconds_until_discard <= 47 * 3600,
+      `破棄まで ${t.seconds_until_discard} 秒（47時間前後のはず）`,
+    );
+    await freshPolicy(db);
+  });
+
+  await test("D", "規則を入れた直後は、古い作りかけでもすぐには破棄されない", async () => {
+    const u = await makeMember(db, "idle-floor");
+    const p = await drawPrompt(db, u, { timeLimit: 600 });
+
+    // 最終操作は10日前。**だが規則を入れたのはたったいま**
+    await freshPolicy(db);
+    await setLastActivity(db, { promptId: p.prompt_id }, 10 * 86400);
+
+    const swept = await runChallengeSweep(db);
+    assert(swept.discarded === 0, `当てた直後に ${swept.discarded} 件破棄された`);
+    assert(swept.warned === 0, `当てた直後に ${swept.warned} 件の予告が出た`);
+
+    const t = await value(db, asMember(u), `select public.get_prompt_timer($1)`, [p.prompt_id]);
+    assert(
+      t.seconds_until_discard > 47 * 3600,
+      `破棄まで ${t.seconds_until_discard} 秒（48時間ぶん残っているはず）`,
+    );
+  });
+
+  await test("D", "実制作時間は自己申告ではなく計測値（送っても上書きされる）", async () => {
+    const u = await makeMember(db, "measured-time");
+    const p = await drawPrompt(db, u, { timeLimit: 3600 });
+    await rewindChallenge(db, { promptId: p.prompt_id }, 1500);
+
+    // 申告値として 60 秒を送っても、計測値で上書きされる
+    // **申告値（p_actual_time_seconds）に 60 秒を渡す。**
+    // 受け口が上書きするので、記録には残らないはず
+    const workId = "00000000-0000-0000-0000-0000000000d1";
+    await asRole(db, asMember(u), async (c) => {
+      await c.query(
+        `select public.create_work($1, $2, $3, $4, 800, 600, $5, null, null, null, 60)`,
+        [workId, p.prompt_id, "計測される作品", `${u}/${workId}.png`, "original"],
+      );
+    });
+
+    const { rows } = await db.query(
+      `select actual_time_seconds from public.works where id = $1`,
+      [workId],
+    );
+    assert(
+      Number(rows[0].actual_time_seconds) >= 1500,
+      `記録が ${rows[0].actual_time_seconds} 秒（申告の60秒で上書きされている）`,
+    );
+  });
+
+  await test("D", "最初に選んだ時間・延長・実経過の3つを後から復元できる", async () => {
+    const u = await makeMember(db, "measured-parts");
+    const p = await drawPrompt(db, u, { timeLimit: 1800 });
+
+    await value(db, asMember(u), `select public.renew_prompt_deadline($1)`, [p.prompt_id]);
+    await value(db, asMember(u), `select public.renew_prompt_deadline($1)`, [p.prompt_id]);
+    await rewindChallenge(db, { promptId: p.prompt_id }, 900);
+
+    const t = await value(db, asMember(u), `select public.get_production_time($1)`, [p.prompt_id]);
+    assert(t.chosen_limit_seconds === 1800, `選んだ時間が ${t.chosen_limit_seconds}`);
+    assert(t.renew_count === 2, `延長回数が ${t.renew_count}`);
+    assert(t.granted_seconds >= 2600, `延長の合計が ${t.granted_seconds} 秒（2700前後のはず）`);
+    assert(t.elapsed_seconds >= 900, `実経過が ${t.elapsed_seconds} 秒`);
+
+    // 他人のお題は読めない
+    const other = await makeMember(db, "measured-other");
+    const mine = await value(db, asMember(other), `select public.get_production_time($1)`, [
+      p.prompt_id,
+    ]);
+    assert(mine === null, "他人の制作時間が読めている");
   });
 
   await test("D", "読み直しても時計は進んだまま（画面に依存しない）", async () => {
@@ -1180,78 +1446,50 @@ async function main() {
     );
   });
 
-  await test("H", "ドラフト中でも更新でき、総経過は減らない", async () => {
+  await test("H", "ドラフト中でも延長でき、総経過は減らない", async () => {
     const u = await makeMember(db, "clock-renew");
     const state = await startDraftOnly(db, u, { timeLimit: 3600 });
 
-    await expectFailure(
-      () => value(db, asMember(u), `select public.renew_draft_deadline($1)`, [state.session_id]),
-      "RENEW_TOO_EARLY",
-    );
-
-    // 残り10分（0.25T = 15分 を切っている）まで進める
+    // 残り10分まで進める
     await rewindChallenge(db, { sessionId: state.session_id }, 3000);
 
     const before = await value(db, asMember(u), `select public.get_active_challenge()`);
-    assert(before.can_renew === true, "0.25T を切ってもドラフト中に更新できない");
+    assert(before.can_renew === true, "ドラフト中に延長できない");
 
     const after = await value(db, asMember(u), `select public.renew_current_challenge()`);
+    // 残っていた600秒に 0.75T = 2700秒 が足される
     assert(
-      after.seconds_left > 2600 && after.seconds_left <= 2700,
-      `更新後の残りが ${after.seconds_left} 秒（0.75T = 2700秒のはず）`,
+      after.seconds_left > 3200 && after.seconds_left <= 3300,
+      `延長後の残りが ${after.seconds_left} 秒（600 + 2700 のはず）`,
     );
+    assert(after.granted_seconds === 2700, `足された秒が ${after.granted_seconds}`);
     assert(
       after.elapsed_seconds >= before.elapsed_seconds,
-      "更新で総経過時間が減った",
+      "延長で総経過時間が減った",
     );
-    assert(after.renew_count === 1, `更新回数が ${after.renew_count}（1のはず）`);
+    assert(after.renew_count === 1, `延長回数が ${after.renew_count}（1のはず）`);
+    assert(state.session_id, "ドラフトが始まっていない");
   });
 
-  await test("H", "ドラフトの猶予を使い切ると、めくれず確定もできない", async () => {
-    const u = await makeMember(db, "clock-expire");
+  await test("H", "ドラフトの予定終了時刻を過ぎても、めくれて確定もできる", async () => {
+    const u = await makeMember(db, "clock-overrun-draft");
     const state = await startDraftOnly(db, u, { timeLimit: 600 });
 
-    // 600秒 + 猶予300秒 を過ぎさせる
-    await rewindChallenge(db, { sessionId: state.session_id }, 1000);
+    // 600秒の枠を、さらに1時間過ぎさせる
+    await rewindChallenge(db, { sessionId: state.session_id }, 600 + 3600);
 
     const ch = await value(db, asMember(u), `select public.get_active_challenge()`);
-    assert(ch.is_expired === true, "猶予を過ぎても終了になっていない");
+    assert(ch !== null, "超過したドラフトが帯から消えた");
+    assert(ch.phase === "overrun", `段階が ${ch.phase}（overrun のはず）`);
+    assert(ch.is_discarded === false, "超過しただけで破棄扱いになった");
+    assert(ch.can_renew === true, "超過中のドラフトを延ばせない");
 
-    const slot = state.slots.find((x) => !x.candidates.some((c) => c.is_chosen));
-    await expectFailure(
-      () =>
-        value(db, asMember(u), `select public.reveal_card($1, $2, 0)`, [
-          state.session_id,
-          slot.card_slot_key,
-        ]),
-      "DRAFT_EXPIRED",
-    );
+    // **めくれる。確定もできる。**旧実装ではここで DRAFT_EXPIRED になっていた
+    const done = await finishDraft(db, u, state.session_id);
+    assert(done.prompt_id, "超過中にお題を確定できなかった");
 
-    await expectFailure(
-      () => value(db, asMember(u), `select public.complete_draft($1)`, [state.session_id]),
-      "DRAFT_EXPIRED",
-    );
-
-    await expectFailure(
-      () => value(db, asMember(u), `select public.renew_draft_deadline($1)`, [state.session_id]),
-      "RENEW_TOO_LATE",
-    );
-
-    const n = await value(
-      db,
-      { role: "service_role", uid: null },
-      `select public.expire_overdue_drafts(500)`,
-    );
-    assert(Number(n) >= 1, "掃除が猶予切れのドラフトを拾わなかった");
-
-    const st = await db.query(`select status from public.draft_sessions where id = $1`, [
-      state.session_id,
-    ]);
-    assert(st.rows[0].status === "failed", `ドラフトの状態が ${st.rows[0].status}`);
-
-    // 失敗したあとは、新しい挑戦を始められる
-    const again = await startDraftOnly(db, u, { timeLimit: 600 });
-    assert(again.session_id !== state.session_id, "失敗のあと新しく引けない");
+    const t = await value(db, asMember(u), `select public.get_prompt_timer($1)`, [done.prompt_id]);
+    assert(t.status === "active", `確定後のお題が ${t.status}`);
   });
 
   await test("H", "投稿すると時計が止まり、かかった時間が残る", async () => {
@@ -1289,8 +1527,9 @@ async function main() {
     assert(ch.is_unlimited === true, "無制限として返っていない");
     assert(ch.has_deadline === false, "無制限に期限が入っている");
     assert(ch.deadline_at === null, "無制限に期限の時刻が入っている");
-    assert(ch.can_renew === false, "無制限に更新ボタンが出る");
-    assert(ch.is_expired === false, "無制限が時間切れになる");
+    assert(ch.can_renew === false, "無制限に延長ボタンが出る");
+    assert(ch.is_discarded === false, "無制限が破棄扱いになる");
+    assert(ch.is_overrun === false, "無制限が超過扱いになる");
     assert(typeof ch.elapsed_seconds === "number", "無制限で経過時間が出ない");
 
     await expectFailure(
@@ -1311,8 +1550,9 @@ async function main() {
     await rewindChallenge(db, { sessionId: state.session_id }, 3000);
     await value(db, asMember(u), `select public.renew_current_challenge()`);
 
-    // 2回目。期限を5分過ぎてから押す（猶予の中）
-    await rewindChallenge(db, { sessionId: state.session_id }, 2700 + 300);
+    // 2回目。予定終了時刻を5分過ぎてから押す。
+    // 1回目で 600 + 2700 = 3300 秒後になっているので、3600 戻すと 300 秒の超過
+    await rewindChallenge(db, { sessionId: state.session_id }, 3600);
     await value(db, asMember(u), `select public.renew_current_challenge()`);
 
     const history = await value(db, asMember(u), `select public.get_my_renewals(50)`);
@@ -1727,7 +1967,10 @@ async function main() {
       `select public.flavor_vocab_is_allowed(1, '00000000-0000-0000-0000-000000000000')`,
       `select public.build_quiz_for_prompt('00000000-0000-0000-0000-000000000000')`,
       `select public.flavor_normalize('あ')`,
-      `select public.expire_overdue_prompts(1)`,
+      `select public.notify_overrun_challenges(1)`,
+      `select public.discard_inactive_challenges(1)`,
+      `select public.emit_notification(null, 'x', 'prompt', null, 'k', 't', 'b')`,
+      `select public.list_pending_push(1)`,
       `select public.get_usage_summary(30)`,
     ]) {
       await expectFailure(() => value(db, asMember(u), call), "permission denied");

@@ -882,7 +882,12 @@ export async function registerConcurrent(s, label, times) {
  */
 export async function submitWork(s, promptId, fields, png) {
   const page = await s.get(`/works/new?promptId=${promptId}`);
-  const form = forms(page.html).find((f) => f.fields.promptId !== undefined);
+  // **hidden の promptId だけでは選び分けられない。**
+  //   この画面には制作時間の帯（TimerBox）も出ていて、その延長ボタンも
+  //   同じ promptId を hidden で持つ。しかも延長は制作中いつでも押せるように
+  //   なった（P5）ので、延長フォームのほうが必ず先に現れる。
+  //   投稿フォームだけに付けた data-form="work" で選ぶ。
+  const form = forms(page.html).find((f) => f.frag.includes('data-form="work"'));
   if (!form?.actionId) throw new Error("/works/new に投稿フォームが見つかりません");
 
   // バイト列そのままでも、名前と種類を添えた形でも受ける

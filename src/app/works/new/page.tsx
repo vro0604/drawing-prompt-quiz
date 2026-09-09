@@ -1,7 +1,7 @@
 import Link from "next/link";
 import { getCurrentUser } from "@/features/auth/session";
 import { fetchMyPrompt, fetchPromptTimer } from "@/features/draft/rpc";
-import { fetchAccountState, fetchCurrentDocuments } from "@/features/account/rpc";
+import { fetchProductionTime } from "@/features/work/rpc";
 import { formatDuration } from "@/features/draft/types";
 import { TimerBox } from "@/app/prompt/[id]/_timer";
 import { WorkForm } from "./_form";
@@ -232,19 +232,24 @@ export default async function NewWorkPage({
     );
   }
 
-  // 投稿の画面でも時計は止まらない（D163）。ここに残り時間を出さないと、
-  // 「投稿画面を開いたまま猶予が切れた」が説明できない事故になる。
+  // 投稿の画面でも時計は止まらない（D163）。
   const timer = await fetchPromptTimer(promptId);
 
-  // 猶予を使い切っているときは、フォームを出さない。
-  // **status を待たない。**status が 'failed' になるのは掃除が回ったあとで、
-  // それまでの間もこのお題では投稿できない（投稿の受け口が断る）。
-  if (timer?.is_expired) {
+  // 制作時間は自己申告ではなく計測値を出す（2026-09-09）。
+  // ここで読んだ値を、フォームは**表示するだけ**で送信しない
+  const production = await fetchProductionTime(promptId);
+
+  // 【予定終了時刻を過ぎているだけなら、フォームは出す（2026-09-09）】
+  //   超過は失敗ではない。投稿もできる。
+  //   出さないのは、長い放置で自動破棄されたときだけ。
+  //   **status を待たない。**status が 'discarded' になるのは掃除が回ったあとで、
+  //   それまでの間もこのお題では投稿できない（投稿の受け口が断る）。
+  if (timer?.is_discarded) {
     return (
       <Shell>
-        <Notice title="この挑戦は時間切れで終了しました">
+        <Notice title="この制作は自動的に破棄されました">
           <p>
-            制作時間を延ばさないまま猶予を過ぎたため、このお題では投稿できません。
+            2日間操作がなかったため、制作途中のお題を自動的に破棄しました。
             描いた絵も、これまでの作品や記録も消えていません。
           </p>
           <p>

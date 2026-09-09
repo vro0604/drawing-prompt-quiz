@@ -3,6 +3,7 @@ import { notFound } from "next/navigation";
 import { subDirectiveLabel } from "@/features/modifier/types";
 import { shapeAssistLabel } from "@/features/shape-assist/types";
 import { fetchMyPrompt, fetchPromptTimer } from "@/features/draft/rpc";
+import { PushOptIn } from "@/app/_push-optin";
 import { getCurrentUser } from "@/features/auth/session";
 import {
   btnPrimary,
@@ -109,7 +110,13 @@ export default async function PromptPage({
           持ち込み（art_first）は投稿と同時に作られるお題なので、
           出すと「かかった時間 0秒」になる。**測っていない値を出さない。** */}
       {timer && prompt.origin !== "art_first" ? (
-        <TimerBox promptId={prompt.id} timer={timer} />
+        <>
+          <TimerBox promptId={prompt.id} timer={timer} />
+
+          {/* 通知の許可は、制作を始めたこの場面でだけ尋ねる。
+              サイトを開いた直後に尋ねない（_push-optin.tsx） */}
+          <PushOptIn />
+        </>
       ) : null}
 
       {/* **番号付きの並びにしない。**D158 は「複数のモーフに主対象・副対象の

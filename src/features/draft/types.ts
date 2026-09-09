@@ -155,42 +155,53 @@ export type UnchosenCard = {
 };
 
 /**
- * 制作挑戦の残り時間（get_prompt_timer の戻り値。D163）。
+ * 制作挑戦の残り時間（prompt_timer_json の戻り値）。
  *
- * 【読み方】
- *   is_unlimited が true なら、そのお題に期限は無い。
- *   更新も猶予も時間切れの失敗も起きないので、他の値は見なくてよい。
+ * 【2026-09-09 に意味が変わった】
+ *   deadline_at は **予定終了時刻**であって、作りかけを壊す期限ではない。
+ *   過ぎても失敗にならない。時計も止まらない。延長もできる。
+ *   猶予（grace）と時間切れの失敗（is_expired）は、値ごと撤去した。
  *
- *   有限のときは3つの時刻が並ぶ。
- *     renew_opens_at  ここから「時間を延ばす」を押せる
- *     deadline_at     0秒になる時刻。過ぎても即失敗ではない
- *     grace_ends_at   ここまでに延ばさないと挑戦失敗
+ *   作りかけが消える理由は1つだけ ——「長いあいだ操作が無かった」。
+ *     inactivity_warn_at  最終操作から24時間。予告が出る
+ *     auto_discard_at     最終操作から48時間。自動で破棄される
+ *   この2つは予定終了時刻とはまったく別の時計で動く。
  *
  * 【経過と残りは別の数】
- *   elapsed_seconds は started_at からの総経過で、更新しても減らない。
- *   seconds_left は「いまの期限まで」で、更新すると入れ替わる。
+ *   elapsed_seconds は started_at からの総経過で、延長しても減らない。
+ *   seconds_left は「いまの予定終了時刻まで」で、延長すると入れ替わる。
  *   片方をもう片方から作らないこと。
  */
 export type PromptTimer = {
-  status: "active" | "submitted" | "abandoned" | "failed";
+  status: "active" | "submitted" | "abandoned" | "failed" | "discarded";
+  /** within＝時間内 ／ overrun＝超過中 ／ discarded＝自動破棄済み ／ finished＝終了 */
+  phase: "within" | "overrun" | "discarded" | "finished";
   is_unlimited: boolean;
   has_deadline: boolean;
   /** 制作挑戦を始めた時刻（お題の確定時刻ではない） */
   started_at: string;
-  /** 開始からの総経過秒。更新しても猶予に入っても減らない */
+  /** 開始からの総経過秒。延長しても超過しても減らない */
   elapsed_seconds: number;
+  /** 予定終了時刻。**過ぎても挑戦は続く** */
   deadline_at: string | null;
   seconds_left: number | null;
+  /** 予定終了時刻を過ぎてからの秒 */
   overrun_seconds: number;
-  /** 猶予が終わるまでの秒 */
-  grace_left_seconds: number | null;
+  is_overrun: boolean;
+
+  /** 長い放置で自動破棄されたか。**超過ではここは立たない** */
+  is_discarded: boolean;
+  discarded_at: string | null;
+  last_activity_at: string;
+  inactivity_warn_at: string | null;
+  auto_discard_at: string | null;
+  seconds_until_discard: number | null;
+
+  /** 時刻の窓は無い。進行中で期限を持てば、いつでも延ばせる */
   can_renew: boolean;
-  renew_opens_at: string | null;
-  grace_ends_at: string | null;
-  is_expired: boolean;
   renew_count: number;
   time_limit_seconds: number | null;
-  /** 終わった時刻（投稿・失敗・放棄）。進行中は null */
+  /** 終わった時刻（投稿・放棄）。進行中は null */
   finished_at: string | null;
   /** この値を返したときのサーバー時刻 */
   server_now: string;
