@@ -46,6 +46,7 @@
     "test:db:upgrade": "node scripts/heavy.mjs アップグレード試験（test:db:upgrade） -- node test/db/upgrade.mjs",
     "check:vocab": "node scripts/vocab-audit.mjs",
     "check:docs": "node scripts/check-doc-counts.mjs",
+    "test:unit": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON test/unit/run.mjs",
     "test:e2e": "node test/e2e/browser.mjs",
     "test:e2e:selftest": "node test/e2e/record-selftest.mjs",
     "test:smoke:local": "node test/e2e/smoke.mjs",

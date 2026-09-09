@@ -57,8 +57,50 @@ DB verify の A20・A22 が落ちた。検査用利用者の集計行だけを�
 - 対応表を24語から広げるかどうか（いまは網羅していない）
 - 未着手のまま: 検索実装 / 未踏組み合わせ / D169再設計 / チュートリアル本体 /
   推薦 / analytics本体 / RPC既定EXECUTE全監査 / D172番号重複
+## 2026-09-10 P0〜P5 を段ごとの 8 commit にした（まだ deploy しない）
 
-### 触ったファイル
+### 直前に終えたこと
+
+150edda を土台に、この木の未コミット分（95ファイル）を段ごとの 8 commit に分けた。
+ファイル単位ではなく、行の塊ごとに段を割ってから index へ載せている
+（作業木の中身は 1 バイトも動かさず、index だけを段ごとに組み立てた）。
+
+  1. feat(draft): add single-pass draw and per-slot redo            11ファイル
+  2. feat(quiz): add staged exact and place answer flow             10
+  3. feat(results): add answer analysis and respondent comparison   11
+  4. feat(analysis): add creator drilldown and answer exclusion     10
+  5. feat(analysis): add per-work import capacity                   11
+  6. feat(consent): add consent gate and flavor composer            35
+  7. feat(challenge): add overrun inactivity and push notifications 46
+  8. docs: align P0-P5 launch and verification records              11
+
+自動生成物（統合.md ／ 統合サムネイル/）はどの commit にも入れていない。
+
+### 分けきれなかったところ（そのまま残した）
+
+P2 の作者結果の部品（_results.tsx の AuthorAnalysis）は、P3 の掘り下げと
+P4 の母数表示を body の中に持っている。P2 だけの姿は一度も書かれていないので、
+作り出さずに P2 の commit へ置いた。
+同じ理由で、P2 と P3 の試験は P4 の取り込み関数を呼ぶ（P4 で母数の定義が
+変わったときに書き直したため）。該当は 22 行。
+
+### 8 commit を作ったあとの実測（HEAD で回した）
+
+  型検査 0 / lint 0（警告2・既存）/ 単体 79 / 柵 30 / 配色 合格 / 語彙 652
+  DB構造 179 / DB横断 269 / upgrade 31 / スモーク 11 / ブラウザ 106
+  check:docs 14/14 / VAPID 無しの build 通過
+  本番相当DB: 6本すべて適用でき、関数 201 本・表 68 個
+
+ブラウザ試験は 2 回、別セッションとの端末の取り合いで壊れた（サーバーが落ちた／
+EADDRINUSE）。3 回目で 106/106。待ち受けの判定が pgrep -f で「待っている
+シェル自身」を数えていたので、process 名が node のものだけを見る形へ直した。
+
+### 次の一手
+
+deploy はまだしない。本番へ当てるときは db:apply:one で 6 本を順に当て、
+migration repair で履歴へ記録してから app を出す。db:deploy は通らない。
+
+### 触ったファイルのパス
 
 - `supabase/migrations/20260910140000_sub_directive.sql`（本番適用済み）
 - `src/features/modifier/{types.ts,rpc.ts}`（新規）
@@ -241,8 +283,56 @@ DBを先に当て、そのあと画面を出した。`start_draft` の引数が3
 ---
 ---
 ## 2026-09-09 形状アシストと Color / Sub Color の仕様を先に固めて置いた（D189・D190。実装はしない）
+  作業木: /Users/kazushi/Downloads/就活/ポートフォリオ/dpq-p0p5（branch p0-p5-only）
+  検査の記録: .test-logs/e2e-latest.txt ／ .test-logs/counts.json
 
-### 終えたこと
+---
+## 2026-09-10 この木は P0〜P5 だけを持つ（課金 v0・管理 v0 を外した）
+
+### この木が何か
+
+本流（main）には P0〜P5・課金 v0・管理 v0 が同時に入っている。
+本番へ出せる単位に切り分けるため、150edda を土台にして P0〜P5 だけを移した木。
+
+- ブランチ `p0-p5-only`
+- 入れていないもの: 課金 v0（Founding Creator）、管理 v0（通報の処理）
+- migration は52本。**本流の55本から、課金2本と管理1本を抜いた形。**
+  この3本は、コミットされていないのに本番へは既に入っている（2026-09-09 実測）
+
+### 本番へ当てる6本と、その順
+
+```
+20260907120000_single_pass_draw_and_slot_redo    （P0）
+20260908120000_answer_analysis                   （P2）
+20260908160000_analysis_drilldown                （P3）
+20260909090000_import_capacity                   （P4）
+20260909120000_consent_gate_and_flavor_compose   （P5-A）
+20260909150000_overrun_inactivity_notify         （P5-B）
+```
+
+P2 → P3 → P4 は同じ関数を順に作り直すので、**この順を入れ替えられない。**
+6本とも本番の最後（`20260909200000`）より前の時刻なので、
+`npm run db:deploy` は「最後より前への挿入」として断る。
+`npm run db:apply:one` で1本ずつ名指しして当てる。
+
+### この木での実測（2026-09-10）
+
+型検査エラー0 ／ lint エラー0・警告2（既存）／ 単体79 ／ 柵30 ／ 配色 ／ 語彙 ／
+DB構造179 ／ 縦断269 ／ アップグレード31 ／ スモーク11本 ／ ブラウザ106 ／
+件数照合14/14。すべて合格。
+
+VAPID の鍵が無くてもビルドは通り、「プッシュ通知は送られません。知らせは
+画面内にだけ出ます」と出て止まらない。課金・管理の環境変数は1つも要求しない。
+
+### 次の一手
+
+まだ commit していない。段分けの案は P0 → P1 → P2 → P3 → P4 → P5-A → P5-B の7つ。
+`統合.md` と `統合サムネイル/` は自動生成なので、commit に混ぜない。
+
+---
+## 2026-09-09 予定終了時刻を過ぎても失敗にしないようにし、放置の破棄と通知を作った（P5 追加）
+
+### 何ができるようになったか
 
 - 形状アシスト（D189）。お題の中身ではなく「どういう形として出すか」の
   取っかかりだけを渡す。操作は「なし／ランダム／自分で選ぶ」。
@@ -281,8 +371,167 @@ DBを先に当て、そのあと画面を出した。`start_draft` の引数が3
 
 ---
 ## 2026-09-09 検索の仕様を先に固めて置いた（D188。実装はしない）
+**制作の予定終了時刻を過ぎても、挑戦が失敗しなくなった。**これまでは予定終了時刻を
+過ぎると猶予（元の制限時間の半分）が始まり、猶予も過ぎると挑戦が「失敗」になって、
+投稿も延長もできなくなっていた。いまは過ぎても続けられる。タイマーも消えず、
+「制作時間を 08:32 超過しています」と超過した量が出る。
 
-### 終えたこと
+**制作時間を延長できるようになった。**利用者から「今のところ延長できた試しがない」
+という報告があり、実測で原因を確かめた。押せる時間帯が「残りが元の1/4を切ってから、
+超過して元の半分が過ぎるまで」しかなく、30分枠なら 22分30秒〜45分の23分間だけ
+だった。それ以外の時間はボタンそのものが出ない。いまは時間帯の制限が無く、
+始めた直後でも6時間超過していても押せる。押すと残っている時間の上に元の3/4が
+積まれ、「22分30秒 延長しました。新しい終了予定は 17:04 です。」と結果が出る。
+失敗したときは黙って何も起きない状態にせず、理由を出す。
+
+**作りかけが消える条件が「長いあいだ触っていないこと」だけになった。**
+最後に何か操作してから24時間で「あと1日で自動的に破棄されます」と予告が出て、
+48時間で自動的に破棄される。制作の予定終了時刻を何日超過していても、
+操作を続けているあいだは消えない。
+
+**破棄されたことが必ず伝わるようになった。**破棄した事実を記録として残していて、
+作りかけの実体を掃除が消したあとでも、次にサイトを開いたときに
+「2日間操作がなかったため、制作途中のお題を自動的に破棄しました」と出る。
+「確認しました」を押すまで出続け、押したら履歴に残るだけになる。
+
+**ブラウザの通知を受け取れるようにした（鍵を設定した場合）。**サイトを閉じていても
+端末に通知が届く。ただし**サイトを開いた直後に許可を求めることはしない。**
+制作を始めた場面で「制作時間やお題の期限を通知しますか？」と説明を出し、
+利用者がボタンを押したときに初めてブラウザの許可の窓が開く。断っても制作はできる。
+
+**投稿するときの「実制作時間」の申告欄を外した。**自分で好きな時間を選んで記録を
+書き換えられる形をやめ、サーバーが測った値を出すだけにした。画面から欄を消すだけ
+では足りない（フォームを直接叩けば送れる）ので、受け口でも送られてきた値を捨てて
+計測値で上書きする。
+
+### 何を引き換えにしたか
+
+通知は1日1回の掃除が回ったときにまとめて作られる。したがって24時間の予告も
+48時間の破棄も、**最大で約24時間遅れて届く。**破棄の判定そのものは DB 側で
+正確に48時間として持っているので「48時間より早く消える」ことはなく、
+時計・投稿・延長は掃除を待たずにその時点で正しく振る舞う。
+より正確にするには `vercel.json` の Cron を1時間ごとへ変える必要があるが、
+今回は変えていない（勝手に実行回数を増やさないため）。
+
+ブラウザの通知は、本番の鍵（VAPID）を設定していないので、いまは送られない。
+鍵の作り方と貼る場所は `docs/web-push-setup.md`、鍵を作る道具は
+`scripts/gen-vapid.mjs`。未設定でもサイトは動き、知らせは画面内に出る。
+
+`status = 'failed'`（旧・猶予切れ）の行は書き換えていない。過去の記録として残る。
+
+### 何が何を呼び、値がどこからどこへ渡るか
+
+時計の出どころは1つのまま。`timer_core_json` が段階（時間内／超過中／破棄済み／
+終了）を決め、`prompt_timer_json` と `draft_timer_json` がそれを呼び、
+`get_active_challenge` が帯へ返す。ここに `last_activity_at`（最後に操作した時刻）
+と `auto_discard_at`（破棄される時刻）が加わった。
+
+最後に操作した時刻は、行が実際に書き換わったときにトリガーが入れる
+（`prompts` / `draft_sessions` / `draft_candidates` の3つ）。
+**入口ごとに書き足していない。**読み取りの関数はすべて `stable` で1バイトも
+書かないので、ページを開いただけでは延命されない。
+
+放置の予告と破棄は掃除（`/api/cron/cleanup` → `runCleanup`）が回す。
+`notify_overrun_challenges` → `notify_inactive_challenges` →
+`discard_inactive_challenges` の順で、それぞれが `emit_notification` を呼んで
+`notification_events` に1行書く。同じことを二度書かないよう `dedupe_key` で
+押さえる。そのあと `list_pending_push` が未送信のぶんを返し、
+`src/features/notify/push.ts` がブラウザの中継所へ送って `mark_push_result` で
+結果を書く。
+
+画面側は `/api/notifications` を通して `get_my_notifications` を読み、
+`src/app/_notices.tsx` が未確認のものを本文の上に出す。「確認しました」を押すと
+`acknowledge_notification` が確認の時刻を入れる。
+
+### どこまでで、どこからが未着手か
+
+DB・画面・掃除・通知・プッシュの送信まで作った。本番へは当てていないし、
+commit もしていない。ブラウザの通知は、本物の端末で受け取るところまでは
+確かめていない（暗号化が正しいことは、受け取る側の手順で開き直す試験で確認した）。
+
+### 全部の検査を通したときに見つかった不具合と、その直し
+
+**投稿できなくなっていた。**投稿の検査11本のうち9本が落ちた。投稿画面で
+「公開して投稿する」を押したはずが、実際には「制作時間を延ばす」が押されていた。
+投稿画面の上には時計の欄が出ていて、延長ボタンも投稿ボタンも「どのお題か」を
+同じ名前の隠し項目で持つ。検査の道具は、その隠し項目を持つ最初のフォームを
+投稿フォームだと思い込んでいた。**以前は延長ボタンが短い時間帯にしか出なかった
+ので、この取り違えは起きなかった。**いつでも押せるようにしたことで表に出た。
+投稿フォームだけに `data-form="work"` の目印を付け、道具はそれで選ぶようにした。
+
+**運営画面と知らせの窓口を、試験の前に温めるようにした。**知らせは全ページから
+呼ばれるので、画面の組み立てと同時に走ると両方が十数秒かかる（実測で
+`/api/notifications` が 12.9秒）。`test/e2e/browser.mjs` の下ごしらえに
+`/api/challenge`・`/api/notifications`・`/admin/reports` を足した。
+
+**アップグレード試験のモードの数を直した。**「4件のはず」の判定が 2026-09-06 の
+もので、2026-09-08 に足した持ち込み（art_first）を数えていなかった。5件に直した。
+これは P5 の作業ではなく、別作業線の取りこぼし。
+
+### 実測（この端末で回したもの）
+
+- `npm run test:e2e` 118件すべて合格（他の実行が1つも無い状態で）
+- `npm run test:smoke:local` 11本すべて合格
+- `npm run test:db` 320件すべて合格 ／ `npm run test:db:upgrade` 31件すべて合格
+- `npm run test:unit` 91件すべて合格 ／ `npm run db:verify:local` 合格200・不合格0
+- `npm run typecheck` エラー0 ／ `npm run lint` エラー0
+- `npm run check:docs` 14件すべて一致（migration 55・DB構造200・縦断320・
+  ブラウザ118。うち課金ぶんは別作業線）
+
+**同じ端末で別の Claude の作業線が同時に動いていると、この計測は取れない。**
+両方が同じフォルダで検証用サーバーを立て、ポート3220を取り合う。実際に4回、
+測定が壊れた（相手が `next dev` をまとめて終了させた回もある）。
+サーバーの応答が 96〜112秒になり、時間切れが14件出た回もある。
+
+### 触ったファイル
+
+- `supabase/migrations/20260909150000_overrun_inactivity_notify.sql`（新規）
+- `src/features/notify/{types,rpc,push}.ts`（新規）
+- `src/app/api/notifications/route.ts`・`src/app/api/push/route.ts`（新規）
+- `src/app/_notices.tsx`・`src/app/_push-optin.tsx`・`public/sw.js`（新規）
+- `scripts/gen-vapid.mjs`・`docs/web-push-setup.md`（新規）
+- `src/app/_challenge-bar.tsx`・`src/app/prompt/[id]/_timer.tsx`
+- `src/features/challenge/{types,rpc,warning}.ts`・`src/features/draft/types.ts`
+- `src/app/works/new/{_form,page,actions}.tsx`・`src/features/work/{types,rpc}.ts`
+- `src/features/cleanup/run.ts`・`src/app/layout.tsx`・`src/app/play/page.tsx`
+- `scripts/db-checks.mjs`・`scripts/check-env.mjs`・`.env.example`
+- `scripts/smoke-{work,answer,profile,cutover}.mjs`
+- `supabase/manual/20260905_inspect_prompt_deadlines.sql`
+- `test/db/{run,upgrade,helpers}.mjs`・`test/unit/run.mjs`
+- `test/e2e/{browser,server}.mjs`
+- `scripts/_smoke-http.mjs`（投稿フォームの選び方）
+- `README.md`・`docs/test-layers.md`・`docs/launch-checklist.md`（件数）
+- `docs/decisions.md`（D183〜D186）
+
+### 次の一手
+
+本番へ当てるなら DB が先（`npm run db:deploy` → `npm run db:verify:keychain`）。
+画面を先に出すと `get_my_notifications` などが無くて失敗する。
+**まだ commit も deploy もしていない。**
+
+Notion の「つたわるかな｜画面と機能の対応表」は更新済み（2026-09-09 5回目）。
+
+残っている判断は3つ。
+1. 掃除は1日1回のままなので、24時間の予告と48時間の破棄は最大で約24時間遅れる。
+   1時間ごとに変えるかどうかはユーザーの判断待ち（勝手に高頻度化していない）。
+2. ブラウザの通知の鍵（VAPID）は本番に設定していない。手順は
+   `docs/web-push-setup.md`、鍵を作る道具は `scripts/gen-vapid.mjs`。
+   設定するまで、通知の案内は画面に出ない。
+3. 画面を見ているあいだは画面内の知らせを出し、閉じているあいだだけ
+   ブラウザの通知を出す形にしてあるが、**利用者の許可の設定によっては
+   ブラウザが独自に汎用の通知を出すことがあり、そこは保証できない。**
+
+---
+## 2026-09-09 規約同意を登録時へ移し、文章を組み立てられるようにし、時計を作り直した（P5）
+
+### 何ができるようになったか
+
+規約への同意を、作品を投稿するときではなく**アカウントを登録するときに**求める
+ようになった。投稿の画面から同意欄が消えた。同意していない登録者は、通常の画面を
+開こうとすると同意の画面へ送られる。ただし**いま作業している人が途中で止まることは
+ない。**止めるかどうかは「そのセッションがいつ始まったか」で決めていて、
+関門を置くより前に始まったセッションは止めない。次にログインしたときに止まる。
+規約を改定したときも同じで、改定より前から作業している人は止まらない。
 
 - 検索システムの仕様を `docs/decisions.md` の D188 として書いた。
   **コードは1行も書いていない。**いまは作らない。着手の合図は
@@ -318,3 +567,85 @@ DBを先に当て、そのあと画面を出した。`start_draft` の引数が3
 - `PROGRESS.md`
 
 ---
+作者が作品に添える短い文章を、**分類から語を探して組み立てられる**ようになった。
+これまでは90語が品詞ごとに一列に並ぶだけで、助詞が無く、何語並べても1文だった。
+いまは9つの分類（もの・場所・現象・動き・ようす・関係・助詞・つなぎ・名）から探し、
+助詞を挟み、選んだ語を「上へ」「下へ」で並べ替え、語と語のあいだで文を切れる。
+最大3文。語彙は90語から178語に増えた。自由に打ち込める欄は1つも無い
+（打てるのは語を絞り込む欄だけで、そこへ打った文字は送信されない）。
+
+制作中の時計が2つの形に分かれた。**いま描いているお題のページでは、画面いちばん上に
+横幅いっぱいの大きな帯**が出て、残り時間がいちばん大きな字で出る。それ以外のページ
+では細い帯になり、残り時間と「制作へ戻る」だけになる。どちらも画面に貼り付いていて
+スクロールしても動かない。残り時間が減ると色が変わり、最終段階では赤くなって点滅する。
+点滅は「動きを減らす」設定にしている人には出ないが、色と「まもなく期限」という
+文言で同じことが伝わる。
+
+### 何を引き換えにしたか
+
+トップ・ランキング・公開プロフィールの3つは、同意していなくても開ける。
+この3つは**いま認証を1行も読んでいない**ので、止めるには利用者ごとの生成に
+変える必要がある。見えるものは未サインインの訪問者と同じで、そこで提供される
+サービスは無い。**これは要求（「未同意のまま通常サービスへ進ませない」）からの
+逸脱として報告した。**
+
+まったくの新規登録では、同意のチェックを入れても**その場では記録されない。**
+メールの確認が終わるまで ID が確定しないため。確認のあと最初に開いたときに
+同意の画面が出て、そこで記録する。ゲストからの昇格はその場で記録できる。
+
+制作中ページの帯が大きくなったぶん、本文が下へ押される。帯の高さは実際に測って
+同じだけ空けているので重なりはしないが、**縦に見える本文の量は減った。**
+
+語数の上限を12から24へ広げた。3文にすると12語では1文4語になるため。
+**24という数はプロダクトとしての上限が未決なので、技術上の上限と同じにした暫定。**
+
+### 何が何を呼んでいるか
+
+同意の関門。ページの先頭で `requireConsent()` を呼ぶ（9ページ）。これが
+`consent_status()` を読み、`gate_required` が真なら `/consent` へ送る。
+`consent_status()` は JWT の iat（セッションの開始時刻）と、`consent_gate` の
+installed_at・未同意の版の published_at の遅いほうを比べる。
+`/consent` の同意ボタンは `agree_to_documents` を呼び、`revalidatePath("/", "layout")`
+で全ページを作り直させてから元の場所へ戻す。**判定は DB 側だけが持っていて、
+画面は版も時刻も比べない。**
+
+文章の組み立て。`get_flavor_vocab` が分類ごとの語と上限（`flavor_limits`）を返す。
+画面（`_flavor-composer.tsx`）は語の並びを状態として持ち、足す・外す・上下・
+文を切るの勘定を `features/flavor/compose.ts` に任せる。保存は隠し欄2つ
+（語のIDと区切りの位置をカンマでつないだもの）を受け口へ送り、受け口が数の並びに
+直して `set_flavor_text(work, ids, breaks)` を呼ぶ。**保存のときも同じ関門
+（`flavor_block_reason`）を通る。**読み出しは `get_work_flavor` が文ごとに分けて返す。
+
+時計。出どころは変えていない。`get_active_challenge` →`/api/challenge` → 帯。
+帯は `usePathname()` が「いまの挑戦へ戻る」の行き先と同じかどうかで大小を決める。
+危険度の段階は `features/challenge/warning.ts` の `THRESHOLDS` 1か所が決め、
+帯は段階の名前だけを見る。**しきい値の数は画面にも試験にも書いていない。**
+
+### 触ったファイル
+
+新規
+- `supabase/migrations/20260909120000_consent_gate_and_flavor_compose.sql`
+- `src/features/consent/rpc.ts` `src/features/flavor/compose.ts`
+  `src/features/challenge/warning.ts`
+- `src/app/consent/page.tsx` `src/app/consent/actions.ts`
+- `src/app/works/[id]/_flavor-composer.tsx`
+
+変更
+- `src/app/_challenge-bar.tsx` `src/app/globals.css`
+- `src/app/account/page.tsx` `src/app/account/actions.ts`
+- `src/app/works/new/{page,_form,actions}` `src/app/works/import/{page,_form,actions}`
+- `src/app/works/[id]/{page,actions,_after}.tsx`
+- `src/features/flavor/{types,rpc}.ts`
+- `scripts/db-checks.mjs`（表の数を57から59へ）
+- `test/db/{harness,helpers,run}.mjs` `test/e2e/{seed,browser}.mjs` `test/unit/run.mjs`
+- `docs/decisions.md`（D180・D181・D182）
+
+### 実測（この往復で通したもの）
+
+単体 74/74 ／ 縦断 272/272 ／ DB構造 187（不合格0） ／ ブラウザ 105/105 ／
+スモーク 11/11 ／ 柵 30/30 ／ 型検査・build・配色いずれも成功 ／ lint エラー0・警告3（既存）。
+`npm run test:db:upgrade` は 29/30（別作業が draft_modes に5件目を足したことによる期待値ずれ）。
+
+### 次の一手
+
+本番へは未反映・未コミット。DB を先に当てないと作者の画面が「関数が無い」で失敗する。

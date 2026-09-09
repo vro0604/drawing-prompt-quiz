@@ -10,7 +10,7 @@
  *   rpc     … 指定のロールで関数を呼び、成功／権限エラーを判定すること
  */
 
-/** 誰も直接読めない12表 */
+/** 誰も直接読めない17表 */
 export const SEALED_TABLES = [
   "draft_candidates",
   "prompt_cards",
@@ -29,6 +29,22 @@ export const SEALED_TABLES = [
   // D176。自己申告の得意分野。読み書きは set_my_specialties /
   // get_my_specialties / get_public_profile だけ（2026-09-08）
   "profile_specialties",
+  // D178。作者が分析から外した回答（2026-09-08）
+  "analysis_exclusions",
+  // D179。取り込み枠まわり4表（2026-09-09）。
+  // 読み書きは作者向け RPC と、運営の鍵で呼ぶ付与の関数だけ
+  "work_import_state",
+  "work_capacity_grants",
+  "analysis_imports",
+  "capacity_notifications",
+  "consent_gate",
+  "flavor_vocab_categories",
+  // 2026-09-09（P5 タイマー追加分）。放置の期限と、知らせの3表。
+  // 読み書きはすべて RPC を通す
+  "draft_lifecycle_policy",
+  "notification_events",
+  "notification_deliveries",
+  "push_subscriptions",
 ];
 
 /** anon / authenticated が列権限を持つ10表 */
@@ -535,20 +551,33 @@ export const checks = [
     // 内訳は docs/decisions.md の D158〜D164 の実装。
     // 2026-09-05 にさらに2表増えた（保存枠 saved_carry_slots と、
     // 保存枠を使った派生お題 prompt_carry_slots）。
-    // 2026-09-08 に2表増えた。admin_audit_log（管理 v0 / D177）と
-    // profile_specialties（プロフィール拡張 / D176）。
-    // **どちらか一方の数え直しだけを残すと、もう一方が偽の不合格になる。**
-    // 期待値の出どころ: 2026-09-09 に、この2本を含む47本を
-    // まっさらな検査用DBへ当てて数えた実測（52表 / RLS有効52表 / 門番9つ）。
-    name: "public スキーマの表が52個",
-    expected: 52,
+    // 2026-09-08 に3表増えた。
+    //   ・profile_specialties  … 20260908150000_profile_avatar_and_specialties.sql（D176）
+    //   ・analysis_exclusions  … 20260908160000_analysis_drilldown.sql（D178）
+    // 2026-09-09 に4表増えた。取り込み枠（D179）。
+    //   ・work_import_state ・work_capacity_grants
+    //   ・analysis_imports  ・capacity_notifications
+    // 2026-09-09 にさらに2表増えた（P5）。
+    //   ・consent_gate            … 規約同意の関門を置いた時刻
+    //   ・flavor_vocab_categories … フレーバー語彙の分類
+    // 2026-09-09 にさらに4表増えた（P5 タイマー追加分）。
+    //   ・draft_lifecycle_policy    … 放置の予告と破棄の期限（24h / 48h）
+    //   ・notification_events       … 利用者へ伝える出来事。自動破棄の記録も兼ねる
+    //   ・notification_deliveries   … どの経路で送ったか
+    //   ・push_subscriptions        … ブラウザのプッシュの宛先
+    // 合わせて 62。数が合わないときは、どの migration が入っていないかを先に見る。
+    //
+    // **この作業木（p0-p5-only）は P0〜P5 だけを持つ。**課金 v0 の5表と
+    // 管理 v0 の admin_audit_log は入っていないので、本流の 68 とは合わない。
+    name: "public スキーマの表が62個",
+    expected: 62,
     sql: `select count(*)::int from pg_tables where schemaname = 'public'`,
     detailSql: `select tablename from pg_tables
                  where schemaname = 'public' order by tablename`,
   },
   {
     group: "構造",
-    name: "遮断13表がすべて存在する",
+    name: "遮断24表がすべて存在する",
     expected: SEALED_TABLES.length,
     sql: `select count(*)::int from pg_tables
            where schemaname = 'public' and tablename = any($1)`,
@@ -556,8 +585,8 @@ export const checks = [
   },
   {
     group: "構造",
-    name: "52表すべてで RLS が有効",
-    expected: 52,
+    name: "62表すべてで RLS が有効",
+    expected: 62,
     sql: `select count(*)::int from pg_class c
             join pg_namespace n on n.oid = c.relnamespace
            where n.nspname = 'public' and c.relkind = 'r' and c.relrowsecurity`,
@@ -599,7 +628,7 @@ export const checks = [
   // ───────────────────────────── 権限 ─────────────────────────────
   {
     group: "権限",
-    name: "遮断13表に anon/authenticated の権限が0件",
+    name: "遮断24表に anon/authenticated の権限が0件",
     expected: 0,
     sql: `select count(*)::int from information_schema.column_privileges
            where table_schema = 'public'
@@ -609,7 +638,7 @@ export const checks = [
   },
   {
     group: "権限",
-    name: "遮断13表に PUBLIC / anon / authenticated の権限が0件（種類を漏らさず）",
+    name: "遮断24表に PUBLIC / anon / authenticated の権限が0件（種類を漏らさず）",
     // 上の information_schema による検査は SELECT / INSERT / UPDATE /
     // REFERENCES の4種しか見えない。**DELETE や TRUNCATE だけを
     // 配られていても気づけない。** relacl / attacl を展開して、
@@ -624,7 +653,7 @@ export const checks = [
   },
   {
     group: "権限",
-    name: "遮断13表に RLS ポリシーが0本",
+    name: "遮断24表に RLS ポリシーが0本",
     expected: 0,
     sql: `select count(*)::int from pg_policies
            where schemaname = 'public' and tablename = any($1)`,

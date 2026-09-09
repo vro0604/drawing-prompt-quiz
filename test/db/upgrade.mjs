@@ -435,9 +435,11 @@ async function main() {
       `見えるモードが ${visible.join(",")}（normal, hard のはず）`,
     );
 
-    // 行そのものは残っている（過去のお題が参照しているため）
+    // 行そのものは残っている（過去のお題が参照しているため）。
+    // 5件の内訳は normal / hard と、隠してある旧2種 と、持ち込み（art_first。
+    // これも一般利用者には出さない。2026-09-08 の migration で足した）
     const all = await db.query(`select count(*)::int as n from public.draft_modes`);
-    assert(all.rows[0].n === 4, `モードの行が ${all.rows[0].n} 件（4件のはず）`);
+    assert(all.rows[0].n === 5, `モードの行が ${all.rows[0].n} 件（5件のはず）`);
   });
 
   await test("古い回答は旧方式の印が付き、内訳はビタ当てのまま", async () => {
