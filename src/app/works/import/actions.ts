@@ -7,7 +7,6 @@ import { readImageInfo } from "@/features/work/image";
 import { callCreateArtFirstWork } from "@/features/artfirst/rpc";
 import { callSetCompleteness, removeWorkImage, uploadWorkImage } from "@/features/work/rpc";
 import { DEFAULT_COMPLETENESS, MAX_IMAGE_BYTES, type Division } from "@/features/work/types";
-import { callAgreeToDocuments } from "@/features/account/rpc";
 
 /**
  * 持ち込み投稿の Server Action。
@@ -73,14 +72,8 @@ export async function createArtFirstWorkAction(form: FormData): Promise<void> {
     );
   }
 
-  // --- 1-b. 規約への同意（画像を上げる前に済ませる）---------------------------
-  if (str(form, "agreeDocs") === "on") {
-    try {
-      await callAgreeToDocuments(str(form, "termsVersion"), str(form, "privacyVersion"));
-    } catch (e) {
-      backWithError(e instanceof Error ? e.message : String(e));
-    }
-  }
+  // 【1-b は無くなった】規約への同意は登録のときに済ませる（P5）。
+  //   works の門番が未同意の INSERT を断るので、受け口の守りは変わらない。
 
   // --- 2. 語が選ばれているか ---------------------------------------------------
   //

@@ -672,6 +672,30 @@ export async function drawPrompt(s, modeKey, timeLimitSeconds = "3600") {
   return { promptId, answers, answerLabels: [...answers.values()] };
 }
 
+/**
+ * 同意の画面が出ていたら、同意して通る（P5）。
+ *
+ * 【なぜ検査でこれをやるか】
+ *   規約への同意は登録のときに求める。ところが検査用の利用者は
+ *   運営の口から直接作っていて、登録の画面を通っていない。
+ *   本物の利用者なら、次にログインしたときに同意の画面が出て、
+ *   そこで1回押して先へ進む。**その1回を、ここで代わりに押している。**
+ *
+ *   同意そのものの検査は smoke:account が別に行う
+ *   （同意しないと登録が通らないことも見る）。
+ *
+ * 同意が要らないときは /consent がトップへ送るので、
+ * 同意のフォームが見つからず、何もせずに戻る。
+ */
+export async function passConsent(s) {
+  const page = await s.get("/consent");
+  const form = forms(page.html).find((f) => /同意して続ける/.test(f.text));
+  if (!form?.actionId) return false;
+
+  await s.post("/consent", { [form.actionId]: "", ...form.fields });
+  return true;
+}
+
 /** /account でサインイン済みかどうか */
 export function isSignedIn(html) {
   return /登録ユーザーとしてサインインしています/.test(textOf(html));
@@ -697,6 +721,12 @@ export async function signIn(s, email, password) {
       `検査用の利用者としてサインインできませんでした: ${textOf(after.html).slice(0, 120)}`,
     );
   }
+
+  // ログインした直後に、規約への同意を求められることがある（P5）。
+  // **人がやることと同じことをする。**検査用の利用者は運営の口から直接
+  // 作っているので、登録の画面を通っておらず、同意の記録が無い。
+  await passConsent(s);
+
   return after;
 }
 
@@ -777,12 +807,33 @@ async function registerForm(s) {
   return form;
 }
 
+/**
+ * 登録フォームに添える規約への同意（P5）。
+ *
+ * 同意は**登録のときに求める**ようになった。チェックが無ければ登録が通らない。
+ * ここで自動的に同意させているのは、**この関数を使うすべてのスモークが
+ * 「登録できること」を確かめる目的だから。**同意そのものの検査は
+ * smoke:account が別に行う（同意しないと登録が通らないことも見る）。
+ */
+function consentFields(form) {
+  return {
+    agreeDocs: "on",
+    termsVersion: form.fields.termsVersion ?? "",
+    privacyVersion: form.fields.privacyVersion ?? "",
+  };
+}
+
 /** /account の登録フォームを送る。ゲストなら昇格、未サインインなら新規作成 */
 export async function register(s, label) {
   const { email, password } = newCredentials(label);
   const form = await registerForm(s);
 
-  const after = await s.post("/account", { [form.actionId]: "", email, password });
+  const after = await s.post("/account", {
+    [form.actionId]: "",
+    email,
+    password,
+    ...consentFields(form),
+  });
   return { email, password, page: after };
 }
 
@@ -805,7 +856,12 @@ export async function registerConcurrent(s, label, times) {
 
   const pages = await Promise.all(
     Array.from({ length: times }, () =>
-      s.post("/account", { [form.actionId]: "", email, password }),
+      s.post("/account", {
+        [form.actionId]: "",
+        email,
+        password,
+        ...consentFields(form),
+      }),
     ),
   );
 
@@ -815,14 +871,9 @@ export async function registerConcurrent(s, label, times) {
 /**
  * 投稿フォームを送る。戻り値は移動先のページ
  *
- * 【規約への同意】
- *   P3 以降、初回の投稿には利用規約とプライバシーポリシーへの同意が要る。
- *   未同意なら画面に同意欄（agreeDocs と版の hidden）が出るので、
- *   出ていればそのまま同意して送る。
- *
- *   ここで自動的に同意させているのは、**この関数を使うすべてのスモークが
- *   「投稿できること」を確かめる目的だから**。同意そのものの検査は
- *   smoke:account が別に行う（同意しないと投稿できないことも見る）。
+ * 【規約への同意は、もうここでは出ない（P5）】
+ *   同意は登録のときに済ませる。投稿の画面から同意欄は消えた。
+ *   守り自体は変わっておらず、works の門番が未同意の INSERT を断る。
  *
  * 【4番目の引数】
  *   ふつうは PNG のバイト列をそのまま渡す（名前と種類は smoke.png / image/png）。
@@ -834,15 +885,6 @@ export async function submitWork(s, promptId, fields, png) {
   const form = forms(page.html).find((f) => f.fields.promptId !== undefined);
   if (!form?.actionId) throw new Error("/works/new に投稿フォームが見つかりません");
 
-  // 同意欄が出ているときだけ、版を添えて同意する
-  const agree = /name="agreeDocs"/.test(page.html)
-    ? {
-        agreeDocs: "on",
-        termsVersion: form.fields.termsVersion ?? "",
-        privacyVersion: form.fields.privacyVersion ?? "",
-      }
-    : {};
-
   // バイト列そのままでも、名前と種類を添えた形でも受ける
   const file = ArrayBuffer.isView(png)
     ? { field: "image", bytes: png, name: "smoke.png", type: "image/png" }
@@ -850,7 +892,7 @@ export async function submitWork(s, promptId, fields, png) {
 
   const after = await s.post(
     `/works/new?promptId=${promptId}`,
-    { [form.actionId]: "", promptId, ...agree, ...fields },
+    { [form.actionId]: "", promptId, ...fields },
     file,
   );
 

@@ -46,12 +46,9 @@ function Label({ children, hint }: { children: React.ReactNode; hint?: string })
   );
 }
 
-/** 未同意のときだけ渡す。null なら同意欄を出さない */
-export type AgreementProps = { termsVersion: string; privacyVersion: string } | null;
-
 export function WorkForm({
   promptId,
-  agreement,
+  production,
 }: {
   promptId: string;
   agreement: AgreementProps;
@@ -228,47 +225,10 @@ export function WorkForm({
           ))}
         </select>
         <p className="text-xs text-faint">
-          時間別ランキングの分類にはお題を引いたときの制限時間を使うため、
-          ここでの申告は分類に影響しません。
+          時間別ランキングの分類には、お題を引いたときに選んだ制限時間を使います。
         </p>
       </div>
 
-      {/* --- 規約への同意（まだのときだけ）------------------------------------ */}
-      {/*
-        いつも出すのではなく、同意が要るときだけ出す。毎回出すと読まれなくなる。
-        版を hidden で持つのは、**同意した瞬間に有効だった版**を記録するため。
-        表示中に改定されたら、DB 側が VERSION_MISMATCH で断る。
-      */}
-      {agreement ? (
-        <div className={`${surface} space-y-3 border-notice-tint/40`}>
-          <h2 className="text-sm font-bold">投稿の前に同意が必要です</h2>
-          <input type="hidden" name="termsVersion" value={agreement.termsVersion} />
-          <input type="hidden" name="privacyVersion" value={agreement.privacyVersion} />
-          <label className="flex items-start gap-3 text-sm">
-            <input
-              type="checkbox"
-              name="agreeDocs"
-              value="on"
-              required
-              className="mt-1 size-4"
-            />
-            <span>
-              <a href="/terms" target="_blank" className="underline">
-                利用規約
-              </a>
-              と
-              <a href="/privacy" target="_blank" className="underline">
-                プライバシーポリシー
-              </a>
-              に同意します。
-            </span>
-          </label>
-          <p className="text-xs text-faint">
-            同意した記録として、どの版にいつ同意したかを5年間だけ保存します。
-            退会するとこの記録からあなたとの結び付きが外れます。
-          </p>
-        </div>
-      ) : null}
 
       {/* --- 送信 ------------------------------------------------------------ */}
       <div className="space-y-3 border-t border-ink/10 pt-6">
@@ -295,4 +255,14 @@ export function WorkForm({
       </div>
     </form>
   );
+}
+
+/** 秒を「1時間30分」の形にする。0秒未満は0として書く */
+function formatSpan(seconds: number): string {
+  const s = Math.max(0, Math.floor(seconds));
+  const h = Math.floor(s / 3600);
+  const m = Math.floor((s % 3600) / 60);
+  if (h > 0) return m > 0 ? `${h}時間${m}分` : `${h}時間`;
+  if (m > 0) return `${m}分`;
+  return `${s}秒`;
 }

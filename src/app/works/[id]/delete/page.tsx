@@ -7,6 +7,7 @@ import { deleteWorkAction } from "../actions";
 import { SubmitButton } from "@/app/_pending";
 import Image from "next/image";
 import { btnDanger, field, noticeError, surface } from "@/app/_surface";
+import { requireConsent } from "@/features/consent/rpc";
 
 /**
  * /works/[id]/delete ／ 削除の確認画面。
@@ -37,6 +38,10 @@ export default async function DeleteWorkPage({
   params: Promise<{ id: string }>;
   searchParams: Promise<{ error?: string }>;
 }) {
+  // 未同意の登録者をここで止める（P5）。**判定は DB の consent_status()。**
+  // 止めるのは、そのセッションが関門より後に始まっていて、かつ未同意のときだけ。
+  await requireConsent();
+
   const { id } = await params;
   const { error } = await searchParams;
 

@@ -1,10 +1,10 @@
 import Link from "next/link";
 import { getCurrentUser } from "@/features/auth/session";
-import { fetchAccountState, fetchCurrentDocuments } from "@/features/account/rpc";
 import { fetchArtFirstVocabulary } from "@/features/artfirst/rpc";
 import { EMPTY_VOCABULARY, type ArtFirstVocabulary } from "@/features/artfirst/types";
 import { ImportForm } from "./_form";
 import { noticeError, surface } from "@/app/_surface";
+import { requireConsent } from "@/features/consent/rpc";
 
 /**
  * /works/import ／ 描いた絵を持ち込んで、どう見えるか試す画面。
@@ -56,6 +56,10 @@ export default async function ImportWorkPage({
 }: {
   searchParams: Promise<{ error?: string }>;
 }) {
+  // 未同意の登録者をここで止める（P5）。**判定は DB の consent_status()。**
+  // 止めるのは、そのセッションが関門より後に始まっていて、かつ未同意のときだけ。
+  await requireConsent();
+
   const { error } = await searchParams;
   const errorBox = error ? <p className={noticeError}>{error}</p> : null;
 
@@ -93,7 +97,7 @@ export default async function ImportWorkPage({
     );
   }
 
-  const [state, docs] = await Promise.all([fetchAccountState(), fetchCurrentDocuments()]);
+  // 規約への同意は登録のときに済ませる（P5）。入口の requireConsent が止める。
 
   // 語の一覧が読めなくても、画面ごと落とさない。
   // 選べる語が0件なら、フォーム側が「いま選べません」と出して投稿を止める。
@@ -127,17 +131,8 @@ export default async function ImportWorkPage({
         </ul>
       </section>
 
-      <ImportForm
-        vocabulary={vocabulary}
-        agreement={
-          state && (!state.terms_agreed || !state.privacy_agreed)
-            ? {
-                termsVersion: docs.terms?.version ?? "",
-                privacyVersion: docs.privacy?.version ?? "",
-              }
-            : null
-        }
-      />
+      {/* 規約への同意はここでは求めない（P5）。入口の requireConsent が止める。 */}
+      <ImportForm vocabulary={vocabulary} />
 
       <footer className="border-t border-ink/10 pt-6 text-xs text-faint">
         <p>

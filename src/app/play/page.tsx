@@ -6,6 +6,7 @@ import { EMPTY_SAVED, type SavedElements } from "@/features/carry/types";
 import type { DraftState } from "@/features/draft/types";
 import { DraftBoard, ErrorBox, RedoConfirm, StartForm } from "./_components";
 import { surface } from "@/app/_surface";
+import { requireConsent } from "@/features/consent/rpc";
 
 /**
  * /play ／ お題を引く画面。
@@ -32,7 +33,11 @@ export default async function PlayPage({
 }: {
   searchParams: Promise<{ error?: string; redo?: string; discarded?: string }>;
 }) {
-  const { error } = await searchParams;
+  // 未同意の登録者をここで止める（P5）。**判定は DB の consent_status()。**
+  // 止めるのは、そのセッションが関門より後に始まっていて、かつ未同意のときだけ。
+  await requireConsent();
+
+  const { error, redo, discarded } = await searchParams;
 
   const user = await getCurrentUser();
 

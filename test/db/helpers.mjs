@@ -28,6 +28,16 @@ export async function makeMember(db, handle) {
   return uid;
 }
 
+/**
+ * 登録ユーザーを1人作る。**規約に同意させない。**
+ *
+ * makeMember は作ったその場で同意させる（作品の投稿が門番で止まるため）。
+ * 同意の関門そのものを試すときは、同意していない人が要る。
+ */
+export async function makeMemberWithoutConsent(db, handle) {
+  return createUser(db, { handle });
+}
+
 /** ゲスト（匿名）を1人作る */
 export async function makeGuest(db) {
   return createUser(db, { anonymous: true });
@@ -44,6 +54,38 @@ export async function value(db, who, sql, params = []) {
 /** 登録ユーザーとして評価する近道 */
 export function asMember(uid) {
   return { role: "authenticated", uid, isAnonymous: false };
+}
+
+/**
+ * 登録ユーザーとして、セッションの開始時刻を指定して評価する。
+ *
+ * 規約同意の関門は「セッションが関門より後に始まったか」で止めるかを決める。
+ * その分かれ目を試すために、開始時刻を外から渡せるようにしてある。
+ *
+ * @param at Date か、エポック秒
+ */
+export function asMemberAt(uid, at) {
+  const seconds = at instanceof Date ? Math.floor(at.getTime() / 1000) : at;
+  // 本物の券と同じ形にする。amr にログインの時刻が入り、iat は券を作った時刻。
+  // ふだんは同じ値なので、ここでは同じにしておく
+  return {
+    role: "authenticated",
+    uid,
+    isAnonymous: false,
+    iat: seconds,
+    amr: [{ method: "password", timestamp: seconds }],
+  };
+}
+
+/**
+ * amr の無い券（＝ログインの時刻が分からない券）として評価する。
+ *
+ * iat は券を作り直すたびに変わるので、ログインの時刻としては使えない。
+ * その落とし所が効いていることを確かめるために使う。
+ */
+export function asMemberIatOnly(uid, at) {
+  const seconds = at instanceof Date ? Math.floor(at.getTime() / 1000) : at;
+  return { role: "authenticated", uid, isAnonymous: false, iat: seconds };
 }
 
 /** ゲストとして評価する近道 */

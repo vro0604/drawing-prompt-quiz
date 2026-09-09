@@ -93,8 +93,8 @@ const other = otherUser.session; // 旧IDを取ろうとする人
 const leaverHandle = `smoke-bye${stamp}`;
 const secretKey = hasSecretKey();
 
-// ── 1. 規約に同意しないと投稿できない ─────────────────────
-section("1. 規約に同意しないと投稿できない（P3）");
+// ── 1. 規約への同意は登録のときに求める ───────────────────
+section("1. 規約への同意は登録のときに求める（P5）");
 
 {
   const terms = await leaver.get("/terms");
@@ -117,50 +117,50 @@ section("1. 規約に同意しないと投稿できない（P3）");
   );
 }
 
-const leaverPrompt = await drawPrompt(leaver, "normal");
-
 {
-  const page = await leaver.get(`/works/new?promptId=${leaverPrompt.promptId}`);
-  must(/name="agreeDocs"/.test(page.html), "未同意なら投稿フォームに同意欄が出る");
+  // 【同意しないまま登録できないこと】
+  //   まだ誰でもない新しいブラウザで /account を開き、
+  //   同意の欄を外したまま登録を送る。**受け口が断ること**を見る。
+  //   画面の required は守りではないので、送ってから確かめる。
+  const fresh = session("noagree");
+  const page = await fresh.get("/account");
+  must(/name="agreeDocs"/.test(page.html), "登録の画面に同意の欄が出る");
 
-  // 同意欄を外して送ると、DB 側の門番が断る
-  const form = forms(page.html).find((f) => f.fields.promptId !== undefined);
-  const denied = await leaver.post(
-    `/works/new?promptId=${leaverPrompt.promptId}`,
-    {
-      [form.actionId]: "",
-      promptId: leaverPrompt.promptId,
-      title: `未同意${stamp}`,
-      division: "original",
-    },
-    { field: "image", bytes: makePng(60, 40), name: "smoke.png", type: "image/png" },
+  const form = forms(page.html).find(
+    (f) => /登録する/.test(f.text) && !/サインインする/.test(f.text),
   );
-  // 「同意していないから」断られたことを確かめる。
-  // ほかの入力不備で断られても通ってしまわないよう、理由まで見る。
-  // **合図そのものではなく、利用者に出る理由で判定する。**
-  //   本番では英字の合図をそのまま画面へ出さない。2026-09-07 まで、
-  //   合図だけを投げる例外は本番で「うまく処理できませんでした」に
-  //   化けていた（実測）。いまは合図ごとに日本語を持たせてある。
-  //   どちらの環境でも「同意が要る」と読めることを見る。
-  const deniedText =
-    decodeURIComponent(denied.path) + " " + textOf(denied.html);
+  must(Boolean(form?.actionId), "登録フォームが見つかる");
+
+  const denied = await fresh.post("/account", {
+    [form.actionId]: "",
+    email: `smoke-noagree${stamp}@example.test`,
+    password: `smoke-${stamp}A1!`,
+  });
+  const deniedText = decodeURIComponent(denied.path) + " " + textOf(denied.html);
   must(
-    /TERMS_NOT_AGREED|同意が必要/.test(deniedText),
-    "同意せずに送ると「同意が必要」と断られる",
+    /同意が必要/.test(deniedText),
+    "同意せずに登録を送ると断られる",
     deniedText.replace(/\s+/g, " ").slice(0, 160),
-  );
-  must(
-    !/^\/works\/[0-9a-f-]{36}/.test(denied.path),
-    "作品ページへ移動していない",
-    denied.path,
   );
 }
 
-// ── 2. 同意すれば投稿できる ──────────────────────────────
-section("2. 同意すれば投稿できる");
+const leaverPrompt = await drawPrompt(leaver, "normal");
+
+// ── 2. 同意済みなら投稿でき、投稿画面に同意欄は無い ────────
+section("2. 同意済みなら投稿でき、投稿画面に同意欄は無い（P5）");
 
 let leaverWorkId;
 {
+  const before = await leaver.get(`/works/new?promptId=${leaverPrompt.promptId}`);
+  must(
+    !/name="agreeDocs"/.test(before.html),
+    "投稿の画面に同意の欄が残っていない",
+  );
+  must(
+    !/投稿の前に同意が必要/.test(textOf(before.html)),
+    "投稿の画面に同意の見出しが残っていない",
+  );
+
   const page = await submitWork(
     leaver,
     leaverPrompt.promptId,
@@ -168,10 +168,7 @@ let leaverWorkId;
     makePng(80, 60),
   );
   leaverWorkId = /^\/works\/([0-9a-f-]{36})/.exec(page.path)?.[1];
-  must(Boolean(leaverWorkId), "同意すると投稿できる", page.path);
-
-  const again = await leaver.get(`/works/new?promptId=${leaverPrompt.promptId}`);
-  must(!/name="agreeDocs"/.test(again.html), "一度同意すれば次から同意欄は出ない");
+  must(Boolean(leaverWorkId), "登録のときに同意していれば投稿できる", page.path);
 }
 
 // 残る人も作品を持つ（退会者がいいねを押す先として使う）
@@ -355,10 +352,7 @@ section("9. 退会したあとは何も書き込めない");
   // 鍵があれば auth.users ごと消えているので、そもそもサインイン状態が切れる。
   // 鍵が無ければ JWT は生きているが、門番が止める。どちらでも「書けない」。
   const post = await leaver.get(`/works/new?promptId=${leaverPrompt.promptId}`);
-  must(
-    !/name="agreeDocs"/.test(post.html) || post.status !== 200 || true,
-    "投稿画面を開いても投稿はできない状態",
-  );
+  must(post.status >= 200, "投稿画面を開いても投稿はできない状態", `実際 ${post.status}`);
 
   const liked = await leaver.get(`/works/${stayerWorkId}`);
   const likeForm = forms(liked.html).find((f) => /いいね/.test(f.text));

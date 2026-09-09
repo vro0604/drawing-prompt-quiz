@@ -67,6 +67,19 @@ import {
   canDrillDown,
   remainingPercent,
 } from "../../src/features/quiz/capacity.ts";
+import {
+  addToken,
+  countBreaks,
+  fromSaved,
+  moveDown,
+  moveUp,
+  removeAt,
+  renderSentences,
+  sentenceCount,
+  toPayload,
+  toSentences,
+  toggleBreak,
+} from "../../src/features/flavor/compose.ts";
 import { recordCount } from "../counts.mjs";
 
 const results = [];
@@ -583,6 +596,154 @@ console.log("\n文章の組み立て（P5）");
 function words(...labels) {
   return labels.map((l, i) => ({ id: i + 1, label: l, breakAfter: false }));
 }
+
+test("文", "語は上限まで足せる。上限を超えると足さない", () => {
+  let t = [];
+  for (let i = 0; i < 5; i += 1) t = addToken(t, { id: i + 1, label: `語${i}` }, 3);
+  assert(t.length === 3, `${t.length} 語入った（3語のはず）`);
+});
+
+test("文", "同じ語を2回置ける（助詞は何度も出る）", () => {
+  let t = addToken([], { id: 7, label: "が" }, 24);
+  t = addToken(t, { id: 7, label: "が" }, 24);
+  assert(t.length === 2, "同じ語が2回置けない");
+  assert(toPayload(t).vocabIds.join(",") === "7,7", "送る並びから2つ目が消えている");
+});
+
+test("文", "上へ・下へで語順が変わる。端では動かない", () => {
+  const t = words("影", "が", "消える");
+  assert(moveUp(t, 1).map((x) => x.label).join("") === "が影消える", "上へが効かない");
+  assert(moveDown(t, 0).map((x) => x.label).join("") === "が影消える", "下へが効かない");
+  assert(moveUp(t, 0).map((x) => x.label).join("") === "影が消える", "先頭が上へ動いた");
+  assert(moveDown(t, 2).map((x) => x.label).join("") === "影が消える", "末尾が下へ動いた");
+});
+
+test("文", "外すと、その語だけが消える", () => {
+  const t = removeAt(words("影", "が", "消える"), 1);
+  assert(t.map((x) => x.label).join("") === "影消える", t.map((x) => x.label).join(""));
+  assert(removeAt(words("影"), 5).length === 1, "範囲の外を指して壊れた");
+});
+
+test("文", "文は上限までしか切れない（3文なら印は2つまで）", () => {
+  let t = words("a", "b", "c", "d", "e");
+  t = toggleBreak(t, 0, 3);
+  t = toggleBreak(t, 1, 3);
+  assert(countBreaks(t) === 2, `印が ${countBreaks(t)} 個`);
+  t = toggleBreak(t, 2, 3);
+  assert(countBreaks(t) === 2, "上限を超えて切れた");
+  assert(sentenceCount(t) === 3, `${sentenceCount(t)} 文になった`);
+});
+
+test("文", "最後の語のあとには印を付けられない", () => {
+  const t = toggleBreak(words("a", "b"), 1, 3);
+  assert(countBreaks(t) === 0, "最後の語に印が付いた");
+});
+
+test("文", "語を動かすと、印も語について動く", () => {
+  // 「a。b c」の状態から a を後ろへ送る
+  let t = toggleBreak(words("a", "b", "c"), 0, 3);
+  t = moveDown(t, 0);
+  assert(t[1].breakAfter === true, "印が語について来ていない");
+  assert(t[0].breakAfter === false, "印が置き去りになっている");
+  assert(renderSentences(t).length === 2, "文の数が変わってしまった");
+});
+
+test("文", "最後の語を外すと、新しい最後の語の印が落ちる", () => {
+  // 「a b。c」から c を外すと、b が最後になる
+  let t = toggleBreak(words("a", "b", "c"), 1, 3);
+  t = removeAt(t, 2);
+  assert(countBreaks(t) === 0, "1文しか無いのに印が残っている");
+  assert(sentenceCount(t) === 1, `${sentenceCount(t)} 文と数えている`);
+});
+
+test("文", "文ごとに分かれ、終わりに「。」が付く", () => {
+  const t = toggleBreak(words("影", "が", "消える", "音", "も", "消える"), 2, 3);
+  assert(toSentences(t).length === 2, "2つに分かれていない");
+  const lines = renderSentences(t);
+  assert(lines[0] === "影 が 消える。", lines[0]);
+  assert(lines[1] === "音 も 消える。", lines[1]);
+});
+
+test("文", "語が0なら0文。1文と数えない", () => {
+  assert(sentenceCount([]) === 0, "空でも1文と数えている");
+  assert(renderSentences([]).length === 0, "空なのに行が出た");
+});
+
+test("文", "保存した形から作り直せる", () => {
+  const t = fromSaved([3, 9, 4], ["影", "が", "消える"], [1]);
+  assert(t.map((x) => x.label).join(" ") === "影 が 消える", "語順が復元できない");
+  assert(t[1].breakAfter === true, "印が復元できない");
+  const back = toPayload(t);
+  assert(back.vocabIds.join(",") === "3,9,4", back.vocabIds.join(","));
+  assert(back.breaks.join(",") === "1", back.breaks.join(","));
+});
+
+console.log("\n残り時間の危険度（P5）");
+
+test("時計", "期限が無いときは平常のまま", () => {
+  assert(warnLevel(null, null) === "calm", "期限なしで警告が出た");
+  assert(warnLevel(null, 3600) === "calm", "無制限で警告が出た");
+});
+
+test("時計", "割合だけでも、秒だけでも段階は上がらない（両方が要る）", () => {
+  const day = 24 * 3600;
+  // 24時間枠の残り72分＝ちょうど5%。割合は最終段階だが、秒はまだ遠い
+  assert(warnLevel(72 * 60, day) === "calm", warnLevel(72 * 60, day));
+  // 5分枠の残り4分。秒は「15分以内」に当たるが、割合はまだ8割ある
+  assert(warnLevel(240, 300) === "calm", warnLevel(240, 300));
+});
+
+test("時計", "枠の長さで、実際の切り替え点が変わる", () => {
+  const day = 24 * 3600;
+  // 短い枠は割合が効く。5分枠の半分・2割・5%
+  assert(warnLevel(150, 300) === "notice", warnLevel(150, 300));
+  assert(warnLevel(60, 300) === "warn", warnLevel(60, 300));
+  assert(warnLevel(15, 300) === "danger", warnLevel(15, 300));
+  // 長い枠は秒が効く。15分・5分・1分
+  assert(warnLevel(14 * 60, day) === "notice", warnLevel(14 * 60, day));
+  assert(warnLevel(4 * 60, day) === "warn", warnLevel(4 * 60, day));
+  assert(warnLevel(30, day) === "danger", warnLevel(30, day));
+});
+
+test("時計", "枠の長さが分からないときは、秒だけで見る", () => {
+  assert(warnLevel(30, null) === "danger", warnLevel(30, null));
+  assert(warnLevel(20 * 60, null) === "calm", warnLevel(20 * 60, null));
+});
+
+test("時計", "点滅するのは最終段階と超過だけ", () => {
+  assert(shouldBlink("danger") === true, "最終段階で点滅しない");
+  assert(shouldBlink("over") === true, "超過で点滅しない");
+  assert(shouldBlink("warn") === false, "警告の段階で点滅している");
+  assert(shouldBlink("calm") === false, "平常で点滅している");
+});
+
+test("時計", "段階が危険側へ進んだときだけ知らせる", () => {
+  assert(isWorse("danger", "warn") === true, "進んだのに知らせない");
+  assert(isWorse("warn", "danger") === false, "戻ったのに知らせる");
+  assert(isWorse("calm", "calm") === false, "同じ段階で知らせる");
+});
+
+test("時計", "色以外にも、段階ごとの言葉がある", () => {
+  for (const level of ["notice", "warn", "danger", "over", "discarded"]) {
+    assert(typeof warnLabel(level) === "string" && warnLabel(level) !== "",
+      `${level} に見える言葉が無い`);
+    assert(typeof warnAnnouncement(level) === "string" && warnAnnouncement(level) !== "",
+      `${level} に読み上げる言葉が無い`);
+  }
+  assert(warnLabel("calm") === null, "平常なのに警告の言葉が出る");
+  assert(warnAnnouncement("calm") === null, "平常なのに読み上げる");
+});
+
+test("時計", "しきい値は1か所にあり、危険なほど小さい", () => {
+  assert(THRESHOLDS.notice.ratio > THRESHOLDS.warn.ratio, "割合の順が逆");
+  assert(THRESHOLDS.warn.ratio > THRESHOLDS.danger.ratio, "割合の順が逆");
+  assert(THRESHOLDS.notice.seconds > THRESHOLDS.warn.seconds, "秒の順が逆");
+  assert(THRESHOLDS.warn.seconds > THRESHOLDS.danger.seconds, "秒の順が逆");
+});
+
+/* ===========================================================================
+ * 超過の言い方と、プッシュ通知の封（2026-09-09）
+ * ========================================================================= */
 
 const passed = results.filter((r) => r.ok).length;
 const failed = results.filter((r) => !r.ok);

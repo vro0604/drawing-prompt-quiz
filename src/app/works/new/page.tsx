@@ -6,6 +6,7 @@ import { formatDuration } from "@/features/draft/types";
 import { TimerBox } from "@/app/prompt/[id]/_timer";
 import { WorkForm } from "./_form";
 import { noticeError, surface } from "@/app/_surface";
+import { requireConsent } from "@/features/consent/rpc";
 
 /**
  * /works/new ／ 作品を投稿する画面。
@@ -59,6 +60,10 @@ export default async function NewWorkPage({
 }: {
   searchParams: Promise<{ promptId?: string; error?: string }>;
 }) {
+  // 未同意の登録者をここで止める（P5）。**判定は DB の consent_status()。**
+  // 止めるのは、そのセッションが関門より後に始まっていて、かつ未同意のときだけ。
+  await requireConsent();
+
   const { promptId, error } = await searchParams;
 
   const errorBox = error ? (
@@ -128,15 +133,10 @@ export default async function NewWorkPage({
     );
   }
 
-  // --- 規約への同意を確かめる -------------------------------------------------
-  //
-  // 未同意なら投稿フォームに同意欄を出す。**既存の利用者もここで初めて
-  // 同意を求められる**（規約は Step 15 のあとに足したため）。
-  //
-  // 画面で止めるのは親切であって守りではない。本当の判定は works への
-  // 門番（app_guard_works）が持っていて、未同意の INSERT を
-  // TERMS_NOT_AGREED で断る。
-  const [state, docs] = await Promise.all([fetchAccountState(), fetchCurrentDocuments()]);
+  // 【規約への同意は、ここでは確かめない（P5）】
+  //   同意は登録のときに済ませる。未同意の登録者は、このページの入口の
+  //   requireConsent() が /consent へ送るので、そもそもここへ来ない。
+  //   守りは変わらず works の門番（app_guard_works）が持っている。
 
   // --- お題を読む ------------------------------------------------------------
   const prompt = await fetchMyPrompt(promptId);
@@ -289,17 +289,9 @@ export default async function NewWorkPage({
         </p>
       </section>
 
-      <WorkForm
-        promptId={promptId}
-        agreement={
-          state && (!state.terms_agreed || !state.privacy_agreed)
-            ? {
-                termsVersion: docs.terms?.version ?? "",
-                privacyVersion: docs.privacy?.version ?? "",
-              }
-            : null
-        }
-      />
+      {/* 規約への同意はここでは求めない。登録のときに済んでいる（P5）。
+          未同意の登録者は、このページの入口（requireConsent）で /consent へ送られる。 */}
+      <WorkForm promptId={promptId} production={production} />
 
       <footer className="border-t border-ink/10 pt-6 text-xs text-faint">
         <Link href={`/prompt/${promptId}`} className="underline">

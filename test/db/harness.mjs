@@ -40,7 +40,7 @@ const MIGRATIONS = join(HERE, "..", "..", "supabase", "migrations");
  * **アプリの表は1つも作らない。**それは migration の仕事で、
  * ここで先回りすると「migration が作れていない」ことに気づけなくなる。
  */
-const SUPABASE_STUB = `
+export const SUPABASE_STUB = `
 create schema if not exists auth;
 create schema if not exists storage;
 
@@ -165,13 +165,25 @@ export async function applyMigrations(db, { log = false, from = null, before = n
  * set local はトランザクションの中でだけ効くので、必ず begin/commit で挟む。
  * 例外が出たら rollback して投げ直す。
  */
-export async function asRole(db, { role, uid = null, isAnonymous = false }, fn) {
+export async function asRole(
+  db,
+  { role, uid = null, isAnonymous = false, iat = null, amr = null },
+  fn,
+) {
   await db.exec("begin");
   try {
     await db.exec(`set local role ${role}`);
     if (uid) {
-      const claims = JSON.stringify({ sub: uid, is_anonymous: isAnonymous });
-      await db.query(`select set_config('request.jwt.claims', $1, true)`, [claims]);
+      // amr（いつ本人だと確かめたか）と iat（券を作った時刻）は、
+      // 本物の JWT に入っている。規約同意の関門がこれを見るので、
+      // 渡せるようにしてある。渡さなければ入れない
+      // （＝読めないときの動きも試せる）。
+      const claims = { sub: uid, is_anonymous: isAnonymous };
+      if (iat !== null) claims.iat = iat;
+      if (amr !== null) claims.amr = amr;
+      await db.query(`select set_config('request.jwt.claims', $1, true)`, [
+        JSON.stringify(claims),
+      ]);
     } else {
       await db.query(`select set_config('request.jwt.claims', '', true)`);
     }

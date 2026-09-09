@@ -23,20 +23,45 @@
  *   すでに正解が開示されているので、正解の語をそのまま置ける。
  */
 
+/** 語の品詞。並べ方に使う。**探し方の軸は分類のほう** */
+export type FlavorVocabKind =
+  | "connective"
+  | "noun"
+  | "verb"
+  | "adjective"
+  | "particle"
+  | "state";
+
 /** 作者が選べる語1つ */
 export type FlavorVocabItem = {
   id: number;
   label: string;
-  kind: "connective" | "noun" | "verb" | "adjective";
+  kind: FlavorVocabKind;
   /** そのお題の間接表現として有効だと登録されている語。先に見せる */
   suggested: boolean;
+};
+
+/**
+ * 語を探すための分類（P5）。
+ *
+ * **分類ごとに選べる数の枠は無い。**同じ分類から5語、他が0語でもよい。
+ * 分類は「どこを探せばあるか」を示すためだけのもの。
+ */
+export type FlavorVocabCategory = {
+  key: string;
+  label: string;
+  hint: string | null;
+  words: FlavorVocabItem[];
 };
 
 /** 作者の作文画面へ渡す一式 */
 export type FlavorVocabSet = {
   work_id: string;
+  /** 語数の上限。**技術上の上限**（DOM と DB を守るための数） */
   max_tokens: number;
-  vocab: FlavorVocabItem[];
+  /** 文数の上限。**文章としての決まり** */
+  max_sentences: number;
+  categories: FlavorVocabCategory[];
 };
 
 /** フレーバーテキスト1件。tokens は語の並び */
@@ -50,6 +75,12 @@ export type WorkFlavor = {
   /** 回答後の開示として見えているか */
   revealed: boolean;
   tokens: string[];
+  /** 文ごとに分けた語の並び。表示はこちらを使う */
+  sentences: string[][];
+  /** 作者にだけ返る。作り直しの初期値に使う */
+  token_ids?: number[];
+  /** 作者にだけ返る。印が付いている位置 */
+  breaks?: number[];
 };
 
 /** 返歌1件 */
@@ -79,12 +110,23 @@ export type WorkHintResult = {
   rows: HintStatRow[];
 };
 
-/** 1つの文章に置ける語の数の上限 */
-export const MAX_FLAVOR_TOKENS = 12;
-
-/** 語の並びを1行の文章にする。区切りは読点 */
-export function flavorSentence(tokens: string[]): string {
-  return tokens.join(" ");
+/**
+ * 文ごとに分けた語の並びを、読める文にする。
+ *
+ * **語と語のあいだは空ける。**助詞を選んでいない並び（「影 消える」）でも
+ * 切れ目が分かるようにするため。文の終わりに「。」を付ける。
+ *
+ * 上限の数はここに書かない。**DB（flavor_limits）が唯一の出どころ**で、
+ * get_flavor_vocab が max_tokens / max_sentences として返す。
+ */
+export function flavorLines(flavor: { sentences?: string[][]; tokens: string[] }): string[] {
+  const groups =
+    flavor.sentences && flavor.sentences.length > 0
+      ? flavor.sentences
+      : flavor.tokens.length > 0
+        ? [flavor.tokens]
+        : [];
+  return groups.map((g) => `${g.join(" ")}。`);
 }
 
 /** 正答率を百分率にする。回答が0なら null（「まだ分からない」） */

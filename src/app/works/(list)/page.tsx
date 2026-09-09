@@ -12,6 +12,7 @@ import {
   type PublicWorkListItem,
 } from "@/features/work/types";
 import { noticeMuted, noticeSuccess, surface, tabOff, tabOn } from "@/app/_surface";
+import { requireConsent } from "@/features/consent/rpc";
 
 /**
  * /works ／ 公開作品の一覧。
@@ -149,6 +150,10 @@ export default async function WorksPage({
     notice?: string;
   }>;
 }) {
+  // 未同意の登録者をここで止める（P5）。**判定は DB の consent_status()。**
+  // 止めるのは、そのセッションが関門より後に始まっていて、かつ未同意のときだけ。
+  await requireConsent();
+
   const {
     tab: rawTab,
     sort: rawSort,

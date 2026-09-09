@@ -3,6 +3,7 @@ import { SavedList } from "@/app/_saved-list";
 import { getCurrentUser, getMyProfile } from "@/features/auth/session";
 import { fetchSavedWorks } from "@/features/profile/rpc";
 import { surface } from "@/app/_surface";
+import { requireConsent } from "@/features/consent/rpc";
 
 /**
  * /saves ／ 自分のお気に入り一覧。
@@ -27,6 +28,10 @@ export const metadata = {
 };
 
 export default async function SavesPage() {
+  // 未同意の登録者をここで止める（P5）。**判定は DB の consent_status()。**
+  // 止めるのは、そのセッションが関門より後に始まっていて、かつ未同意のときだけ。
+  await requireConsent();
+
   const user = await getCurrentUser();
   const isRegistered = user !== null && !user.is_anonymous;
 

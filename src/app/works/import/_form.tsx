@@ -11,7 +11,6 @@ import {
 } from "@/features/work/types";
 import type { ArtFirstVocabulary } from "@/features/artfirst/types";
 import { VocabPicker, type PickedTag } from "@/features/vocab/picker";
-import type { AgreementProps } from "@/app/works/new/_form";
 import { createArtFirstWorkAction } from "./actions";
 import { btnPrimary, btnSecondary, field, surface } from "@/app/_surface";
 
@@ -45,13 +44,7 @@ function Label({ children, hint }: { children: React.ReactNode; hint?: string })
   );
 }
 
-export function ImportForm({
-  vocabulary,
-  agreement,
-}: {
-  vocabulary: ArtFirstVocabulary;
-  agreement: AgreementProps;
-}) {
+export function ImportForm({ vocabulary }: { vocabulary: ArtFirstVocabulary }) {
   const [division, setDivision] = useState<Division>("original");
   const [fileName, setFileName] = useState<string | null>(null);
   const [previewUrl, setPreviewUrl] = useState<string | null>(null);
@@ -212,31 +205,6 @@ export function ImportForm({
         </div>
       ) : null}
 
-      {/* --- 規約への同意（まだのときだけ）------------------------------------ */}
-      {agreement ? (
-        <div className={`${surface} space-y-3 border-notice-tint/40`}>
-          <h2 className="text-sm font-bold">投稿の前に同意が必要です</h2>
-          <input type="hidden" name="termsVersion" value={agreement.termsVersion} />
-          <input type="hidden" name="privacyVersion" value={agreement.privacyVersion} />
-          <label className="flex items-start gap-3 text-sm">
-            <input type="checkbox" name="agreeDocs" value="on" required className="mt-1 size-4" />
-            <span>
-              <a href="/terms" target="_blank" className="underline">
-                利用規約
-              </a>
-              と
-              <a href="/privacy" target="_blank" className="underline">
-                プライバシーポリシー
-              </a>
-              に同意します。
-            </span>
-          </label>
-          <p className="text-xs text-faint">
-            同意した記録として、どの版にいつ同意したかを5年間だけ保存します。
-            退会するとこの記録からあなたとの結び付きが外れます。
-          </p>
-        </div>
-      ) : null}
 
       {/* --- 送信 ------------------------------------------------------------ */}
       <div className="space-y-3 border-t border-ink/10 pt-6">

@@ -40,8 +40,11 @@ import {
   type WorkOrigin,
 } from "@/features/work/types";
 import { AnswerResult, AuthorNotice, MyResult, QuizForm, SlotStats } from "./_quiz";
+import { AnswerFlow } from "./_answer";
+import { AnswererAnalysis, AuthorAnalysis } from "./_results";
+import { CapacityPanel } from "./_capacity";
+import { FlavorComposer } from "./_flavor-composer";
 import {
-  FlavorComposer,
   FlavorHintBox,
   FlavorRevealBox,
   HintSplitStats,
@@ -70,6 +73,7 @@ import type {
 import { SITE_URL } from "@/lib/env";
 import {
   publishWorkAction,
+  setFlavorTextAction,
   toggleLikeAction,
   toggleSaveAction,
   unpublishWorkAction,
@@ -84,6 +88,7 @@ import {
   noticeSuccess,
   surface,
 } from "@/app/_surface";
+import { requireConsent } from "@/features/consent/rpc";
 
 /**
  * /works/[id] ／ 作品1件。
@@ -714,6 +719,10 @@ export default async function WorkPage({
     manage?: string;
   }>;
 }) {
+  // 未同意の登録者をここで止める（P5）。**判定は DB の consent_status()。**
+  // 止めるのは、そのセッションが関門より後に始まっていて、かつ未同意のときだけ。
+  await requireConsent();
+
   const { id } = await params;
   const {
     error,

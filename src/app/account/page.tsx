@@ -88,6 +88,63 @@ function Credentials({ idPrefix }: { idPrefix: string }) {
   );
 }
 
+/**
+ * 登録のときに求める同意（P5）。
+ *
+ * 【なぜ投稿のときではなく、ここか】
+ *   投稿の直前に同意欄を出していたときは、規約を読む場面が
+ *   **作品を出す一歩手前**にあった。読む余裕が無い場所で、
+ *   しかも投稿しない人には一度も出なかった。
+ *   登録に移すと、サービスを使い始める前に一度だけ読むことになる。
+ *
+ * 【押しただけでは記録されないことがある】
+ *   ゲストからの昇格は、その場で記録できる（IDが既にあるため）。
+ *   まったくの新規は、メールの確認が終わるまでIDが確定しないので、
+ *   **その場では記録できない。**確認のあと最初に開いたときに
+ *   /consent が出て、そこで記録する。どちらの道でも、
+ *   同意していない人が通常の画面へ進むことはない。
+ */
+function ConsentCheck({
+  idPrefix,
+  termsVersion,
+  privacyVersion,
+}: {
+  idPrefix: string;
+  termsVersion: string;
+  privacyVersion: string;
+}) {
+  return (
+    <div data-register-consent="" className="space-y-2">
+      <input type="hidden" name="termsVersion" value={termsVersion} />
+      <input type="hidden" name="privacyVersion" value={privacyVersion} />
+      <label className="flex items-start gap-3 text-sm">
+        <input
+          id={`${idPrefix}-agree`}
+          type="checkbox"
+          name="agreeDocs"
+          value="on"
+          required
+          className="mt-1 size-4"
+        />
+        <span>
+          <a href="/terms" target="_blank" className="underline">
+            利用規約
+          </a>
+          と
+          <a href="/privacy" target="_blank" className="underline">
+            プライバシーポリシー
+          </a>
+          に同意します。
+        </span>
+      </label>
+      <p className="text-xs text-faint">
+        同意した記録として、どの版にいつ同意したかを5年間だけ保存します。
+        退会するとこの記録からあなたとの結び付きが外れます。
+      </p>
+    </div>
+  );
+}
+
 export default async function AccountPage({
   searchParams,
 }: {
@@ -98,6 +155,10 @@ export default async function AccountPage({
 
   const isGuest = user?.is_anonymous === true;
   const isRegistered = user !== null && !user.is_anonymous;
+
+  // 登録の欄に出す同意のために、いま有効な版を読む（P5）。
+  // **未サインインでも読める**（get_current_documents は anon にも許可）。
+  const docs = await fetchCurrentDocuments();
 
   // 登録ユーザーのときだけ、いまの設定値をフォームの初期値として読む。
   // 自分の行は RLS で必ず見えるので、ここは直接読んでよい（001 の SELECT ポリシー）。
@@ -299,6 +360,11 @@ export default async function AccountPage({
           </div>
           <form action={registerAction} className="space-y-4">
             <Credentials idPrefix="promote" />
+            <ConsentCheck
+              idPrefix="promote"
+              termsVersion={docs.terms?.version ?? ""}
+              privacyVersion={docs.privacy?.version ?? ""}
+            />
             <SubmitButton pendingLabel="登録中…" className={primary}>
               このゲストのまま登録する
             </SubmitButton>
@@ -313,6 +379,11 @@ export default async function AccountPage({
             <h2 className="text-sm font-bold">新しく登録する</h2>
             <form action={registerAction} className="space-y-4">
               <Credentials idPrefix="signup" />
+              <ConsentCheck
+                idPrefix="signup"
+                termsVersion={docs.terms?.version ?? ""}
+                privacyVersion={docs.privacy?.version ?? ""}
+              />
               <SubmitButton pendingLabel="登録中…" className={primary}>
                 登録する
               </SubmitButton>

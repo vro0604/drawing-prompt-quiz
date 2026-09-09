@@ -47,15 +47,22 @@ export async function fetchFlavorVocab(workId: string): Promise<FlavorVocabSet |
   return (data as FlavorVocabSet | null) ?? null;
 }
 
-/** 作者の文章を保存する。近すぎる語が混じっていれば DB 側が断る */
+/**
+ * 作者の文章を保存する。近すぎる語が混じっていれば DB 側が断る。
+ *
+ * breaks は「この位置の語のあとで文が終わる」。**位置は0から数える。**
+ * 最後の語に付いた印と、上限を超えた分は DB 側が落とす。
+ */
 export async function callSetFlavorText(
   workId: string,
   vocabIds: number[],
+  breaks: number[] = [],
 ): Promise<WorkFlavor | null> {
   const supabase = await createSupabaseServerClient();
   const { data, error } = await supabase.rpc("set_flavor_text", {
     p_work_id: workId,
     p_vocab_ids: vocabIds,
+    p_breaks: breaks,
   });
 
   if (error) throw new Error(readableRpcError(error.message));

@@ -15,7 +15,6 @@ import {
   MAX_IMAGE_BYTES,
   type Division,
 } from "@/features/work/types";
-import { callAgreeToDocuments } from "@/features/account/rpc";
 
 /**
  * 作品投稿の Server Action。
@@ -87,20 +86,10 @@ export async function createWorkAction(form: FormData): Promise<void> {
     );
   }
 
-  // --- 1-b. 規約への同意 ------------------------------------------------------
-  //
-  // **画像を上げる前に済ませる。**あとにすると、同意で失敗したときに
-  // 置いた画像を消す手間が増える。
-  //
-  // ここで通しても守りにはならない。works の門番が未同意の INSERT を
-  // TERMS_NOT_AGREED で断るので、この画面を通らない投稿も止まる。
-  if (str(form, "agreeDocs") === "on") {
-    try {
-      await callAgreeToDocuments(str(form, "termsVersion"), str(form, "privacyVersion"));
-    } catch (e) {
-      backWithError(promptId, e instanceof Error ? e.message : String(e));
-    }
-  }
+  // 【1-b は無くなった】規約への同意は登録のときに済ませる（P5）。
+  //   この画面に同意欄は無い。**穴は開いていない。**works の門番が
+  //   未同意の INSERT を TERMS_NOT_AGREED で断り、ページの入口でも
+  //   requireConsent() が止める。
 
   // --- 2. 画像を読む ----------------------------------------------------------
   const file = form.get("image");

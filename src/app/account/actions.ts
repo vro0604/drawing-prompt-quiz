@@ -26,6 +26,7 @@ import {
 import { readImageInfo } from "@/features/work/image";
 import { removeWorkImage, uploadWorkImage } from "@/features/work/rpc";
 import { getCurrentUser } from "@/features/auth/session";
+import { callAgree } from "@/features/consent/rpc";
 
 /**
  * /account のボタンから呼ばれる Server Action。
@@ -79,6 +80,27 @@ function back(message?: string, notice?: string): never {
   if (notice) params.set("notice", notice);
   const query = params.toString();
   redirect(query ? `${PAGE}?${query}` : PAGE);
+}
+
+/**
+ * 同意を記録する。**記録できないときは黙って諦める（P5）。**
+ *
+ * 【なぜ諦めてよいか】
+ *   記録できる条件は「IDが確定していて、匿名でないこと」。
+ *   まったくの新規登録では、メールの確認が終わるまでこれが揃わない。
+ *   その場合はここで何もせず、**次に画面を開いたときに /consent が出る。**
+ *   関門は DB 側にあるので、記録し損ねた人が素通りすることはない。
+ *
+ *   逆に、ここで失敗を画面に出すと「登録できたのにエラーが出る」ことになる。
+ *   登録そのものは終わっているので、それは嘘になる。
+ */
+async function recordConsent(terms: string, privacy: string): Promise<void> {
+  if (!terms || !privacy) return;
+  try {
+    await callAgree(terms, privacy);
+  } catch {
+    /* まだ記録できる状態ではない。/consent が引き受ける */
+  }
 }
 
 /** メールとパスワードでサインインする（既にあるアカウントへ） */
@@ -180,16 +202,28 @@ export async function registerAction(form: FormData): Promise<void> {
   const email = str(form, "email");
   const password = str(form, "password");
 
+  // --- 規約への同意（P5）------------------------------------------------------
+  //
+  // **登録の条件にする。**チェックが無ければ、メールも1通も送らない。
+  // 記録するのは登録が通ったあと（匿名のままでは記録できないため）。
+  const terms = str(form, "termsVersion");
+  const privacy = str(form, "privacyVersion");
+  if (str(form, "agreeDocs") !== "on") {
+    back("利用規約とプライバシーポリシーへの同意が必要です。同意の欄にチェックを入れてください。");
+  }
+
   const supabase = await createSupabaseServerClient();
   const { data: current } = await supabase.auth.getUser();
 
   // --- ゲストからの昇格（uid を保つ）-----------------------------------------
   if (current.user?.is_anonymous) {
     // 同じ人の昇格は1本ずつ通す。**まったく同時に届いた場合の備え**
-    return oneAtATime(current.user.id, () => promoteGuest(supabase, email, password));
+    return oneAtATime(current.user.id, () =>
+      promoteGuest(supabase, email, password, terms, privacy),
+    );
   }
 
-  return createNewAccount(supabase, email, password);
+  return createNewAccount(supabase, email, password, terms, privacy);
 }
 
 /**
@@ -234,6 +268,8 @@ async function promoteGuest(
   supabase: Awaited<ReturnType<typeof createSupabaseServerClient>>,
   email: string,
   password: string,
+  terms: string,
+  privacy: string,
 ): Promise<never> {
   {
     // 送る前に見る。ここで止まれば、メールは1通も増えない
@@ -319,6 +355,12 @@ async function promoteGuest(
       );
     }
 
+    // 匿名でなくなっていれば、この場で同意を記録する（P5）。
+    // 確認待ちの間はまだ匿名なので記録できない。そのときは /consent が引き受ける。
+    if (refreshed.user && !refreshed.user.is_anonymous) {
+      await recordConsent(terms, privacy);
+    }
+
     revalidatePath(PAGE);
 
     // メール確認が必要な設定のときは、確認するまで匿名のまま。
@@ -336,6 +378,8 @@ async function createNewAccount(
   supabase: Awaited<ReturnType<typeof createSupabaseServerClient>>,
   email: string,
   password: string,
+  terms: string,
+  privacy: string,
 ): Promise<never> {
   // 戻り先を昇格と同じ /auth/confirm にそろえる。そうしないと
   // 確認リンクがトップに落ちて、サインインし直しを求めることになる。
@@ -356,6 +400,10 @@ async function createNewAccount(
       ),
     );
   }
+
+  // セッションが返っていれば、この場で同意を記録する（P5）。
+  // 返っていなければ（＝メールの確認待ち）、確認後に /consent が引き受ける。
+  if (data.session) await recordConsent(terms, privacy);
 
   revalidatePath(PAGE);
 

@@ -10,12 +10,10 @@ import {
 } from "@/app/_surface";
 import { MAX_CARRY_PER_SAVE, type RevealedPrompt } from "@/features/carry/types";
 import {
-  MAX_FLAVOR_TOKENS,
-  flavorSentence,
+  flavorLines,
   hintAccuracy,
   type FlavorReply,
   type FlavorVocabItem,
-  type FlavorVocabSet,
   type WorkFlavor,
   type WorkHintResult,
 } from "@/features/flavor/types";
@@ -25,7 +23,6 @@ import {
   openFlavorHintAction,
   openShareAction,
   postFlavorReplyAction,
-  setFlavorTextAction,
 } from "./actions";
 
 /**
@@ -313,7 +310,11 @@ export function FlavorHintBox({
     return (
       <section className={`${surface} space-y-3`}>
         <h2 className="text-sm font-bold">作者からの言葉（ヒント）</h2>
-        <p className="text-lg leading-relaxed">{flavorSentence(flavor.tokens)}</p>
+        {flavorLines(flavor).map((line, i) => (
+          <p key={i} className="text-lg leading-relaxed">
+            {line}
+          </p>
+        ))}
         <p className="text-xs text-faint">
           この文章は、回答後にもう一度出ます。開いたことによる減点はありません。
         </p>
@@ -343,7 +344,11 @@ export function FlavorRevealBox({ flavor }: { flavor: WorkFlavor }) {
   return (
     <section className={`${surface} space-y-3`}>
       <h2 className="text-sm font-bold">作者の言葉</h2>
-      <p className="text-lg leading-relaxed">{flavorSentence(flavor.tokens)}</p>
+      {flavorLines(flavor).map((line, i) => (
+        <p key={i} className="text-lg leading-relaxed">
+          {line}
+        </p>
+      ))}
       <p className="text-xs text-faint">
         {flavor.hint_used
           ? "回答前に見た文章と同じものです。答えを知ったいま、同じ言葉が違って読めるはずです。"
@@ -393,7 +398,7 @@ export function ReplyBox({
               data-reply={r.id}
               className="rounded-xl border border-line px-4 py-3"
             >
-              <p className="text-base leading-relaxed">{flavorSentence(r.tokens)}</p>
+              <p className="text-base leading-relaxed">{r.tokens.join(" ")}。</p>
               <p className="pt-1 text-xs text-faint">
                 {r.author_handle
                   ? `${r.author_display_name}（@${r.author_handle}）`
@@ -479,97 +484,11 @@ export function ReplyBox({
               返歌を送る
             </SubmitButton>
             <p className="text-xs text-faint">
-              選んだ順ではなく、上から並んだ順に並びます。{MAX_FLAVOR_TOKENS}語までです。
+              選んだ順ではなく、上から並んだ順に並びます。
             </p>
           </div>
         </form>
       ) : null}
-    </section>
-  );
-}
-
-/**
- * 作者が自作へ文章を付ける画面（D162 の 1）。
- *
- * 【選べる語が少なく見える理由をその場に書く】
- *   そのお題の答えに近すぎる語は、一覧から外れている。
- *   説明が無いと「語彙が貧しい」と読まれる。**外した理由のほうが本体。**
- */
-export function FlavorComposer({
-  workId,
-  vocab,
-  current,
-}: {
-  workId: string;
-  vocab: FlavorVocabSet;
-  current: WorkFlavor | null;
-}) {
-  const suggested = vocab.vocab.filter((v) => v.suggested);
-  const rest = vocab.vocab.filter((v) => !v.suggested);
-
-  return (
-    <section className={`${surface} space-y-5`}>
-      <div className="space-y-1">
-        <h2 className="text-sm font-bold">作者の言葉を付ける</h2>
-        <p className="text-xs text-faint">
-          決まった語から選んで、短い文章を作ります。
-          見た人は回答前に任意で開けて、回答後には必ず読みます。
-        </p>
-      </div>
-
-      {current?.tokens.length ? (
-        <div className="rounded-xl bg-sunken px-4 py-3">
-          <p className="text-xs text-faint">いまの文章</p>
-          <p className="text-base leading-relaxed">{flavorSentence(current.tokens)}</p>
-        </div>
-      ) : null}
-
-      <form action={setFlavorTextAction} className="space-y-4">
-        <input type="hidden" name="workId" value={workId} />
-
-        {suggested.length > 0 ? (
-          <div className="space-y-2">
-            <h3 className="text-xs font-bold">この絵に効きそうな語</h3>
-            <div className="flex flex-wrap gap-2">
-              {suggested.map((v) => (
-                <label
-                  key={v.id}
-                  className="inline-flex min-h-11 cursor-pointer items-center rounded-lg border border-line px-3 py-1.5 text-xs has-checked:border-line-active has-checked:bg-hover"
-                >
-                  <input type="checkbox" name="vocabId" value={v.id} className="mr-2" />
-                  {v.label}
-                </label>
-              ))}
-            </div>
-          </div>
-        ) : null}
-
-        <div className="space-y-2">
-          <h3 className="text-xs font-bold">使える語</h3>
-          <div className="flex flex-wrap gap-2">
-            {rest.map((v) => (
-              <label
-                key={v.id}
-                className="inline-flex min-h-11 cursor-pointer items-center rounded-lg border border-line px-3 py-1.5 text-xs has-checked:border-line-active has-checked:bg-hover"
-              >
-                <input type="checkbox" name="vocabId" value={v.id} className="mr-2" />
-                {v.label}
-              </label>
-            ))}
-          </div>
-        </div>
-
-        <div className="space-y-2">
-          <SubmitButton pendingLabel="保存しています…" className={btnSecondary}>
-            この文章にする
-          </SubmitButton>
-          <p className="text-xs text-faint">
-            答えそのものや、答えを言い換えただけの語は一覧に出ていません。
-            回答前に読む人へ、答えが直接渡らないようにするためです。
-            {vocab.max_tokens}語までです。
-          </p>
-        </div>
-      </form>
     </section>
   );
 }

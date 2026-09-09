@@ -107,9 +107,14 @@ export async function seedForE2E(db, { memberEmail = "e2e-member@example.test" }
   // 1件だけ、作者のフレーバーテキストを付ける（ヒントの分離集計を見るため）
   const flavorWork = works[0].workId;
   await asRole(db, member(author), async (c) => {
+    // 語彙は分類ごとに返る（P5）。ここでは分類を問わず先頭から4語取る
     const list = await c.query(`select public.get_flavor_vocab($1) as v`, [flavorWork]);
-    const ids = list.rows[0].v.vocab.slice(0, 4).map((x) => x.id);
-    await c.query(`select public.set_flavor_text($1, $2)`, [flavorWork, ids]);
+    const ids = list.rows[0].v.categories
+      .flatMap((c2) => c2.words)
+      .slice(0, 4)
+      .map((x) => x.id);
+    // 4語のうち2語目のあとで文を切る。**2文の文章が1件ある状態**にする
+    await c.query(`select public.set_flavor_text($1, $2, $3)`, [flavorWork, ids, [1]]);
   });
 
   /* --- 部門ごとの作品（D169 の12・11 を画面から確かめるため）-----------------

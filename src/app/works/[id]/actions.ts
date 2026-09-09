@@ -498,10 +498,13 @@ export async function openFlavorHintAction(form: FormData): Promise<void> {
 export async function setFlavorTextAction(form: FormData): Promise<void> {
   const workId = str(form, "workId");
 
-  const vocabIds = form
-    .getAll("vocabId")
-    .map((v) => Number.parseInt(typeof v === "string" ? v : "", 10))
-    .filter((n) => Number.isFinite(n));
+  // 【画面から来た値を信じない】
+  //   語のIDも、文を切る位置も、カンマでつないだ1本の文字列で届く。
+  //   数でないもの・負の数はここで落とすが、**同じ判定は DB も持つ。**
+  //   語が使ってよいものかは、ここでは分からない（お題ごとに違う）。
+  //   それを見るのは set_flavor_text の関門で、ここは形を整えるだけ。
+  const vocabIds = numberList(str(form, "vocabIds"));
+  const breaks = numberList(str(form, "breaks"));
 
   if (vocabIds.length === 0) {
     backWithError(workId, new Error("語を1つ以上選んでください。"));

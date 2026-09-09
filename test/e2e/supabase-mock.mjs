@@ -129,6 +129,12 @@ export async function startSupabaseMock({ db = null } = {}) {
       is_anonymous: user.is_anonymous,
       iat: now,
       exp: now + 3600,
+      // amr（どうやって本人だと確かめたか）。本物の券にも入っている。
+      // **規約同意の関門がここの時刻を見る**（iat は券を作り直すたびに変わるため）。
+      // ここでは券を作った時刻をそのまま入れる（試験の中では作り直しが無い）
+      amr: [
+        { method: user.is_anonymous ? "anonymous" : "password", timestamp: now },
+      ],
     });
     const refresh = randomUUID();
     sessions.set(access, id);
@@ -177,6 +183,10 @@ export async function startSupabaseMock({ db = null } = {}) {
       role: "authenticated",
       uid: claims.sub,
       isAnonymous: Boolean(user.is_anonymous),
+      // 券に入っている時刻をそのまま DB へ渡す。**捨てると、
+      // 券の中身を見て決める仕組み（規約同意の関門）が試せない**
+      iat: claims.iat ?? null,
+      amr: claims.amr ?? null,
     };
   }
 

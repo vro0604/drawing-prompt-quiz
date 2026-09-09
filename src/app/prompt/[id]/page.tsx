@@ -15,6 +15,7 @@ import {
 import { SubmitButton } from "@/app/_pending";
 import { abandonPromptAction, revealPromptCandidatesAction } from "./actions";
 import { CarryFromPromptBox, TimerBox } from "./_timer";
+import { requireConsent } from "@/features/consent/rpc";
 
 /**
  * /prompt/[id] ／ 確定したお題を表示する。
@@ -41,6 +42,10 @@ export default async function PromptPage({
   params: Promise<{ id: string }>;
   searchParams: Promise<{ error?: string; notice?: string }>;
 }) {
+  // 未同意の登録者をここで止める（P5）。**判定は DB の consent_status()。**
+  // 止めるのは、そのセッションが関門より後に始まっていて、かつ未同意のときだけ。
+  await requireConsent();
+
   const { id } = await params;
   const { error, notice } = await searchParams;
 
