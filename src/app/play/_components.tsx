@@ -13,6 +13,7 @@ import {
   slotSummary,
   type SavedElements,
 } from "@/features/carry/types";
+import { subDirectiveLabel } from "@/features/modifier/types";
 import {
   SHAPE_ASSISTS,
   shapeAssistLabel,
@@ -484,6 +485,19 @@ function SlotRow({ state, slot }: { state: DraftState; slot: DraftSlot }) {
           <span className="text-xs text-faint">順番待ち</span>
         )}
       </div>
+
+      {/* サブ指令（D193）。決まった語に添える手がかりで、**お題ではない。**
+          枠の見出しと同じ大きさで出さない。決まっていない枠には出ない
+          （決まる前は必ず null）。断り書きは確定したお題の画面に1度だけ置く。 */}
+      {subDirectiveLabel(slot.sub_directive_key) ? (
+        <p
+          data-testid="board-sub-directive"
+          data-sub-directive-for={slot.card_slot_key}
+          className="text-xs text-faint"
+        >
+          └ {subDirectiveLabel(slot.sub_directive_key)}
+        </p>
+      ) : null}
 
       <div
         className="grid gap-3"

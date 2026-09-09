@@ -2854,6 +2854,68 @@ export const diagnostics = [
                                'open_my_work_result')
              and has_function_privilege('anon', p.oid, 'EXECUTE')`,
   },
+  {
+    // サブ指令（D193）は、回答者・出題・配給・順位のどこにも入らない。
+    // 出題が読むのは prompt_cards の tag_id と card_slots だけで、
+    // 同じ表に列を足しても届かない。それを毎回数える。
+    id: "A45",
+    label: "サブ指令を読んでしまっている、回答者向け・出題・配給・順位の関数",
+    sql: `select p.proname
+            from pg_proc p join pg_namespace n on n.oid = p.pronamespace
+           where n.nspname = 'public' and p.prokind = 'f'
+             and p.proname in ('build_quiz_for_prompt','get_work_quiz','submit_answer',
+                               'next_work_candidates','get_next_work','get_work_detail',
+                               'get_public_works','get_rankings','create_art_first_work',
+                               'create_work','get_answered_prompt','get_public_answers')
+             and pg_get_functiondef(p.oid) like '%sub_directive%'`,
+  },
+  {
+    // サブ指令の列も、利用者から直接読み書きできない。
+    // 書けるのはサーバー専用の書込関数と complete_draft を通したときだけ。
+    id: "A46",
+    label: "サブ指令の列に、利用者の権限が付いている",
+    sql: `select (table_name || '.' || column_name || ' ' || grantee || ' ' || privilege_type) as id
+            from information_schema.column_privileges
+           where table_schema = 'public'
+             and column_name  = 'sub_directive_key'
+             and grantee in ('anon','authenticated','PUBLIC')`,
+  },
+  {
+    // 持ち込み（art_first）にはサブ指令が付かない（D193）。
+    // 持ち込みはドラフトを持たないので、常に空になるのが正しい。
+    id: "A47",
+    label: "持ち込みのお題に入ってしまっているサブ指令",
+    sql: `select pc.id::text as id
+            from public.prompt_cards pc
+            join public.prompts pr on pr.id = pc.prompt_id
+           where pr.origin = 'art_first' and pc.sub_directive_key is not null`,
+  },
+  {
+    // サブ指令を書く窓口は、サーバーだけが呼べる（D193）。
+    //
+    // ここが今回の要。利用者のサインインの証明書はブラウザから読み取れるので、
+    // authenticated に配ってしまうと、画面を通さず好きな鍵を書き込めてしまう。
+    // 実際に一度その形になっていた。
+    id: "A48",
+    label: "サブ指令を書く窓口を、利用者が呼べてしまう",
+    sql: `select (p.proname || ' ' || r.rolname) as id
+            from pg_proc p
+            join pg_namespace n on n.oid = p.pronamespace
+            cross join (values ('anon'),('authenticated')) as r(rolname)
+           where n.nspname = 'public'
+             and p.proname = 'set_draft_slot_sub_directive'
+             and has_function_privilege(r.rolname, p.oid, 'EXECUTE')`,
+  },
+  {
+    // カードを決める窓口は、サブ指令の責務を持たない（D193）。
+    // 引数として受け取る形に戻すと、そこが改ざんの入口になる。
+    id: "A49",
+    label: "カードを決める窓口にサブ指令が入っている",
+    sql: `select p.proname
+            from pg_proc p join pg_namespace n on n.oid = p.pronamespace
+           where n.nspname = 'public' and p.proname = 'choose_card'
+             and (p.pronargs <> 3 or pg_get_functiondef(p.oid) like '%sub_directive%')`,
+  },
 ];
 
 /**

@@ -3649,6 +3649,327 @@ async function main() {
     assert(state === "no", `ゲストの入口の状態が ${state}（no のはず）`);
   });
 
+  /* =====================================================================
+   * S2. サブ指令（D193）
+   *
+   * 正式な語1つに添える制作の手がかり。**正式なお題ではない。**
+   *
+   * 【引くたびに出るとは限らない】
+   *   対応表があるのは24語だけで、そのうえ付くのは 70% の抽選に当たったとき。
+   *   だから「引いて出るまで待つ」形にすると、たまに落ちる試験になる。
+   *
+   *   そこでこの群では、**カラーの語を対応表にある6語だけに絞ってから**引く。
+   *   これで語のほうは必ず当たり、残るのは 70% の抽選だけになる。
+   *   それでも外れることがあるので、出るまで引き直す（上限つき）。
+   *   絞ったものは、この群の最後に必ず戻す。
+   *
+   *   付くか付かないかの 70/30 そのものは、乱数を固定して別に確かめている
+   *   （縦断試験の S3 群）。ここで何百回も引いて割合を数えない。
+   * ===================================================================== */
+
+  // 対応表そのものを読む。**ここで語を書き写さない。**
+  // 書き写すと、表を直したときに試験だけが古くなる
+  const { SUB_DIRECTIVES } = await import("../../src/features/modifier/types.ts");
+
+  /** 対応表が扱う正式な語ぜんぶ（24語） */
+  const SUB_DIRECTIVE_TAGS = [...new Set(SUB_DIRECTIVES.flatMap((d) => d.forTagLabels))];
+
+  /**
+   * 語彙を、対応表にあるものだけに絞る。戻す関数を返す。
+   *
+   * モーフはどの回でも必ず1枠は出る（実測: 12回引いて12回とも出た）ので、
+   * モーフを絞れば「対応表にある語が必ず1枠は決まる」状態になる。
+   * 感情・性質・カラーも一緒に絞って、外れる枠を減らしておく。
+   */
+  async function limitToCovered() {
+    await db.query(
+      `update public.tags set is_active = false
+        where pool_key in ('morph','emotion','property','color')
+          and label <> all($1::text[])`,
+      [SUB_DIRECTIVE_TAGS],
+    );
+    return async () => {
+      await db.query(
+        `update public.tags set is_active = true
+          where pool_key in ('morph','emotion','property','color')`,
+      );
+    };
+  }
+
+  /** この群だけを流したときのために、作者としてサインインしておく */
+  async function ensureAuthor() {
+    await m.goto(`${base}/account`);
+    await settledBody(m);
+    const form = "form:has(button:has-text('サインインする'))";
+    if ((await m.locator(`${form} input[name=email]`).count()) > 0) {
+      await signInAs(m, base, seeded.memberEmail);
+    }
+  }
+
+  /**
+   * サブ指令が盤面に出るまで引き直す。出たら、その盤面のまま返す。
+   *
+   * 【なぜ引き直すのか】
+   *   語のほうは上で絞ってあるので必ず当たる。残るのは 70% の抽選だけで、
+   *   1回で出ない確率は 30%。10回続けて外れる確率は十万分の6ほど。
+   *   **割合を数える試験ではない。**付くか付かないかの 70/30 そのものは、
+   *   乱数を固定して縦断試験の S3 群で確かめている。
+   *
+   *   語彙を絞ると、まれに候補が足りずドラフトを始められないことがある
+   *   （実測: 25回中1回）。そのときも次の回へ進む。
+   */
+  async function drawUntilSubDirective(page, tries = 10) {
+    for (let i = 0; i < tries; i += 1) {
+      await clearDraft();
+      await page.goto(`${base}/play`);
+      if ((await page.locator("select[name=timeLimitSeconds]").count()) === 0) continue;
+
+      await page.selectOption("select[name=timeLimitSeconds]", "3600");
+      await page.getByRole("button", { name: "ドラフトを始める" }).click();
+      try {
+        await page.waitForSelector("button[data-card=hidden]", { timeout: 15000 });
+      } catch {
+        continue; // 候補が足りずに始められなかった回
+      }
+      await revealAll(page);
+
+      if ((await page.locator('[data-testid="board-sub-directive"]').count()) > 0) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  await test("S2", "対応表にある語を引くと、盤面にサブ指令が出る", async (t) => {
+    await ensureAuthor();
+    const restore = await limitToCovered();
+    try {
+      t.stage("カラーが必ず対応表の語になる状態で引く");
+      const shown = await drawUntilSubDirective(m);
+      assert(shown, "10回引いてもサブ指令が1つも出なかった");
+
+      t.stage("出ているのは、決まった枠の下だけ");
+      const nodes = m.locator('[data-testid="board-sub-directive"]');
+      const count = await nodes.count();
+      assert(count >= 1, `盤面のサブ指令が ${count} 件`);
+
+      // 出ている文言が、対応表の表示文であること（鍵がそのまま出ていない）
+      for (let i = 0; i < count; i += 1) {
+        const text = (await nodes.nth(i).innerText()).replace(/^└\s*/, "").trim();
+        assert(text.length >= 4 && text.length <= 15,
+          `「${text}」は ${text.length} 字（4〜15字のはず）`);
+        assert(!/[a-z_]{6,}/.test(text), `「${text}」に鍵がそのまま出ている`);
+      }
+
+      t.stage("枠1つにつき、多くても1件");
+      const keys = await nodes.evaluateAll((els) =>
+        els.map((e) => e.getAttribute("data-sub-directive-for")));
+      assert(new Set(keys).size === keys.length, "同じ枠に2件出ている");
+    } finally {
+      await restore();
+    }
+  });
+
+  await test("S2", "確定すると、同じサブ指令が作者のお題に出る", async (t) => {
+    await ensureAuthor();
+    const restore = await limitToCovered();
+    try {
+      t.stage("サブ指令が出た盤面を作る");
+      assert(await drawUntilSubDirective(m), "10回引いても出なかった");
+
+      const onBoard = Object.fromEntries(
+        await m.locator('[data-testid="board-sub-directive"]').evaluateAll((els) =>
+          els.map((e) => [
+            e.getAttribute("data-sub-directive-for"),
+            e.innerText.replace(/^└\s*/, "").trim(),
+          ])),
+      );
+
+      t.stage("確定する");
+      await clickSafely(m.getByRole("button", { name: "このお題で確定する" }));
+      await m.waitForURL("**/prompt/**");
+
+      t.stage("盤面と同じものが、同じ枠に出ている");
+      const onPrompt = Object.fromEntries(
+        await m.locator('[data-testid="prompt-sub-directive"]').evaluateAll((els) =>
+          els.map((e) => [
+            e.getAttribute("data-sub-directive-for"),
+            e.innerText.replace(/^└\s*/, "").trim(),
+          ])),
+      );
+
+      for (const [slot, text] of Object.entries(onBoard)) {
+        assert(onPrompt[slot] === text,
+          `${slot} が盤面「${text}」／お題「${onPrompt[slot]}」`);
+      }
+
+      t.stage("断り書きが1度だけ出ている");
+      const notes = await m.locator('[data-testid="sub-directive-note"]').count();
+      assert(notes === 1, `断り書きが ${notes} 件（1件のはず）`);
+
+      t.stage("読み込み直しても同じ");
+      await m.reload();
+      await settledBody(m);
+      const again = Object.fromEntries(
+        await m.locator('[data-testid="prompt-sub-directive"]').evaluateAll((els) =>
+          els.map((e) => [
+            e.getAttribute("data-sub-directive-for"),
+            e.innerText.replace(/^└\s*/, "").trim(),
+          ])),
+      );
+      for (const [slot, text] of Object.entries(onPrompt)) {
+        assert(again[slot] === text, `読み込み直したら ${slot} が「${again[slot]}」`);
+      }
+
+      t.stage("出題の数は、サブ指令があっても変わらない");
+      const promptId = m.url().split("/prompt/")[1].split(/[?#]/)[0];
+      const rows = await db.query(
+        `select (select count(*)::int from public.quiz_questions q where q.prompt_id = $1) as questions,
+                (select count(*)::int from public.prompt_cards pc
+                   join public.card_slots cs on cs.card_slot_key = pc.card_slot_key
+                  where pc.prompt_id = $1 and cs.is_quiz_eligible) as eligible`,
+        [promptId],
+      );
+      assert(rows.rows[0].questions === rows.rows[0].eligible,
+        `出題 ${rows.rows[0].questions} 問 / 枠 ${rows.rows[0].eligible}`);
+    } finally {
+      await restore();
+    }
+  });
+
+  await test("S2", "引き直すと、古いサブ指令は盤面から消える", async (t) => {
+    await ensureAuthor();
+    const restore = await limitToCovered();
+    try {
+      t.stage("サブ指令が出た盤面を作る");
+      assert(await drawUntilSubDirective(m), "10回引いても出なかった");
+      const before = await m.locator('[data-testid="board-sub-directive"]').count();
+      assert(before >= 1, "準備で出ていない");
+
+      t.stage("引き直す");
+      await clickSafely(m.getByRole("button", { name: "引き直す" }));
+      await settledBody(m);
+
+      // 引き直すと世代が変わり、枠ごと作り直される。
+      // まだ1枚も決めていないので、サブ指令は1件も出ない
+      const after = await m.locator('[data-testid="board-sub-directive"]').count();
+      assert(after === 0, `引き直したのに ${after} 件残っている`);
+
+      t.stage("新しい世代の枠へ持ち越されていない");
+      // 引き直しは古い世代の行を消すのではなく、新しい世代の枠を作り直す。
+      // 見るのは**いまの世代**。古い世代の行は履歴として残るのが元々の作り。
+      const rows = await db.query(
+        `select count(*)::int n
+           from public.draft_session_slots s
+           join public.draft_sessions ds on ds.id = s.session_id
+          where ds.user_id = $1 and ds.status = 'in_progress'
+            and s.generation = ds.current_generation
+            and s.sub_directive_key is not null`,
+        [seeded.viewer],
+      );
+      assert(rows.rows[0].n === 0, `新しい世代に ${rows.rows[0].n} 件持ち越されている`);
+    } finally {
+      await restore();
+    }
+  });
+
+  await test("S2", "対応表に無い語の枠には、1つも出ない", async (t) => {
+    await ensureAuthor();
+    const restore = await limitToCovered();
+    try {
+      assert(await drawUntilSubDirective(m), "10回引いても出なかった");
+
+      t.stage("出ている枠と、決まった語を突き合わせる");
+      const shown = new Set(
+        await m.locator('[data-testid="board-sub-directive"]').evaluateAll((els) =>
+          els.map((e) => e.getAttribute("data-sub-directive-for"))),
+      );
+
+      const rows = await db.query(
+        `select s.card_slot_key, t.label
+           from public.draft_session_slots s
+           join public.draft_sessions ds on ds.id = s.session_id
+           join public.draft_candidates dc
+             on dc.session_id = s.session_id
+            and dc.generation = s.generation
+            and dc.card_slot_key = s.card_slot_key
+            and dc.is_chosen
+           join public.tags t on t.id = dc.tag_id
+          where ds.user_id = $1 and ds.status = 'in_progress'
+            and s.generation = ds.current_generation`,
+        [seeded.viewer],
+      );
+
+      const covered = new Set(SUB_DIRECTIVE_TAGS);
+      for (const r of rows.rows) {
+        if (shown.has(r.card_slot_key)) {
+          assert(covered.has(r.label),
+            `対応表に無い「${r.label}」の枠にサブ指令が出ている`);
+        }
+      }
+      assert(rows.rows.length > 0, "決まった枠が1つも読めなかった");
+    } finally {
+      await restore();
+    }
+  });
+
+  await test("S2", "値が入っていても、回答者の画面には出ない", async (t) => {
+    t.stage("作者のお題に、DB から直接サブ指令を入れる");
+    // ここで見たいのは「入っていたとしても回答者へ渡らないか」なので、
+    // 置き場所へ直接置いてから、回答者の窓で開く。
+    const work = seeded.works[0];
+    await db.query(
+      `update public.prompt_cards set sub_directive_key = 'leak_probe' where prompt_id = $1`,
+      [work.promptId],
+    );
+
+    const rows = await db.query(
+      `select count(*)::int n from public.prompt_cards
+        where prompt_id = $1 and sub_directive_key = 'leak_probe'`,
+      [work.promptId],
+    );
+    assert(rows.rows[0].n > 0, "準備で1件も入らなかった");
+
+    t.stage("ゲストが見る一覧と作品ページに出ない");
+    for (const path of ["/works", `/works/${work.workId}`]) {
+      await g.goto(`${base}${path}`);
+      const html = await g.content();
+      assert(!/leak_probe/.test(html), `${path} にサブ指令の鍵が出ている`);
+      assert(!/sub_directive/.test(html), `${path} に列の名前が出ている`);
+    }
+
+    t.stage("入れたものを戻す");
+    await db.query(
+      `update public.prompt_cards set sub_directive_key = null where prompt_id = $1`,
+      [work.promptId],
+    );
+  });
+
+  await test("S2", "持ち込みの投稿画面には、サブ指令の欄が無い", async (t) => {
+    const p = m;
+    t.stage("持ち込みの画面を開く");
+    await p.goto(`${base}/works/import`);
+    await settledBody(p);
+
+    assert(
+      (await p.locator('[data-testid="board-sub-directive"]').count()) === 0,
+      "持ち込みの画面にサブ指令が出ている",
+    );
+    assert(
+      (await p.locator('[data-testid="prompt-sub-directive"]').count()) === 0,
+      "持ち込みの画面にサブ指令が出ている",
+    );
+
+    t.stage("持ち込みのお題には、DB 側でも入らない");
+    const rows = await db.query(
+      `select count(*)::int n
+         from public.prompt_cards pc join public.prompts pr on pr.id = pc.prompt_id
+        where pr.origin = 'art_first' and pc.sub_directive_key is not null`,
+    );
+    assert(rows.rows[0].n === 0, `持ち込みのカードに ${rows.rows[0].n} 件入っている`);
+  });
+
+
 
 
   /* =====================================================================

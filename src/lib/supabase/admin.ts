@@ -10,6 +10,10 @@ import { SUPABASE_SECRET_KEY, SUPABASE_URL, hasSupabaseSecretKey } from "@/lib/e
  *   ・運営の操作（管理 v0 / D177）。src/features/admin/rpc.ts が
  *     service_role 専用の管理RPCを呼ぶ。**呼ぶ前に requireAdmin() を通すこと。**
  *     認可はこのファイルではなく src/features/admin/auth.ts が持つ。
+ *   ・サブ指令の書き込み（D193）。src/features/modifier/rpc.ts が
+ *     service_role 専用の書込RPCを呼ぶ。**利用者の証明書では呼べない窓口**で、
+ *     ここを通す唯一の理由がそれ。書く相手の絞り込みは DB 関数側が持っており、
+ *     誰の・どのドラフトの・どの世代の・どの枠の・どの語かを5つとも突き合わせる。
  *
  * ほかの用途で使わないこと。RLS を迂回するということは、
  * このプロジェクトが12の遮断表とRPCで積み上げてきた守りを、

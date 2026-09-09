@@ -1,5 +1,6 @@
 import Link from "next/link";
 import { notFound } from "next/navigation";
+import { subDirectiveLabel } from "@/features/modifier/types";
 import { shapeAssistLabel } from "@/features/shape-assist/types";
 import { fetchMyPrompt, fetchPromptTimer } from "@/features/draft/rpc";
 import { getCurrentUser } from "@/features/auth/session";
@@ -127,18 +128,45 @@ export default async function PromptPage({
             data-prompt-card={c.card_slot_key}
             data-slot-label={c.card_slot_label}
             data-tag-label={c.tag_label}
-            className="flex items-baseline gap-4 rounded-2xl border border-line bg-surface px-6 py-5"
+            className="rounded-2xl border border-line bg-surface px-6 py-5"
           >
-            <span className="w-28 shrink-0 text-xs text-faint">
-              {c.card_slot_label}
-            </span>
-            <span className="text-lg font-bold">{c.tag_label}</span>
+            <div className="flex items-baseline gap-4">
+              <span className="w-28 shrink-0 text-xs text-faint">
+                {c.card_slot_label}
+              </span>
+              <span className="text-lg font-bold">{c.tag_label}</span>
+            </div>
+
+            {/* サブ指令（D193）。**正式なお題ではない。**
+                上の語と同じ大きさで出さない。字も小さく、色も薄くしてある。
+                断り書きはここに繰り返さず、下の説明にまとめてある
+                （1画面に同じ注意書きを何度も置かない）。
+                出所: ユーザー指示（2026-09-10）「正式お題より一段弱い見た目にする」
+                「既存の形状アシスト説明と重複しすぎないよう、
+                画面全体を見て最小表示にする」。 */}
+            {subDirectiveLabel(c.sub_directive_key) ? (
+              <p
+                data-testid="prompt-sub-directive"
+                data-sub-directive-for={c.card_slot_key}
+                className="mt-2 pl-32 text-xs text-faint"
+              >
+                └ {subDirectiveLabel(c.sub_directive_key)}
+              </p>
+            ) : null}
           </li>
         ))}
       </ul>
 
       <div className="space-y-4 rounded-2xl bg-sunken p-6 text-sm">
         <p className="font-bold">この内容で描いてください。</p>
+        {/* サブ指令が1つでも出ているときだけ、断り書きを1度だけ置く（D193）。
+            語ごとに繰り返すと、正式なお題と同じ重さに見えてしまう。 */}
+        {prompt.cards.some((c) => subDirectiveLabel(c.sub_directive_key)) ? (
+          <p className="text-muted" data-testid="sub-directive-note">
+            語の下に小さく添えてあるのは、描くときの手がかりです。お題ではありません。
+            守らなくてもかまいませんし、クイズにも出ません。
+          </p>
+        ) : null}
         <p className="text-muted">
           描き終えたら作品を投稿します。見た人はこのお題を4択で当てることになります。
           出題されるのは {prompt.cards.length} 語のうち一部です。

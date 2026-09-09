@@ -54,6 +54,12 @@ export type DraftCandidate = {
  */
 export type DraftSlot = {
   card_slot_key: string;
+  /**
+   * サブ指令（D193）。その枠に決まった正式な語へ添える制作の手がかり。
+   * null は「なし」。**正式なお題ではない。**
+   * 決まる前（まだ選んでいない枠）は必ず null。
+   */
+  sub_directive_key: string | null;
   card_slot_label: string;
   category_label: string;
   is_carried: boolean;
@@ -116,6 +122,11 @@ export type CompletedDraft = {
 /** 確定したお題のカード1枚（＝答え） */
 export type PromptCard = {
   card_slot_key: string;
+  /**
+   * サブ指令（D193）。null は「なし」。**正式なお題ではない。**
+   * 作者にしか届かない（get_my_prompt が created_by で絞っている）。
+   */
+  sub_directive_key: string | null;
   card_slot_label: string;
   slot_order: number;
   tag_id: number;

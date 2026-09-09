@@ -19,6 +19,9 @@
  *   T. 回答の知らせ     作品に回答が来たことを作者へ伝える（D192）。表を
  *                       増やさず「最後に結果を開いた時刻」との差で出す。
  *                       件数と回答者を運んでいないことも数える
+ *   S2. サブ指令        正式な語1つに添える制作の手がかり（D193）。
+ *   S3. サブ指令の抽選  どの語に何を付けるかを決める、画面側の関数（D193）。
+ *                       出題・正解・配給・回答者の画面へ1歩も漏れていないこと
  *
  * 【この試験が届かないところ】
  *   ・画面（HTML）の見た目と操作。ここは DB と RPC だけを通す
@@ -5473,6 +5476,681 @@ async function main() {
     ]);
     const quizDump = JSON.stringify(quiz);
     assert(!quizDump.includes("result_seen"), "出題に確認時刻が入っている");
+  });
+
+  // =========================================================================
+  // S2. サブ指令（D193）
+  //
+  //    お題に出た正式な語1つに、「どう表現するか」の手がかりを添えるもの。
+  //    **正式なお題ではない。**
+  //
+  //    ここで確かめることは2つある。
+  //
+  //    (1) 正式なお題の側へ1歩も漏れていないこと。漏れる先は5つ。
+  //        出題（問の数と選択肢）、正解、伝達率の集計、
+  //        次の作品の配り方（D169）、回答者の画面。
+  //
+  //    (2) **利用者が好きな値を書き込めないこと。**
+  //        最初の作りでは、カードを決める窓口の引数として鍵を渡していた。
+  //        あの窓口はサインイン済みなら誰でも直接叩けるので、
+  //        画面を通さずに好きな鍵を自分のドラフトへ書けた。
+  //        いまは書く窓口を分け、サーバーだけが呼べるようにしてある。
+  //        出所: ユーザー指示（2026-09-10）「今回発見した穴を
+  //        回帰試験として必ず残す。画面経由だけ確認して終わらせない。」
+  //
+  //    【対応表を DB が持っていないこと】
+  //      どの語にどれが付くかは画面側（TypeScript）にある。DB は形だけを見る。
+  //      だから、この試験は**鍵を直接渡して**確かめる。
+  //      画面側の抽選そのものは、その言語の側で確かめる（S3 群）。
+  // =========================================================================
+
+  /**
+   * サブ指令を書く。**サーバーだけが呼べる窓口を通る。**
+   * 利用者の役では呼べないので、ここは service_role になる。
+   */
+  async function putDirective(uid, sessionId, generation, cardSlotKey, tagId, key) {
+    return asRole(db, { role: "service_role" }, async (c) => {
+      const r = await c.query(
+        `select public.set_draft_slot_sub_directive($1::uuid, $2::uuid, $3::int, $4, $5::bigint, $6) as ok`,
+        [uid, sessionId, generation, cardSlotKey, tagId, key],
+      );
+      return r.rows[0].ok;
+    });
+  }
+
+  /** いまその枠で決まっている語の id を読む */
+  async function chosenTagId(sessionId, generation, cardSlotKey) {
+    const r = await db.query(
+      `select tag_id from public.draft_candidates
+        where session_id = $1 and generation = $2 and card_slot_key = $3 and is_chosen`,
+      [sessionId, generation, cardSlotKey],
+    );
+    return r.rows[0]?.tag_id ?? null;
+  }
+
+  /**
+   * ドラフトを始め、最初の枠を1つだけ決めて、
+   * 「どのセッションの・どの世代の・どの枠に・どの語が入ったか」を返す。
+   * サブ指令はまだ付けていない。
+   */
+  async function chooseOneSlot(db2, uid) {
+    const st = await startDraftOnly(db2, uid);
+    const slot = st.slots.find((s) => !s.candidates.some((x) => x.is_chosen));
+
+    await value(db2, asMember(uid), `select public.reveal_card($1, $2, 0)`, [
+      st.session_id,
+      slot.card_slot_key,
+    ]);
+    const after = await value(db2, asMember(uid), `select public.choose_card($1, $2, 0)`, [
+      st.session_id,
+      slot.card_slot_key,
+    ]);
+
+    return {
+      sessionId: st.session_id,
+      generation: after.generation,
+      cardSlotKey: slot.card_slot_key,
+      tagId: await chosenTagId(st.session_id, after.generation, slot.card_slot_key),
+    };
+  }
+
+  /** サブ指令を付けながら1枠ずつ決めて、確定まで進める */
+  async function drawWithDirectives(uid, keyFor) {
+    let state = await startDraftOnly(db, uid);
+
+    for (const slot of state.slots) {
+      if (slot.candidates.some((x) => x.is_chosen)) continue;
+
+      await value(db, asMember(uid), `select public.reveal_card($1, $2, 0)`, [
+        state.session_id,
+        slot.card_slot_key,
+      ]);
+      const seen = await value(db, asMember(uid), `select public.get_current_draft()`);
+      const here = seen.slots.find((x) => x.card_slot_key === slot.card_slot_key);
+      const label = here.candidates.find((x) => x.candidate_index === 0)?.label ?? null;
+
+      // カードを決める窓口は、サブ指令を知らない（3引数のまま）
+      state = await value(db, asMember(uid), `select public.choose_card($1, $2, 0)`, [
+        state.session_id,
+        slot.card_slot_key,
+      ]);
+
+      const key = keyFor(label, slot.card_slot_key);
+      if (key !== null) {
+        const tagId = await chosenTagId(state.session_id, state.generation, slot.card_slot_key);
+        await putDirective(uid, state.session_id, state.generation, slot.card_slot_key, tagId, key);
+      }
+    }
+
+    state = await value(db, asMember(uid), `select public.get_current_draft()`);
+    const done = await value(db, asMember(uid), `select public.complete_draft($1)`, [
+      state.session_id,
+    ]);
+    return { state, ...done };
+  }
+
+  await test("S2", "使わないときは、これまでと何も変わらない", async () => {
+    const u = await makeMember(db, "sd-none");
+    const drawn = await drawWithDirectives(u, () => null);
+
+    for (const s of drawn.state.slots) {
+      assert(
+        s.sub_directive_key === null,
+        `使っていないのに ${s.card_slot_key} に ${s.sub_directive_key} が入っている`,
+      );
+    }
+
+    const mine = await value(db, asMember(u), `select public.get_my_prompt($1::uuid)`, [
+      drawn.prompt_id,
+    ]);
+    for (const c of mine.cards) {
+      assert(c.sub_directive_key === null, `確定したお題の ${c.card_slot_key} に値が入っている`);
+    }
+  });
+
+  await test("S2", "決めた枠に入り、確定したお題からも読める", async () => {
+    const u = await makeMember(db, "sd-set");
+    const drawn = await drawWithDirectives(u, () => "test_directive");
+
+    const inBoard = drawn.state.slots.filter((s) => s.sub_directive_key === "test_directive");
+    assert(inBoard.length === drawn.state.slots.length,
+      `盤面に入ったのが ${inBoard.length} / ${drawn.state.slots.length} 枠`);
+
+    const mine = await value(db, asMember(u), `select public.get_my_prompt($1::uuid)`, [
+      drawn.prompt_id,
+    ]);
+    const inPrompt = mine.cards.filter((c) => c.sub_directive_key === "test_directive");
+    assert(inPrompt.length === mine.cards.length,
+      `確定したお題に入ったのが ${inPrompt.length} / ${mine.cards.length} 枚`);
+  });
+
+  await test("S2", "枠ごとに別のものを入れられる（1枠に1つ）", async () => {
+    const u = await makeMember(db, "sd-each");
+    const drawn = await drawWithDirectives(u, (_label, key) =>
+      key.startsWith("morph") ? "for_morph" : "for_other");
+
+    const mine = await value(db, asMember(u), `select public.get_my_prompt($1::uuid)`, [
+      drawn.prompt_id,
+    ]);
+    for (const c of mine.cards) {
+      const expected = c.card_slot_key.startsWith("morph") ? "for_morph" : "for_other";
+      assert(c.sub_directive_key === expected,
+        `${c.card_slot_key} が ${c.sub_directive_key}（${expected} のはず）`);
+    }
+  });
+
+  await test("S2", "読み込み直しても残る", async () => {
+    const u = await makeMember(db, "sd-reload");
+    const st = await chooseOneSlot(db, u);
+    await putDirective(u, st.sessionId, st.generation, st.cardSlotKey, st.tagId, "kept_directive");
+
+    // 開き直す（get_current_draft は毎回 DB から作り直す）
+    const again = await value(db, asMember(u), `select public.get_current_draft()`);
+    const here = again.slots.find((s) => s.card_slot_key === st.cardSlotKey);
+    assert(here.sub_directive_key === "kept_directive",
+      `読み込み直したら ${here.sub_directive_key} になっている`);
+  });
+
+  await test("S2", "引き直すと、古いサブ指令は正式な語ごと捨てられる", async () => {
+    const u = await makeMember(db, "sd-reroll");
+    const st = await chooseOneSlot(db, u);
+    await putDirective(u, st.sessionId, st.generation, st.cardSlotKey, st.tagId, "old_directive");
+
+    const after = await value(db, asMember(u), `select public.reroll_draft($1)`, [st.sessionId]);
+
+    // 引き直すと世代が変わり、枠ごと作り直される。**古い値は1つも残らない。**
+    for (const s of after.slots) {
+      assert(s.sub_directive_key === null,
+        `引き直したのに ${s.card_slot_key} に ${s.sub_directive_key} が残っている`);
+    }
+  });
+
+  await test("S2", "引き直しが割り込んだら、古い世代あての鍵は書かれない", async () => {
+    // サーバーが語を読んでから書きに来るまでの間に、
+    // 利用者が引き直すことがある。そのとき古い語に対して決めた鍵を書くと、
+    // いまの語と噛み合わないサブ指令が残る。**書かれないこと。**
+    const u = await makeMember(db, "sd-race");
+    const st = await chooseOneSlot(db, u);
+
+    // ここで引き直しが割り込む
+    await value(db, asMember(u), `select public.reroll_draft($1)`, [st.sessionId]);
+
+    // 遅れて届いた書き込み。世代も語も古い
+    const wrote = await putDirective(
+      u, st.sessionId, st.generation, st.cardSlotKey, st.tagId, "stale_directive");
+    assert(wrote === false, "古い世代あての鍵が書けてしまった");
+
+    const rows = (
+      await db.query(
+        `select count(*)::int as n from public.draft_session_slots
+          where session_id = $1 and sub_directive_key is not null`,
+        [st.sessionId],
+      )
+    ).rows[0].n;
+    assert(rows === 0, `引き直した後に ${rows} 件のサブ指令が残っている`);
+  });
+
+  await test("S2", "決めたときと違う語あての鍵は書かれない", async () => {
+    const u = await makeMember(db, "sd-wrongtag");
+    const st = await chooseOneSlot(db, u);
+
+    // 語の id だけを別のものにして送る（他はすべて正しい）
+    const other = (
+      await db.query(`select id from public.tags where id <> $1 limit 1`, [st.tagId])
+    ).rows[0].id;
+
+    const wrote = await putDirective(
+      u, st.sessionId, st.generation, st.cardSlotKey, other, "wrong_tag_directive");
+    assert(wrote === false, "違う語あての鍵が書けてしまった");
+  });
+
+  await test("S2", "他人のドラフトへは書けない", async () => {
+    const owner = await makeMember(db, "sd-owner");
+    const other = await makeMember(db, "sd-intruder");
+    const st = await chooseOneSlot(db, owner);
+
+    // サーバーの窓口であっても、持ち主が違えば1行も書かない
+    const wrote = await putDirective(
+      other, st.sessionId, st.generation, st.cardSlotKey, st.tagId, "not_yours");
+    assert(wrote === false, "他人のドラフトへ書けてしまった");
+
+    const rows = (
+      await db.query(
+        `select count(*)::int as n from public.draft_session_slots
+          where session_id = $1 and sub_directive_key is not null`,
+        [st.sessionId],
+      )
+    ).rows[0].n;
+    assert(rows === 0, `他人が ${rows} 件書き込めている`);
+  });
+
+  await test("S2", "一度入った枠へは上書きできない", async () => {
+    const u = await makeMember(db, "sd-once");
+    const st = await chooseOneSlot(db, u);
+
+    const first = await putDirective(
+      u, st.sessionId, st.generation, st.cardSlotKey, st.tagId, "first_directive");
+    assert(first === true, "1回目が書けていない");
+
+    const second = await putDirective(
+      u, st.sessionId, st.generation, st.cardSlotKey, st.tagId, "second_directive");
+    assert(second === false, "2回目で上書きできてしまった");
+
+    const now = await value(db, asMember(u), `select public.get_current_draft()`);
+    const here = now.slots.find((s) => s.card_slot_key === st.cardSlotKey);
+    assert(here.sub_directive_key === "first_directive",
+      `${here.sub_directive_key} になっている`);
+  });
+
+  await test("S2", "形が合わない指定は受け付けない", async () => {
+    const u = await makeMember(db, "sd-bad");
+    const st = await chooseOneSlot(db, u);
+
+    for (const bad of ["Uppercase", "with space", "日本語", "x".repeat(40)]) {
+      await expectFailure(
+        () => putDirective(u, st.sessionId, st.generation, st.cardSlotKey, st.tagId, bad),
+        "BAD_SUB_DIRECTIVE",
+      );
+    }
+  });
+
+  // ── ここから、今回見つけた穴そのものの回帰試験 ──────────────
+
+  await test("S2", "カードを決める窓口は、サブ指令を受け取らない", async () => {
+    // 4引数の choose_card は**そもそも存在しない。**
+    const n = (
+      await db.query(
+        `select count(*)::int as n
+           from pg_proc p join pg_namespace ns on ns.oid = p.pronamespace
+          where ns.nspname = 'public' and p.proname = 'choose_card' and p.pronargs = 4`,
+      )
+    ).rows[0].n;
+    assert(n === 0, `4引数の choose_card が ${n} 本ある`);
+
+    const three = (
+      await db.query(
+        `select count(*)::int as n
+           from pg_proc p join pg_namespace ns on ns.oid = p.pronamespace
+          where ns.nspname = 'public' and p.proname = 'choose_card' and p.pronargs = 3`,
+      )
+    ).rows[0].n;
+    assert(three === 1, `3引数の choose_card が ${three} 本（1本のはず）`);
+
+    // 定義そのものにサブ指令の文字が1つも無い
+    const leaked = (
+      await db.query(
+        `select count(*)::int as n
+           from pg_proc p join pg_namespace ns on ns.oid = p.pronamespace
+          where ns.nspname = 'public' and p.proname = 'choose_card'
+            and pg_get_functiondef(p.oid) like '%sub_directive%'`,
+      )
+    ).rows[0].n;
+    assert(leaked === 0, "choose_card にサブ指令が入っている");
+  });
+
+  await test("S2", "サインイン済みの利用者は、書く窓口を直接呼べない", async () => {
+    const u = await makeMember(db, "sd-nocall");
+    const st = await chooseOneSlot(db, u);
+
+    // 自分のドラフト・自分の語・正しい世代。**それでも呼べない。**
+    await expectFailure(
+      () =>
+        value(
+          db,
+          asMember(u),
+          `select public.set_draft_slot_sub_directive($1::uuid, $2::uuid, $3::int, $4, $5::bigint, $6)`,
+          [u, st.sessionId, st.generation, st.cardSlotKey, st.tagId, "fake_modifier"],
+        ),
+      "permission denied",
+    );
+
+    // 未サインインでも呼べない
+    await expectFailure(
+      () =>
+        value(
+          db,
+          { role: "anon" },
+          `select public.set_draft_slot_sub_directive($1::uuid, $2::uuid, $3::int, $4, $5::bigint, $6)`,
+          [u, st.sessionId, st.generation, st.cardSlotKey, st.tagId, "fake_modifier"],
+        ),
+      "permission denied",
+    );
+  });
+
+  await test("S2", "形の合う偽の鍵でも、利用者は自分のドラフトへ書けない", async () => {
+    const u = await makeMember(db, "sd-forge");
+    const st = await chooseOneSlot(db, u);
+
+    // fake_modifier は形（小文字と下線）としては正しい。
+    // それでも、利用者の側からは1つも書き込む口が無いこと。
+    //
+    //   1つめ  表そのものへ直接書く
+    //   2つめ  書く窓口を自分で呼ぶ
+    //   3つめ  昔あった「カードを決めながら渡す」形で送る
+    await expectFailure(
+      () =>
+        value(db, asMember(u),
+          `update public.draft_session_slots set sub_directive_key = 'fake_modifier'
+            where session_id = $1`, [st.sessionId]),
+      "permission denied",
+    );
+    await expectFailure(
+      () =>
+        value(db, asMember(u),
+          `select public.set_draft_slot_sub_directive($1::uuid, $2::uuid, $3::int, $4, $5::bigint, 'fake_modifier')`,
+          [u, st.sessionId, st.generation, st.cardSlotKey, st.tagId]),
+      "permission denied",
+    );
+    await expectFailure(
+      () =>
+        value(db, asMember(u),
+          `select public.choose_card($1, $2, 0, 'fake_modifier')`, [st.sessionId, st.cardSlotKey]),
+      "does not exist",
+    );
+
+    const rows = (
+      await db.query(
+        `select count(*)::int as n from public.draft_session_slots
+          where session_id = $1 and sub_directive_key is not null`,
+        [st.sessionId],
+      )
+    ).rows[0].n;
+    assert(rows === 0, `偽の鍵が ${rows} 件書き込まれた`);
+  });
+
+  await test("S2", "書く窓口の権限が、サーバーだけに配られている", async () => {
+    const rows = (
+      await db.query(
+        `select
+           count(*) filter (where has_function_privilege('anon', p.oid, 'EXECUTE'))::int as anon,
+           count(*) filter (where has_function_privilege('authenticated', p.oid, 'EXECUTE'))::int as auth,
+           count(*) filter (where has_function_privilege('service_role', p.oid, 'EXECUTE'))::int as svc
+           from pg_proc p join pg_namespace ns on ns.oid = p.pronamespace
+          where ns.nspname = 'public' and p.proname = 'set_draft_slot_sub_directive'`,
+      )
+    ).rows[0];
+    assert(rows.anon === 0, `anon に ${rows.anon} 件配られている`);
+    assert(rows.auth === 0, `authenticated に ${rows.auth} 件配られている`);
+    assert(rows.svc === 1, `service_role に ${rows.svc} 件（1件のはず）`);
+  });
+
+  // ── ここから、正式なお題の側へ漏れていないこと ──────────────
+
+  await test("S2", "出題の数も語の数も、サブ指令で変わらない", async () => {
+    const plain = await drawWithDirectives(await makeMember(db, "sd-plain"), () => null);
+    const withIt = await drawWithDirectives(await makeMember(db, "sd-with"), () => "test_directive");
+
+    // 語の顔ぶれは抽選で変わるので、2つのお題の語数を突き合わせても意味がない。
+    // 見るのは「そのお題の中で、出題数が出題対象の枠数と合っているか」。
+    for (const drawn of [plain, withIt]) {
+      const rows = (
+        await db.query(
+          `select count(*) filter (where cs.is_quiz_eligible)::int eligible,
+                  (select count(*)::int from public.quiz_questions q
+                    where q.prompt_id = $1) as questions
+             from public.prompt_cards pc
+             join public.card_slots cs on cs.card_slot_key = pc.card_slot_key
+            where pc.prompt_id = $1`,
+          [drawn.prompt_id],
+        )
+      ).rows[0];
+      assert(rows.questions === rows.eligible,
+        `出題 ${rows.questions} 問 / 枠 ${rows.eligible}`);
+    }
+  });
+
+  await test("S2", "選択肢にも正解にも、サブ指令は出ない", async () => {
+    const u = await makeMember(db, "sd-quiz");
+    const drawn = await drawWithDirectives(u, () => "test_directive");
+    const workId = await postWork(db, u, drawn.prompt_id, "サブ指令の作品");
+
+    const viewer = await makeMember(db, "sd-viewer");
+    const quiz = await value(db, asMember(viewer), `select public.get_work_quiz($1::uuid)`, [
+      workId,
+    ]);
+    const dump = JSON.stringify(quiz);
+    assert(!dump.includes("sub_directive"), "出題にサブ指令の鍵が入っている");
+    assert(!dump.includes("test_directive"), "出題にサブ指令の値が入っている");
+  });
+
+  await test("S2", "他人の確定したお題からは読めない", async () => {
+    const u = await makeMember(db, "sd-mine");
+    const drawn = await drawWithDirectives(u, () => "test_directive");
+
+    const other = await makeMember(db, "sd-other");
+    const stolen = await value(db, asMember(other), `select public.get_my_prompt($1::uuid)`, [
+      drawn.prompt_id,
+    ]);
+    assert(stolen === null, "他人が確定したお題を読めている");
+  });
+
+  await test("S2", "回答者へ渡る取得系に、サブ指令の鍵が1つも無い", async () => {
+    const u = await makeMember(db, "sd-leak");
+    const drawn = await drawWithDirectives(u, () => "test_directive");
+    const workId = await postWork(db, u, drawn.prompt_id, "漏れの検査");
+
+    const viewer = await makeMember(db, "sd-leak-v");
+    for (const sql of [
+      `select public.get_work_detail($1::uuid)`,
+      `select public.get_work_quiz($1::uuid)`,
+    ]) {
+      const got = await value(db, asMember(viewer), sql, [workId]);
+      const dump = JSON.stringify(got);
+      assert(!dump.includes("sub_directive"), `${sql} にサブ指令が入っている`);
+      assert(!dump.includes("test_directive"), `${sql} にサブ指令の値が入っている`);
+    }
+
+    // 答えたあとに開く側にも出ない
+    await answerWork(db, viewer, workId, { correct: true });
+    const revealed = await value(db, asMember(viewer), `select public.get_answered_prompt($1::uuid)`, [
+      workId,
+    ]);
+    const dump = JSON.stringify(revealed);
+    assert(!dump.includes("sub_directive"), "回答後の開示にサブ指令が入っている");
+    assert(!dump.includes("test_directive"), "回答後の開示にサブ指令の値が入っている");
+  });
+
+  await test("S2", "出題・配給・順位の関数が、サブ指令を1文字も見ていない", async () => {
+    const rows = (
+      await db.query(
+        `select p.proname
+           from pg_proc p join pg_namespace ns on ns.oid = p.pronamespace
+          where ns.nspname = 'public' and p.prokind = 'f'
+            and p.proname in ('build_quiz_for_prompt','get_work_quiz','submit_answer',
+                              'next_work_candidates','get_next_work','get_work_detail',
+                              'get_public_works','get_rankings','create_art_first_work',
+                              'create_work','get_answered_prompt','get_public_answers')
+            and pg_get_functiondef(p.oid) like '%sub_directive%'`,
+      )
+    ).rows;
+    assert(rows.length === 0, `混ざっている: ${rows.map((r) => r.proname).join(", ")}`);
+  });
+
+  await test("S2", "持ち込み（art_first）では必ず空になる", async () => {
+    const u = await makeMember(db, "sd-af");
+    const ids = [];
+    for (const category of ["morph", "emotion", "color"]) {
+      const picked = await pickTags(db, category, 1);
+      ids.push(picked[0].id);
+    }
+    const { workId } = await postArtFirstWork(db, u, ids);
+
+    const promptId = (
+      await db.query(`select prompt_id from public.works where id = $1`, [workId])
+    ).rows[0].prompt_id;
+
+    const cards = (
+      await db.query(
+        `select card_slot_key, sub_directive_key from public.prompt_cards where prompt_id = $1`,
+        [promptId],
+      )
+    ).rows;
+    assert(cards.length > 0, "持ち込みのカードが1枚も無い");
+    for (const c of cards) {
+      assert(c.sub_directive_key === null,
+        `持ち込みなのに ${c.card_slot_key} に ${c.sub_directive_key} が入っている`);
+    }
+  });
+
+  await test("S2", "列そのものは、利用者から直接読み書きできない", async () => {
+    const granted = (
+      await db.query(
+        `select count(*)::int as n
+           from information_schema.column_privileges
+          where table_schema = 'public'
+            and column_name  = 'sub_directive_key'
+            and grantee in ('anon','authenticated','PUBLIC')`,
+      )
+    ).rows[0].n;
+    assert(granted === 0, `列に権限が ${granted} 件ある`);
+  });
+
+  // =========================================================================
+  // S3. サブ指令の抽選（画面側）
+  //
+  //    どの語にどれが付くかと、付けるかどうかの決め方は DB ではなく
+  //    TypeScript 側にある。ここではその関数を直に呼んで確かめる。
+  //
+  //    【何千回も引かない】
+  //      「1万回引いたら 69.8% だった」という形の試験にしない。
+  //      それは実装が正しいことの証明にならず、たまに落ちる試験になる。
+  //      代わりに**乱数の値そのものを渡して**、どの枝を通るかを1回で見る。
+  //      出所: ユーザー指示（2026-09-10）「大量乱数試験で70%前後になることを
+  //      E2Eの合否条件にしない。固定乱数入力等で決定論的に試験する。」
+  //
+  //    【1回目が「付けるか」、2回目が「どれを付けるか」】
+  //      渡した数列が、その順で使われる。
+  // =========================================================================
+
+  const MOD = await import("../../src/features/modifier/types.ts");
+
+  /** 決めた順に返す「乱数」。試験のためだけのもの */
+  function fixedRandom(...values) {
+    let i = 0;
+    return () => values[i++ % values.length];
+  }
+
+  await test("S3", "対応表は24語・72候補で、鍵が重複していない", async () => {
+    const byTag = new Map();
+    for (const d of MOD.SUB_DIRECTIVES) {
+      for (const t of d.forTagLabels) {
+        if (!byTag.has(t)) byTag.set(t, []);
+        byTag.get(t).push(d.key);
+      }
+    }
+    assert(byTag.size === 24, `対応する語が ${byTag.size} 語（24語のはず）`);
+    assert(MOD.SUB_DIRECTIVES.length === 72,
+      `候補が ${MOD.SUB_DIRECTIVES.length} 件（72件のはず）`);
+
+    for (const [tag, keys] of byTag) {
+      assert(keys.length === 3, `${tag} の候補が ${keys.length} 件（3件のはず）`);
+    }
+
+    const keys = MOD.SUB_DIRECTIVES.map((d) => d.key);
+    assert(new Set(keys).size === keys.length, "同じ鍵が2回出ている");
+  });
+
+  await test("S3", "鍵の形と表示文の長さが、決めた範囲に収まっている", async () => {
+    for (const d of MOD.SUB_DIRECTIVES) {
+      assert(MOD.SUB_DIRECTIVE_KEY_PATTERN.test(d.key), `${d.key} は形が合わない`);
+      // 4〜15字。長い設定文にしない
+      assert(d.label.length >= 4 && d.label.length <= 15,
+        `「${d.label}」は ${d.label.length} 字（4〜15字のはず）`);
+      assert(d.weight > 0, `${d.key} の重みが ${d.weight}`);
+    }
+  });
+
+  await test("S3", "対応表の語が、すべて実在して抽選に出る", async () => {
+    // 存在しない語や、いまの抽選に出ない語に付けても、一生出番が来ない
+    const tags = new Set(
+      (
+        await db.query(
+          `select t.label from public.tags t
+             join public.draw_categories dc on dc.pool_key = t.pool_key
+            where t.is_active and dc.is_active`,
+        )
+      ).rows.map((r) => r.label),
+    );
+
+    for (const d of MOD.SUB_DIRECTIVES) {
+      for (const t of d.forTagLabels) {
+        assert(tags.has(t), `「${t}」は抽選に出る語ではない（${d.key}）`);
+      }
+    }
+  });
+
+  await test("S3", "候補が無い語には、乱数が何であっても付かない", async () => {
+    // 「必ず付ける」寄りの乱数を渡しても付かないこと
+    for (const label of ["ドラゴン", "騒がしい", "水色ではない何か", "", null]) {
+      if (MOD.subDirectivesFor(label).length > 0) continue;
+      const got = MOD.pickSubDirective(label, { attachRate: 1 }, fixedRandom(0, 0));
+      assert(got === null, `「${label}」に ${got} が付いた`);
+    }
+  });
+
+  await test("S3", "1段目が 0.7 以上なら、必ず付かない（30%側）", async () => {
+    for (const r of [0.7, 0.70001, 0.9, 0.999]) {
+      const got = MOD.pickSubDirective("恐怖", MOD.SUB_DIRECTIVE_POLICY, fixedRandom(r, 0));
+      assert(got === null, `1段目 ${r} で ${got} が付いた`);
+    }
+  });
+
+  await test("S3", "1段目が 0.7 未満なら、必ず付く（70%側）", async () => {
+    for (const r of [0, 0.3, 0.699]) {
+      const got = MOD.pickSubDirective("恐怖", MOD.SUB_DIRECTIVE_POLICY, fixedRandom(r, 0));
+      assert(got !== null, `1段目 ${r} で何も付かなかった`);
+      assert(MOD.isSubDirectiveKey(got), `${got} は対応表に無い`);
+    }
+  });
+
+  await test("S3", "2段目の値で、3候補のどれになるかが決まる", async () => {
+    const cands = MOD.subDirectivesFor("恐怖");
+    assert(cands.length === 3, `恐怖の候補が ${cands.length} 件`);
+
+    // 重みはすべて1なので、0〜1 を3等分した位置がそれぞれの候補になる
+    const cases = [
+      [0, cands[0].key],
+      [0.32, cands[0].key],
+      [0.34, cands[1].key],
+      [0.65, cands[1].key],
+      [0.67, cands[2].key],
+      [0.999, cands[2].key],
+    ];
+    for (const [r, expected] of cases) {
+      const got = MOD.pickSubDirective("恐怖", MOD.SUB_DIRECTIVE_POLICY, fixedRandom(0, r));
+      assert(got === expected, `2段目 ${r} で ${got}（${expected} のはず）`);
+    }
+  });
+
+  await test("S3", "候補の数が変わっても、付かない率は 30% のまま", async () => {
+    // 「付けない」を候補と一緒に抽選すると、候補2つの語と4つの語で
+    // 付かない率が変わってしまう。2段に分けてあるので変わらないこと。
+    const two = [
+      { key: "a_one", label: "ひとつめ", forTagLabels: ["架空"], weight: 1 },
+      { key: "a_two", label: "ふたつめ", forTagLabels: ["架空"], weight: 1 },
+    ];
+    const saved = MOD.SUB_DIRECTIVES.slice();
+    try {
+      MOD.SUB_DIRECTIVES.length = 0;
+      MOD.SUB_DIRECTIVES.push(...two);
+      assert(MOD.pickSubDirective("架空", MOD.SUB_DIRECTIVE_POLICY, fixedRandom(0.699, 0)) !== null,
+        "候補2つのとき、0.699 で付かなかった");
+      assert(MOD.pickSubDirective("架空", MOD.SUB_DIRECTIVE_POLICY, fixedRandom(0.7, 0)) === null,
+        "候補2つのとき、0.7 で付いた");
+    } finally {
+      MOD.SUB_DIRECTIVES.length = 0;
+      MOD.SUB_DIRECTIVES.push(...saved);
+    }
+  });
+
+  await test("S3", "保存された鍵から表示文が引ける。知らない鍵は何も出さない", async () => {
+    const one = MOD.SUB_DIRECTIVES[0];
+    assert(MOD.subDirectiveLabel(one.key) === one.label,
+      `${one.key} から表示文が引けない`);
+    for (const unknown of ["fake_modifier", "", null, "not_in_table"]) {
+      assert(MOD.subDirectiveLabel(unknown) === null,
+        `知らない鍵 ${unknown} から表示文が出た`);
+    }
   });
 
 
