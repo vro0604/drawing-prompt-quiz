@@ -84,10 +84,41 @@
 - 手元（wt4）で6コマンド: test:db 205件 / db:verify:local 187件 /
   typecheck / lint（エラー0・警告2は既存）/ build / test:e2e 74件 — すべて緑。
 
+#### 本番へ出して、往復で確かめた（2026-09-09）
+
+`profile-on-main`（管理 v0 の上にプロフィールだけを載せた枝）を main へ
+早送りで push した（f4c3893 → 96946eb）。別作業線の未 push コミット
+`150edda` は取り込んでいない。Vercel が組み直し、本番の公開プロフィールに
+アイコンの欄が出ている。
+
+往復の検査を `scripts/smoke-profile-avatar.mjs` として足した。
+**手元のブラウザ試験では確かめられないところ**を本番で通すためのもの。
+擬似の Supabase には本物の置き場も、画像を縮めて配る仕組みも無い。
+
+    SMOKE_BASE_URL=https://<本番> npm run smoke:prod -- profile-avatar
+
+本番での実測（2026-09-09。60項目すべて合格）。
+
+- アイコンを置くと `<利用者ID>/avatar/<乱数>.png` に入り、公開プロフィールに出る。
+- 配られるのは縮めたもの。原寸 122,128 バイト → 実際に返るのは 5,195 バイト。
+- 差し替えると名前が変わり、古いファイルは置き場から消える（Object not found）。
+  掃除待ちには積まれない（その場で消せている）。
+- **ただし古い公開URLは、消した直後でもしばらく 200 を返す。**配信の途中に
+  控え（CDN）があるため。置き場からは消えている。差し替えが毎回新しい名前に
+  なるので、いまのアイコンが古いままになることはない。
+  この1点だけは、最初に書いた期待（すぐ取れなくなる）が誤りだった。
+- 得意分野は 5件 / 5件、同じ語を両方に入れられる。0件の側は見出しごと消える。
+- 外すと DB もファイルも空になり、既定の表示に戻る。名前と自己紹介は残る。
+- 公開設定・作品一覧・公開プロフィールの下の内容は今までどおり。
+
+出したあとの検査。`npm run db:verify` 198項目すべて合格、
+`npm run verify:launch` 18項目すべて合格。
+本番のデータは migration 48 / 表52 / works 919 / profile_specialties 0 /
+掃除待ち 330（未処理0）。profiles は 657 → 658。
+**増えた1人は、この検査が作った検査用の利用者**（smoke+avatar@…）。
+
 ### 次の一手
 
-- Vercel の組み直しを見届け、本番でプロフィールを往復して確かめる
-  （アイコンの設定・差し替え・削除、得意分野、公開プロフィールへの反映）。
 - 検査の穴をふさぐ。`test/db/harness.mjs` に Supabase と同じ既定権限を
   足せば、この種の書き落としを手元で捕まえられる。ただし別作業線も触る
   ファイルなので勝手には変えない。**既存の全RPCを対象に見る。**
@@ -112,7 +143,8 @@ D172（art_first のほう）と `docs/spec.md` 6-1-2 に残っている。
 - `src/app/account/_profile-form.tsx`（新規）、`src/app/account/{page.tsx,actions.ts}`
 - `src/app/u/[handle]/page.tsx`、`src/app/works/import/_form.tsx`
 - `src/features/profile/{types.ts,rpc.ts}`、`src/features/artfirst/types.ts`、`src/types/database.ts`
-- `scripts/db-checks.mjs`、`test/db/run.mjs`、`test/e2e/browser.mjs`
+- `scripts/db-checks.mjs`、`scripts/smoke-profile-avatar.mjs`（新規）、`package.json`
+- `test/db/run.mjs`、`test/e2e/browser.mjs`
 - `docs/decisions.md`（D176）、`docs/spec.md`（12-0-2）、`docs/art-first-investigation.md`（語数の訂正）
 
 ---

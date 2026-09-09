@@ -34,6 +34,7 @@
     "smoke:social": "node scripts/smoke-social.mjs",
     "smoke:ranking": "node scripts/smoke-ranking.mjs",
     "smoke:profile": "node scripts/smoke-profile.mjs",
+    "smoke:profile-avatar": "node scripts/smoke-profile-avatar.mjs",
     "smoke:report": "node scripts/smoke-report.mjs",
     "smoke:account": "node scripts/smoke-account.mjs",
     "typecheck": "node scripts/heavy.mjs 型検査 -- npx tsc --noEmit",
