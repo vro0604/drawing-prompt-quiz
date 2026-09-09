@@ -5,6 +5,78 @@
 日時は JST。全体が400行を超えたら、一番下（最も古いもの）から削ります。
 
 ---
+## 2026-09-09 形状アシストを本番へ出した（D191。DB → push → 本番往復まで完了）
+
+### 何ができるようになったか
+
+本番の利用者が、お題を引く前に「どういう形として描くか」の取っかかりを
+1つだけ持てるようになった。使わない／ランダムに1つ／自分で選ぶ の3つ。
+**正式なお題ではない。**守らなくても投稿できるし、クイズにも出ない。
+
+### 何を引き換えにしたか
+
+引き換えは無し。本番のデータは1件も動いていない
+（作品919・お題1044・回答661・タグ474 は適用の前後で同じ）。表は52のまま。
+既存のドラフト1021行はすべて空のままで、これまでのお題の動きは変わらない。
+
+### 出した順序と、その理由
+
+DBを先に当て、そのあと画面を出した。`start_draft` の引数が3つから4つへ
+増えるので、逆順にすると反映までのあいだ、お題を引く操作が
+引数の合わない呼び出しになって失敗する。実際にはDBが先だったので隙間は無い。
+
+1. `20260909200000_shape_assist.sql` を `db:apply:one` で1本だけ当てた
+   （他の48本には触れていない）。`migration repair` で履歴にも記録した。
+2. 本番DB検査 200項目すべて合格・不合格0（A40・A41 を足したので198→200）。
+3. `b765e40` `bce0f23` `2c1bf23` の3本を main へ早送りで push。
+4. Vercel の反映を `/play` の `data-testid="shape-assist"` の有無で確認（約30秒）。
+5. 本番往復（後述）。
+
+### 本番往復は、本物のブラウザで押した
+
+`npm run smoke:prod -- shape-assist` を新しく作った。Chromium を本番へ向け、
+人が押すのと同じ順で押す。認証は既存の fixtureSession が取った Cookie を
+ブラウザへ移して済ませている。24項目すべて合格。
+
+作った作品2件は、検査の終わりに削除済み（本番に残っている公開作品は、
+元からの本物2件だけ）。検査用の人の進行中ドラフトも0件に戻してある。
+
+### 検査を書くときに3回間違えた（どれも機能ではなく検査側）
+
+- 押した直後に次を読み、「決めています…」のまま進んで止まった。
+  待ち時間を伸ばすのではなく、**終わりを示す印**（`aria-busy`）が
+  消えるまで待つ形に直した。
+- 作品の題名に「形状アシスト」と入れたせいで、漏れていないのに
+  「本文にその語がある」と落ちた。題名を変えた。
+- お題の語数を2つのお題で突き合わせていた。**語の顔ぶれは抽選で変わる**
+  （実測で 4語 と 3語）ので比較が成り立たない。
+  「そのお題の中で、出題数と出題対象の枠数が一致するか」に変えた。
+
+### 次の一手
+
+- 形状アシストは本番完了。次工程の指示待ち。
+- 残件: Supabase の関数の既定 EXECUTE を手元の検査で再現する監査
+  （プロフィールの4本と同じ漏れが他のRPCにも無いか。別タスク）。
+- 残件: `docs/decisions.md` の D172 番号重複。
+
+### 触ったファイル
+
+- `supabase/migrations/20260909200000_shape_assist.sql`（本番適用済み）
+- `scripts/smoke-shape-assist.mjs`（新規）、`package.json`
+- `src/features/shape-assist/types.ts`、`src/features/draft/{types.ts,rpc.ts}`
+- `src/app/play/{actions.ts,_components.tsx}`、`src/app/prompt/[id]/page.tsx`
+- `scripts/db-checks.mjs`、`test/db/run.mjs`、`test/e2e/browser.mjs`
+- `docs/{decisions.md,spec.md}`、`PROGRESS.md`
+
+### 400行を超えたので、いちばん古い1件を削った
+
+削ったのは「2026-09-09 管理 v0 を独立コミットにした」。
+**すでに本番へ出し終えている**（同じ日のプロフィールの回が、その上に
+載せた形で push 済み）ので、進行中の作業線の記録は1件も消していない。
+中身は `docs/decisions.md` の D177 と `docs/verify-2026-09-09.md` に残っている。
+
+---
+---
 ## 2026-09-09 形状アシストを実装した（D191。本番へはまだ当てていない）
 
 ### 何ができるようになったか
@@ -307,93 +379,3 @@ D172（art_first のほう）と `docs/spec.md` 6-1-2 に残っている。
 - `scripts/db-checks.mjs`、`scripts/smoke-profile-avatar.mjs`（新規）、`package.json`
 - `test/db/run.mjs`、`test/e2e/browser.mjs`
 - `docs/decisions.md`（D176）、`docs/spec.md`（12-0-2）、`docs/art-first-investigation.md`（語数の訂正）
-
----
-## 2026-09-09 管理 v0 を独立コミットにした（DBは適用済み。画面はこれから出す）
-
-### 終えたこと
-
-- 通報を見て判断し、作品を非表示にするか通報を閉じるかを、ブラウザから
-  1件ずつ行えるようにした。これまでは表に列があるだけで、操作する道が
-  1本も無かった（決定は `docs/decisions.md` の D177）。
-- 管理者は1人だけ。DB に役割の列は作らず、環境変数 `ADMIN_USER_ID` に
-  入っている利用者ID1つとだけ照合する。**未設定なら誰も入れない**（404）。
-- 危ない書き込み4本は service_role からしか呼べない関数にして、
-  監査記録（`admin_audit_log`）を同じトランザクションに置いた。
-  **理由の記入が無いと記録できない**ので、記録の無い操作が起きない。
-- 作品を下げることと、通報を閉じることは別の操作にした。
-  下げても通報は開いたまま。行は消さない。画像も回答も残る。
-
-### 本番DBへの適用（2026-09-08 に実施済み）
-
-`supabase/migrations/20260908130000_admin_moderation.sql` の1本だけを
-`npm run db:apply:one` で当て、`supabase migration repair` で履歴へ記録した。
-本番の migration は45本から46本になった。詳しくは `docs/verify-2026-09-09.md`。
-
-### 土台を origin/main にした理由（実測）
-
-作業ツリーには複数の作業線が混ざっている。とくに手元の `main` にある
-未 push のコミット `eca460a`（プロフィール拡張）は、その migration
-`20260908150000` が**本番に当たっていない**。一緒に押すと本番の
-`/account` と `/u/[handle]` が壊れる。
-
-本番の migration 履歴と `origin/main` のファイルを突き合わせた実測。
-
-- 本番に入っている版番号 46 本
-- `origin/main` の migration ファイル 45 本（`.gitkeep` を除く）
-- 本番にあって `origin/main` に無いのは `20260908130000`（管理 v0）だけ
-- `origin/main` にあって本番に無いものは 0 本
-
-したがって `origin/main` ＋ 管理 v0 が、いまの本番DBとちょうど噛み合う。
-そこで `origin/main` から worktree を切り、管理 v0 のぶんだけを載せた。
-他の作業線のファイルには 1 行も触っていない。
-
-### その木での実測
-
-- `npm run typecheck` 終了コード0
-- `npm run lint` エラー0・警告2（すべて既存の `smoke-cutover.mjs`）
-- `npm run db:verify:local` 合格184・不合格0（管理の検査8項目と、
-  実際に呼んで断られることを見る10件を含む）
-- `npm run test:db` 183件すべて合格（管理のW群18件を含む）
-- `npm run build` 成功。経路一覧で `/admin/reports` と
-  `/admin/reports/[id]` が ƒ（動的）になっている
-- `npm run test:e2e` 67件中57件合格・10件不合格。**不合格10件はすべて時間切れ**で、
-  サーバー側は 200 / 303 を返していた（`GET /api/challenge 200 in 28.9s` 等）。
-  落ちた7群（A・C・D・E・F・Q・S）だけを流し直すと 29 件すべて合格。
-  管理のX群6件は、全件通しでも6件とも合格した。
-
-### 次の一手
-
-- push すると Vercel が組み直す。**Vercel の Production に `ADMIN_USER_ID`
-  が入っていること**が前提（入っていないと `check-env.mjs` がビルドを止める）。
-- 出したあとの検収は、この順を崩さない。
-  未ログインで404 → 一般利用者で404 → 運営者で200（read）→ 通報1件だけ write
-  → write 後にDBを読んで実測。
-- 拒否試験だけでは足りない。出す前も404、出したあと断られても404で
-  見分けがつかない。**運営者で200が返ることを確かめて初めて**、
-  404 が「画面が無い」ではなく「断られた」だと言える。
-- 本番の未処理の通報70件は、**全部が削除済みの検査用作品への通報**
-  （実利用者の通報0件・公開中の作品への通報0件。2026-09-09 の実測）。
-  扱いは決まっていない。勝手に閉じない。
-
-### 400行を超えたので、いちばん古い2件を削った
-
-削ったのは「2026-09-07（3回目）放棄と『他の候補を見る』に押せるボタンを付けた／
-メール確認を2枚のタブで確かめた」と「2026-09-07（2回目）D171 開示後の引き直し禁止・
-放棄・表示名・タイマー・認証」。**どちらも 2026-09-07 に本番へ出し終えている**
-（同ファイルの「2026-09-07（4回目）本番へ反映した」に記録がある）ので、
-進行中の作業線の記録は1件も消していない。中身は `docs/decisions.md` の
-D171 と、その回の verify 文書に残っている。
-
-### 触ったファイル
-
-- `supabase/migrations/20260908130000_admin_moderation.sql`（新規）
-- `src/features/admin/{auth.ts,rpc.ts,types.ts}`（新規）
-- `src/app/admin/layout.tsx`、`src/app/admin/reports/page.tsx`、
-  `src/app/admin/reports/[id]/{page.tsx,actions.ts}`（新規）
-- `src/app/_pending.tsx`、`src/lib/env.ts`、`src/lib/supabase/admin.ts`
-- `next.config.ts`、`scripts/check-env.mjs`、`scripts/db-checks.mjs`、`.env.example`
-- `test/db/run.mjs`、`test/e2e/{browser.mjs,seed.mjs,server.mjs}`
-- `docs/admin-tool-investigation.md`（新規）、`docs/verify-2026-09-09.md`（新規）
-- `docs/{decisions.md,spec.md,legal-draft.md,launch-checklist.md}`、`PROGRESS.md`
-
