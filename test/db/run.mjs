@@ -3650,6 +3650,213 @@ async function main() {
   });
 
   /* ---------------------------------------------------------------------
+   * S. 一巡で仮のお題を作り、カテゴリごとに1回だけ引き直す（2026-09-08）
+   * ------------------------------------------------------------------- */
+
+  /** 一巡して、仮のお題がそろった状態を作る */
+  async function passOnce(u) {
+    let st = await value(db, asMember(u), `select public.start_draft('normal', 3600, null) as s`);
+    for (const slot of st.slots) {
+      st = await value(db, asMember(u),
+        `select public.pick_card($1, $2, 0) as s`, [st.session_id, slot.card_slot_key]);
+    }
+    return st;
+  }
+
+  await test("S", "1枚引くと仮採用になり、確認を挟まず次のカテゴリへ進む", async () => {
+    const u = await makeMember(db, "pass1");
+    let st = await value(db, asMember(u), `select public.start_draft('normal', 3600, null) as s`);
+    assert(st.initial_pass_done === false, "引く前から一巡済みになっている");
+    assert(st.current_slot_order === 1, `最初の枠が ${st.current_slot_order}`);
+
+    const first = st.slots[0];
+    st = await value(db, asMember(u),
+      `select public.pick_card($1, $2, 0) as s`, [st.session_id, first.card_slot_key]);
+
+    assert(st.chosen_count === 1, `引いても決定数が ${st.chosen_count}`);
+    assert(st.current_slot_order === 2, `次の枠へ進んでいない（${st.current_slot_order}）`);
+    const row = st.slots.find((x) => x.card_slot_key === first.card_slot_key);
+    assert(row.candidates.some((c) => c.is_chosen), "引いたカードが仮採用になっていない");
+    assert(st.initial_pass_done === false, "1枚で一巡し終えたことになっている");
+  });
+
+  await test("S", "一巡し終えるまでは引き直せない", async () => {
+    const u = await makeMember(db, "pass2");
+    let st = await value(db, asMember(u), `select public.start_draft('normal', 3600, null) as s`);
+    st = await value(db, asMember(u),
+      `select public.pick_card($1, $2, 0) as s`, [st.session_id, st.slots[0].card_slot_key]);
+
+    assert(st.slots.every((x) => !x.can_redo), "一巡し終える前に引き直せる枠がある");
+    await expectFailure(
+      () => value(db, asMember(u), `select public.redo_slot($1, $2) as s`,
+        [st.session_id, st.slots[0].card_slot_key]),
+      "PASS_NOT_FINISHED",
+    );
+  });
+
+  await test("S", "一巡し終えると、全カテゴリが1回だけ引き直せる", async () => {
+    const u = await makeMember(db, "pass3");
+    const st = await passOnce(u);
+    assert(st.initial_pass_done === true, "全部引いたのに一巡済みでない");
+    assert(st.is_ready_to_complete === true, "確定できる状態になっていない");
+    const lottery = st.slots.filter((x) => !x.is_carried);
+    assert(
+      lottery.every((x) => x.can_redo || x.candidate_count < 2),
+      "引き直せない枠がある（候補が2枚以上あるのに）",
+    );
+  });
+
+  await test("S", "引き直すと、仮採用のカードを永久に捨て、残りが開く", async () => {
+    const u = await makeMember(db, "redo1");
+    let st = await passOnce(u);
+    const target = st.slots.find((x) => x.can_redo);
+    const before = target.candidates.find((c) => c.is_chosen).candidate_index;
+
+    st = await value(db, asMember(u),
+      `select public.redo_slot($1, $2) as s`, [st.session_id, target.card_slot_key]);
+    const row = st.slots.find((x) => x.card_slot_key === target.card_slot_key);
+
+    assert(
+      row.candidates.find((c) => c.candidate_index === before).is_discarded,
+      "引き直したのに、元のカードが捨てられていない",
+    );
+    assert(
+      !row.candidates.some((c) => c.is_chosen),
+      "捨てたのに、まだ決まったことになっている",
+    );
+    assert(row.redo_used === true, "引き直しを使った記録が残っていない");
+    assert(row.needs_pick === true, "選び直し待ちになっていない");
+    assert(row.can_redo === false, "もう一度引き直せる状態のまま");
+    assert(row.pool_revealed === true, "残りが開いていない");
+    assert(row.candidates.every((c) => c.revealed), "開いたのに中身が見えないカードがある");
+    assert(st.is_ready_to_complete === false, "1枠決まっていないのに確定できる状態");
+  });
+
+  await test("S", "捨てたカードは二度と選べない", async () => {
+    const u = await makeMember(db, "redo2");
+    let st = await passOnce(u);
+    const target = st.slots.find((x) => x.can_redo);
+    st = await value(db, asMember(u),
+      `select public.redo_slot($1, $2) as s`, [st.session_id, target.card_slot_key]);
+    const row = st.slots.find((x) => x.card_slot_key === target.card_slot_key);
+    const dead = row.candidates.find((c) => c.is_discarded).candidate_index;
+
+    await expectFailure(
+      () => value(db, asMember(u), `select public.pick_card($1, $2, $3) as s`,
+        [st.session_id, target.card_slot_key, dead]),
+      "CARD_DISCARDED",
+    );
+  });
+
+  await test("S", "引き直しは1カテゴリにつき1回だけ（二度目は断る）", async () => {
+    const u = await makeMember(db, "redo3");
+    let st = await passOnce(u);
+    const target = st.slots.find((x) => x.can_redo);
+    st = await value(db, asMember(u),
+      `select public.redo_slot($1, $2) as s`, [st.session_id, target.card_slot_key]);
+
+    await expectFailure(
+      () => value(db, asMember(u), `select public.redo_slot($1, $2) as s`,
+        [st.session_id, target.card_slot_key]),
+      "REDO_ALREADY_USED",
+    );
+
+    // 選び直して確定させたあとも、二度目はできない
+    const row = st.slots.find((x) => x.card_slot_key === target.card_slot_key);
+    const alive = row.candidates.find((c) => !c.is_discarded && !c.is_chosen).candidate_index;
+    st = await value(db, asMember(u), `select public.pick_card($1, $2, $3) as s`,
+      [st.session_id, target.card_slot_key, alive]);
+    const after = st.slots.find((x) => x.card_slot_key === target.card_slot_key);
+    assert(after.can_redo === false, "確定したあとに、また引き直せる");
+    await expectFailure(
+      () => value(db, asMember(u), `select public.redo_slot($1, $2) as s`,
+        [st.session_id, target.card_slot_key]),
+      "REDO_ALREADY_USED",
+    );
+  });
+
+  await test("S", "同じ要求が二度届いても、2枚目は捨てられず二重に決まらない", async () => {
+    const u = await makeMember(db, "redo4");
+    let st = await passOnce(u);
+    const target = st.slots.find((x) => x.can_redo);
+    st = await value(db, asMember(u),
+      `select public.redo_slot($1, $2) as s`, [st.session_id, target.card_slot_key]);
+    const row = st.slots.find((x) => x.card_slot_key === target.card_slot_key);
+    const alive = row.candidates.filter((c) => !c.is_discarded && !c.is_chosen);
+
+    st = await value(db, asMember(u), `select public.pick_card($1, $2, $3) as s`,
+      [st.session_id, target.card_slot_key, alive[0].candidate_index]);
+    const once = st.chosen_count;
+
+    // 同じ要求をもう一度（戻るボタンでの送り直しに当たる）
+    st = await value(db, asMember(u), `select public.pick_card($1, $2, $3) as s`,
+      [st.session_id, target.card_slot_key, alive[0].candidate_index]);
+    assert(st.chosen_count === once, `二度目で決定数が ${once} → ${st.chosen_count}`);
+
+    // 別のカードを送っても、決まったカテゴリは変わらない
+    if (alive.length > 1) {
+      st = await value(db, asMember(u), `select public.pick_card($1, $2, $3) as s`,
+        [st.session_id, target.card_slot_key, alive[1].candidate_index]);
+      const r2 = st.slots.find((x) => x.card_slot_key === target.card_slot_key);
+      assert(
+        r2.candidates.filter((c) => c.is_chosen).length === 1,
+        "決まったあとに別のカードを送ったら、2枚が決定になった",
+      );
+      assert(
+        r2.candidates.find((c) => c.is_chosen).candidate_index === alive[0].candidate_index,
+        "あとから送ったカードで上書きされた",
+      );
+    }
+  });
+
+  await test("S", "引き直したドラフトは、全体を引き直せない", async () => {
+    const u = await makeMember(db, "redo5");
+    let st = await passOnce(u);
+    const target = st.slots.find((x) => x.can_redo);
+    st = await value(db, asMember(u),
+      `select public.redo_slot($1, $2) as s`, [st.session_id, target.card_slot_key]);
+
+    await expectFailure(
+      () => value(db, asMember(u), `select public.reroll_draft($1) as s`, [st.session_id]),
+      "POOL_ALREADY_REVEALED",
+    );
+  });
+
+  await test("S", "他人のドラフトは引き直せない", async () => {
+    const mine = await makeMember(db, "redo6");
+    const other = await makeMember(db, "redo7");
+    const st = await passOnce(mine);
+    const target = st.slots.find((x) => x.can_redo);
+
+    await expectFailure(
+      () => value(db, asMember(other), `select public.redo_slot($1, $2) as s`,
+        [st.session_id, target.card_slot_key]),
+      "DRAFT_NOT_FOUND",
+    );
+  });
+
+  await test("S", "引き直して選び直したお題は、そのまま確定できる", async () => {
+    const u = await makeMember(db, "redo8");
+    let st = await passOnce(u);
+    const target = st.slots.find((x) => x.can_redo);
+    st = await value(db, asMember(u),
+      `select public.redo_slot($1, $2) as s`, [st.session_id, target.card_slot_key]);
+    const row = st.slots.find((x) => x.card_slot_key === target.card_slot_key);
+    const alive = row.candidates.find((c) => !c.is_discarded && !c.is_chosen).candidate_index;
+    st = await value(db, asMember(u), `select public.pick_card($1, $2, $3) as s`,
+      [st.session_id, target.card_slot_key, alive]);
+
+    const done = await value(db, asMember(u),
+      `select public.complete_draft($1) as s`, [st.session_id]);
+    assert(done.card_count === st.slot_count, `語数が ${done.card_count}／${st.slot_count}`);
+
+    // 捨てたカードは、お題の「引かなかったカード」にも出さない
+    const prompt = await value(db, asMember(u),
+      `select public.get_my_prompt($1) as s`, [done.prompt_id]);
+    assert(prompt.cards.length === done.card_count, "確定したお題の語数が合わない");
+  });
+
+  /* ---------------------------------------------------------------------
    * R. 持ち込み（art_first）。既に描いてある絵を持ち込み、
    *    作者が正式なクイズ項目を選ぶ経路（2026-09-08 のユーザー確定）
    * ------------------------------------------------------------------- */
@@ -3968,6 +4175,92 @@ async function main() {
     const hit = rows.find((r) => r.id === workId);
     assert(hit !== undefined, "通常の作品が時間別から消えた");
     assert(hit.time_limit_bucket === "long", `区分が ${hit.time_limit_bucket}`);
+  await test("U", "候補の配り方は、全枠同じ枚数に固定されていない", async () => {
+    /*
+      【1回引いて確かめない】
+        配り方は乱数で決まる。5枠へ余り5枚を配るとき、1枠に1枚ずつ行く並び
+        （＝3/3/3/3/3）だけでも 5!/5^5 ≒ 3.8% で起きる。
+        1回の抽選で「同じ枚数ではない」ことを判定すると、
+        **実装が正しくても 25回に1回落ちる。**実際に落ちた（2026-09-08 実測）。
+
+        ここでは配り方の関数を直接、何度も呼ぶ。利用者からは呼べない関数だが、
+        持ち主の立場では呼べる。
+    */
+    const seen = new Set();
+    for (let i = 0; i < 200; i += 1) {
+      const { rows } = await db.query(
+        `select public.draft_allocate_counts(5, 15, 2, 5) as c`,
+      );
+      const counts = rows[0].c;
+      assert(counts.length === 5, `枠が ${counts.length} 個`);
+      assert(
+        counts.reduce((a, b) => a + b, 0) === 15,
+        `合計が ${counts.reduce((a, b) => a + b, 0)} 枚（15枚のはず）`,
+      );
+      assert(
+        counts.every((n) => n >= 2 && n <= 5),
+        `範囲の外がある: ${counts.join("/")}`,
+      );
+      seen.add([...counts].join("/"));
+    }
+    assert(seen.size > 1, `200回引いて ${seen.size} 通りしか出ない（一律に固定されている）`);
+  });
+
+  /* =======================================================================
+   * V. 回答が集まったあとの集計（P2）
+   * =======================================================================
+   *
+   * 【ここで確かめること】
+   *   ・正解を含んだかの並び（"11010" のような0と1）
+   *   ・完全ビタ（全問をビタ当てで、しかも全問当てた）の数え方
+   *   ・語ごとの「ビタ当て何回・複勝何回・何回出た」
+   *   ・回答の似かた（選んだ語の集まりが完全に一致した問の数）
+   *   ・作者以外・未回答者には何も返らないこと
+   *   ・古い形の回答が混ざっても落ちないこと
+   *
+   * 【割り算はここに出てこない】
+   *   出された回数で割る式は画面側（src/features/quiz/results.ts）にあり、
+   *   npm run test:unit が確かめている。DB が返すのは数えた素の数だけ。
+   */
+
+  /** その作品の問と、問ごとの正解タグを読む（役を抜けて覗く。持ち主だけの経路） */
+  async function quizWithAnswers(db, uid, workId) {
+    const quiz = await value(db, asMember(uid), `select public.get_work_quiz($1)`, [workId]);
+    const out = [];
+    for (const q of quiz.questions) {
+      const r = await db.query(
+        `select qc.tag_id from public.quiz_choices qc
+          where qc.question_id = $1 and qc.is_correct`,
+        [q.question_id],
+      );
+      const right = Number(r.rows[0].tag_id);
+      out.push({
+        question_id: q.question_id,
+        position: q.position,
+        correct: right,
+        others: q.choices.map((c) => Number(c.tag_id)).filter((t) => t !== right),
+      });
+    }
+    return out;
+  }
+
+  /** 問ごとに選ぶ語を自分で決めて答える */
+  async function answerWith(db, uid, workId, build) {
+    const questions = await quizWithAnswers(db, uid, workId);
+    const selections = questions.map((q, i) => ({
+      question_id: q.question_id,
+      ...build(q, i),
+    }));
+    return asRole(db, asMember(uid), async (c) => {
+      const a = await c.query(`select public.submit_answer($1, $2::jsonb) as a`, [
+        workId,
+        JSON.stringify(selections),
+      ]);
+      return a.rows[0].a;
+    });
+  }
+
+  /** 作者として集計を読む */
   });
 
   /* =========================================================================

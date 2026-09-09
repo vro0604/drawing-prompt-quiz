@@ -344,9 +344,18 @@ async function currentSessionId(db) {
 /** /play からお題を確定するところまで進める */
 async function drawThroughUi(page, base, { timeLimit = "1800" } = {}) {
   act("/play を開いてお題を引き始める");
-  await page.goto(`${base}/play`);
+  // **「load」まで待たない。**この画面は開いたあとも帯が定期的に問い合わせるので、
+  // 読み込み完了の合図がなかなか来ないことがある（実測: 2026-09-08 に
+  // page.goto が30秒で時間切れになった）。本文が来たら次へ進み、
+  // 出てほしい部品を名指しで待つ。
+  await page.goto(`${base}/play`, { waitUntil: "domcontentloaded" });
+  await page
+    .locator("select[name=timeLimitSeconds]")
+    .waitFor({ state: "visible", timeout: 20000 });
   await page.selectOption("select[name=timeLimitSeconds]", timeLimit);
-  await page.getByRole("button", { name: "ドラフトを始める" }).click();
+  // 押したことが届くまで待つ。押しっぱなしで次の待ちに入ると、
+  // 押せていない画面を20秒眺めることになる
+  await submitAndSettle(page, page.getByRole("button", { name: "ドラフトを始める" }));
 
   // **waitForURL は使えない。**送信先が同じ /play なので、
   // 押した瞬間にもう条件を満たしていて、待たずに次へ進んでしまう。
@@ -364,26 +373,36 @@ async function drawThroughUi(page, base, { timeLimit = "1800" } = {}) {
 }
 
 /**
- * 伏せカードを、決まるまで「めくる → これに決める」で1枠ずつ進める。
+ * カテゴリごとに1枚ずつ引き、全カテゴリを一巡する（2026-09-08）。
  *
- * 【2026-09-07 に2段になった（D170）】
- *   めくっただけでは確定しない。中身を見てから「これに決める」を押して
- *   初めて枠が進む。**めくるだけを繰り返すと、いつまでも先へ進まない。**
+ * 【確認は無い】
+ *   伏せカードを押した瞬間に仮採用になり、次のカテゴリへ自動で進む。
+ *   以前あった「これに決める」は画面から消えた。
  *
- * 押した直後のボタンは塞がる（disabled）ので、
- * **押せる状態のものだけ**を選ぶ。塞がったものを押そうとすると待ち続ける。
+ * 押した直後のボタンは塞がる（disabled）ので、押せるものだけを選ぶ。
  */
-async function revealAll(page) {
-  act("伏せカードをめくって決める");
+async function drawAllSlots(page) {
+  act("カテゴリごとに1枚ずつ引く");
+
+  /** 盤面が数えている「決まった枠」の数。読めないときは null */
+  const chosen = async () =>
+    page.locator("[data-board]").first().getAttribute("data-chosen").catch(() => null);
+
   for (let i = 0; i < 24; i += 1) {
-    const decide = page.locator("button:not([disabled])", { hasText: "これに決める" });
-    if ((await decide.count()) > 0) {
-      await submitAndSettle(page, decide.first());
-      continue;
-    }
     const buttons = page.locator("button[data-card=hidden]:not([disabled])");
     if ((await buttons.count()) === 0) break;
+
+    const before = await chosen();
     await submitAndSettle(page, buttons.first());
+
+    // **1枚引いたら、数が増えるまで待つ。**
+    //   増える前に次を押すと、前の押下の応答が届く前に画面が入れ替わり、
+    //   押したはずのボタンが塞がったまま取り残される（実測: 2026-09-08）。
+    for (let w = 0; w < 40; w += 1) {
+      const now = await chosen();
+      if (now === null || now !== before) break;
+      await page.waitForTimeout(300);
+    }
   }
 }
 
@@ -412,7 +431,7 @@ async function drawFreshPrompt(page, base, db, userId) {
   );
 
   await drawThroughUi(page, base, { timeLimit: "3600" });
-  await revealAll(page);
+  await drawAllSlots(page);
   await clickSafely(page.getByRole("button", { name: "このお題で確定する" }));
   await page.waitForURL("**/prompt/**");
 
@@ -946,7 +965,7 @@ async function main() {
     await p.locator("[data-saved-element] input[type=checkbox]").first().check();
     await clickSafely(p.getByRole("button", { name: "ドラフトを始める" }));
     await p.waitForSelector("button[data-card=hidden]", { timeout: 20000 });
-    await revealAll(p);
+    await drawAllSlots(p);
 
     const confirm = p.getByRole("button", { name: "このお題で確定する" });
     if ((await confirm.count()) === 0) {
@@ -1145,7 +1164,7 @@ async function main() {
     await m.locator("[data-saved-element] input[type=checkbox]").first().check();
     await clickSafely(m.getByRole("button", { name: "ドラフトを始める" }));
     await m.waitForSelector("button[data-card=hidden]", { timeout: 20000 });
-    await revealAll(m);
+    await drawAllSlots(m);
     await clickSafely(m.getByRole("button", { name: "このお題で確定する" }));
     await m.waitForURL("**/prompt/**");
 
@@ -2255,50 +2274,202 @@ async function main() {
     assert(live.rows[0].n === 0, `進行中のドラフトが ${live.rows[0].n} 件残っている`);
   });
 
-  await test("P", "枠の残りを開くと、引き直しのボタンが消えて理由が出る", async (t) => {
-    t.stage("進行中のドラフトを片づけてから引き始める");
+  /* =====================================================================
+   * R. 一巡で仮のお題を作り、カテゴリごとに1回だけ引き直す（2026-09-08）
+   *
+   * 【何を見ているか】
+   *   確認を挟まずに進むこと、一巡し終えてから引き直せること、
+   *   引き直しが取り消せないこと、そして**読み込み直しても戻るボタンでも
+   *   捨てたものが復活しないこと。**
+   * ===================================================================== */
+
+  /** 検査用に、その人のドラフトを片づけてから1つ引き始める */
+  async function freshDraft(page, base, userId) {
     await db.query(
       `update public.draft_sessions set status = 'abandoned', abandoned_at = now()
         where user_id = $1 and status = 'in_progress'`,
+      [userId],
+    );
+    await drawThroughUi(page, base, { timeLimit: "3600" });
+  }
+
+  await test("R", "一巡目は確認を挟まず、引いた瞬間に次のカテゴリへ進む", async (t) => {
+    t.stage("引き始める");
+    await freshDraft(m, base, seeded.viewer);
+
+    const body0 = await settledBody(m);
+    assert(!/これに決める/.test(body0), "一巡目に「これに決める」が出ている");
+    assert(!/残しておく/.test(body0), "一巡目に「残しておく」が出ている");
+    assert(!/残りを見る/.test(body0), "一巡目に「残りを見る」が出ている");
+    assert(
+      (await m.locator("[data-pass-done='0']").count()) === 1,
+      "一巡し終えていないのに、そう表示されていない",
+    );
+
+    t.stage("1枚引く");
+    const before = await m.locator("[data-board]").getAttribute("data-chosen");
+    await submitAndSettle(m, m.locator("button[data-card=hidden]:not([disabled])").first());
+    const after = await m.locator("[data-board]").getAttribute("data-chosen");
+    assert(
+      Number(after) === Number(before) + 1,
+      `引いても決定数が増えない（${before} → ${after}）`,
+    );
+    assert(
+      (await m.locator("[data-card='picked']").count()) === Number(after),
+      "引いたカードが仮採用として出ていない",
+    );
+    assert(
+      !/これに決める/.test(await settledBody(m)),
+      "引いたあとに「これに決める」が出ている",
+    );
+
+    t.stage("残りを全部引く");
+    await drawAllSlots(m);
+    const done = await settledBody(m);
+    assert(
+      (await m.locator("[data-pass-done='1']").count()) === 1,
+      "全部引いたのに、一巡し終えたことになっていない",
+    );
+    assert(/仮のお題がそろいました/.test(done), "仮のお題がそろった案内が出ていない");
+    assert(/このお題で確定する/.test(done), "確定のボタンが出ていない");
+    assert(
+      (await m.locator("[data-redo-link]").count()) >= 1,
+      "引き直しの入口が1つも出ていない",
+    );
+  });
+
+  await test("R", "引き直しは、確認の画面を通るまで何も捨てない", async (t) => {
+    t.stage("一巡する");
+    await freshDraft(m, base, seeded.viewer);
+    await drawAllSlots(m);
+
+    const links = m.locator("[data-redo-link]");
+    const slotKey = await links.first().getAttribute("data-redo-link");
+    const pickedBefore = await m
+      .locator(`[data-slot-row='${slotKey}'] [data-card='picked']`)
+      .innerText();
+
+    t.stage("引き直しの入口を押す");
+    await links.first().click();
+    await m.waitForURL(/redo=/, { timeout: 20000 });
+    const confirm = await settledBody(m);
+
+    assert(
+      (await m.locator(`[data-redo-confirm='${slotKey}']`).count()) === 1,
+      "確認の画面が出ていない",
+    );
+    assert(/元には戻せません/.test(confirm), "取り消せないことが書かれていない");
+    assert(/後悔しませんね/.test(confirm), "念を押す一文が無い");
+    assert(confirm.includes(pickedBefore), "捨てる対象のカードが確認画面に出ていない");
+
+    t.stage("この時点ではまだ捨てていない");
+    const { rows } = await db.query(
+      `select count(*)::int as n from public.draft_candidates dc
+        join public.draft_sessions ds on ds.id = dc.session_id
+       where ds.user_id = $1 and ds.status = 'in_progress' and dc.is_discarded`,
       [seeded.viewer],
     );
-    await drawThroughUi(m, base, { timeLimit: "3600" });
+    assert(rows[0].n === 0, `確認しただけで ${rows[0].n} 枚が捨てられている`);
 
+    t.stage("やめると、そのまま残る");
+    await m.getByRole("link", { name: /やめる/ }).click();
+    await m.waitForURL((u) => !/redo=/.test(u.toString()), { timeout: 20000 });
+    const back = await settledBody(m);
+    assert(back.includes(pickedBefore), "やめたのに仮採用のカードが消えている");
     assert(
-      /全部引き直す/.test(await settledBody(m)),
-      "引き始めた時点で引き直しのボタンが出ていない",
+      (await m.locator("[data-card='discarded']").count()) === 0,
+      "やめたのに捨てたカードが出ている",
     );
+  });
 
-    t.stage("1枚めくって残す");
-    await submitAndSettle(m, m.locator("button[data-card=hidden]:not([disabled])").first());
-    const hold = m.getByRole("button", { name: "残しておく" });
-    await hold.first().waitFor({ state: "visible", timeout: 15000 });
-    await submitAndSettle(m, hold.first());
+  await test("R", "確認すると捨てられ、捨てたカードは二度と選べない", async (t) => {
+    t.stage("一巡して、引き直しを確認まで進める");
+    await freshDraft(m, base, seeded.viewer);
+    await drawAllSlots(m);
 
-    t.stage("その枠の残りを開く");
-    const open = m.getByRole("button", { name: /この枠の残りを見る/ });
-    await open.first().waitFor({ state: "visible", timeout: 15000 });
-    await submitAndSettle(m, open.first());
+    const slotKey = await m.locator("[data-redo-link]").first().getAttribute("data-redo-link");
+    const discardedLabel = await m
+      .locator(`[data-slot-row='${slotKey}'] [data-card='picked']`)
+      .innerText();
+    await m.locator("[data-redo-link]").first().click();
+    await m.waitForURL(/redo=/, { timeout: 20000 });
 
-    const body = await settledBody(m);
+    t.stage("捨てる");
+    await submitAndSettle(m, m.locator(`[data-redo-confirm-submit='${slotKey}']`));
+    await m.waitForURL(/discarded=/, { timeout: 20000 });
+    const after = await settledBody(m);
+
+    const row = `[data-slot-row='${slotKey}']`;
     assert(
-      /この枠は残りを開きました/.test(body),
-      `残りを開いた印が出ていない: ${body.replace(/\s+/g, " ").slice(0, 200)}`,
+      (await m.locator(`${row} [data-card='discarded']`).count()) === 1,
+      "捨てたカードが灰色で残っていない",
     );
     assert(
-      !/全部引き直す/.test(body),
-      "残りを開いたのに、引き直しのボタンが残っている（押しても断られる）",
+      (await m.locator(`${row} [data-card='open']`).count()) >= 1,
+      "残りの候補が開いていない",
     );
     assert(
-      /もう引き直せません/.test(body),
-      "引き直せない理由が画面に出ていない",
+      (await m.locator(`${row} [data-card='picked']`).count()) === 0,
+      "捨てたのに仮採用が残っている",
     );
+    assert(/残りから1枚選んで/.test(after), "次にすることが書かれていない");
+    assert(
+      (await m.locator(`${row} [data-redo-link]`).count()) === 0,
+      "捨てたあとにも引き直しの入口が出ている（2回目ができてしまう）",
+    );
+    assert(!/全部引き直す/.test(after), "引き直したのに、全部引き直すが残っている");
 
-    t.stage("読み込み直しても同じ");
+    t.stage("読み込み直しても復活しない");
     await m.reload();
-    const again = await settledBody(m);
-    assert(!/全部引き直す/.test(again), "読み込み直すと引き直しのボタンが戻ってくる");
-    assert(/もう引き直せません/.test(again), "読み込み直すと理由が消える");
+    const reloaded = await settledBody(m);
+    assert(
+      (await m.locator(`${row} [data-card='discarded']`).count()) === 1,
+      "読み込み直すと捨てたカードが戻ってくる",
+    );
+    assert(
+      (await m.locator(`${row} [data-redo-link]`).count()) === 0,
+      "読み込み直すと引き直しの入口が戻ってくる",
+    );
+    assert(
+      !reloaded.includes(`${discardedLabel}`) ||
+        (await m.locator(`${row} [data-card='discarded']`).innerText()).includes(discardedLabel),
+      "捨てたカードが選べる側に戻っている",
+    );
+
+    t.stage("戻るボタンで確認画面へ戻り、もう一度送っても2枚目は捨てられない");
+    await m.goto(`${base}/play?redo=${encodeURIComponent(slotKey)}`);
+    await settledBody(m);
+    const submit = m.locator(`[data-redo-confirm-submit='${slotKey}']`);
+    if ((await submit.count()) > 0) {
+      await submitAndSettle(m, submit);
+    } else {
+      assert(
+        /引き直せません/.test(await settledBody(m)),
+        "二度目の確認画面が、引き直せないことを伝えていない",
+      );
+    }
+    const { rows } = await db.query(
+      `select count(*)::int as n from public.draft_candidates dc
+        join public.draft_sessions ds on ds.id = dc.session_id
+       where ds.user_id = $1 and ds.status = 'in_progress' and dc.is_discarded`,
+      [seeded.viewer],
+    );
+    assert(rows[0].n === 1, `捨てたカードが ${rows[0].n} 枚（1枚のはず）`);
+
+    t.stage("残りから選ぶと確定する");
+    await m.goto(`${base}/play`);
+    await settledBody(m);
+    await submitAndSettle(m, m.locator(`${row} [data-card='open']`).first());
+    const finished = await settledBody(m);
+    assert(
+      (await m.locator(`${row} [data-card='picked']`).count()) === 1,
+      "選び直しても決まっていない",
+    );
+    assert(/このお題で確定する/.test(finished), "確定のボタンが出ていない");
+    assert(
+      (await m.locator(`${row} [data-redo-link]`).count()) === 0,
+      "確定したのに、また引き直せてしまう",
+    );
   });
 
   /* =====================================================================
@@ -2327,6 +2498,8 @@ async function main() {
     const form = "form:has(button:has-text('このゲストのまま登録する'))";
     await page.locator(`${form} input[name=email]`).fill(email);
     await page.locator(`${form} input[name=password]`).fill("dummy-password-1");
+    // 規約への同意は登録のときに求める（P5）。入れないと受け口が断る
+    await page.locator(`${form} input[name=agreeDocs]`).check();
     await submitAndSettle(
       page,
       page.getByRole("button", { name: "このゲストのまま登録する" }),

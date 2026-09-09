@@ -9,9 +9,9 @@
  *   1. 匿名サインインができる
  *   2. start_draft で候補が正しい数だけできる
  *   3. **めくっていないカードの中身が返ってこない**（いちばん大事）
- *   4. めくる（reveal_card）→ 決める（choose_card）の2段で進む
- *   5. 順番を飛ばした reveal_card が拒否される
- *   6. 保持の上限と、保持後の残り開示、開示後の引き直し禁止
+ *   4. カテゴリごとに1枚引く（pick_card）。確認は挟まず次へ進む
+ *   5. 順番を飛ばして引こうとすると拒否される
+ *   6. カテゴリの引き直しは1回だけ。捨てたカードは戻らない
  *   6. reroll_draft で引き直せる
  *   7. complete_draft でお題とクイズができる
  *   8. get_my_prompt で答えが取れる
@@ -176,11 +176,15 @@ async function main() {
     "draft_base と実際の枚数が一致",
     `${started.draft_base} / ${total}`,
   );
-  check(
-    new Set(counts).size > 1 || counts.length === 1,
-    "枚数が全枠同じ値に固定されていない（1枠のときは対象外）",
-    `実際 ${counts.join("/")}`,
-  );
+  //
+  // 【ここで「全枠同じ枚数ではない」ことを見ない（2026-09-08）】
+  //   配り方は乱数で決まる。5枠へ余り5枚を配るとき、5枠に1枚ずつ行く並び
+  //   （＝3/3/3/3/3）は 5!/5^5 ≒ 3.8% で起きる。**1回引いただけでは
+  //   決められない。**実際にこの検査は 3/3/3/3/3 を引いて落ちた（実測）。
+  //
+  //   一律に固定されていないことは、配り方の関数を何度も呼べる場所
+  //   （test/db/run.mjs の「配り方」の節）で確かめる。この関数は
+  //   利用者から呼べないので、スモークからは触れない。
   const morphs = started.slots.filter((x) => x.card_slot_key.startsWith("morph_")).length;
   check(morphs >= 1 && morphs <= 2, "モーフは1〜2枠", `実際 ${morphs}`);
   const colors = started.slots.filter((x) => x.card_slot_key.startsWith("color_")).length;
@@ -207,181 +211,52 @@ async function main() {
   const { data: dupCheck } = await supabase.rpc("get_current_draft");
   check(dupCheck?.session_id === started.session_id, "get_current_draft が同じドラフトを返す");
 
-  console.log(`\n${BOLD}[5] 順番を飛ばした reveal_card が拒否されること${RESET}`);
-  const { error: skipErr } = await supabase.rpc("reveal_card", {
+  console.log(`\n${BOLD}[5] 順番を飛ばして引こうとすると拒否されること${RESET}`);
+  const { error: skipErr } = await supabase.rpc("pick_card", {
     p_session_id: started.session_id,
     p_card_slot_key: slotKeyOf(started, 3),
     p_candidate_index: 0,
   });
   check(
     !!skipErr && skipErr.message.includes("WRONG_SLOT_ORDER"),
-    "3番目の枠を先にめくろうとすると拒否される",
+    "3番目のカテゴリを先に引こうとすると拒否される",
     skipErr ? "" : "拒否されなかった",
   );
 
-  console.log(`\n${BOLD}[5-b] 保持の上限・残りの開示・開示後の引き直し禁止（D170 / D171）${RESET}`);
+  console.log(`\n${BOLD}[6] 一巡は確認を挟まず進む（2026-09-08）${RESET}`);
   //
-  // **この節だけ別のドラフトを使う。**残りを開くと引き直せなくなるので、
-  // ここで使ったセッションは最後に捨てる。上の started はそのまま残す。
-  {
-    await supabase.rpc("abandon_draft", { p_session_id: started.session_id });
-    const { data: probe, error: probeErr } = await supabase.rpc("start_draft", {
-      p_mode_key: "hard",
-      p_time_limit_seconds: 3600,
-      p_carried_element_ids: null,
-    });
-    if (probeErr) {
-      check(false, "確認用のドラフトを開始できる", probeErr.message);
-      process.exit(1);
-    }
-    const key = slotKeyOf(probe, probe.current_slot_order);
-    const slot = probe.slots.find((x) => x.card_slot_key === key);
-    const n = slot.candidates.length;
-    const limit = Math.min(2, n - 1);
-    check(slot.held_limit === limit, `残せる上限が min(2, ${n} - 1) = ${limit}`,
-      `実際 ${slot.held_limit}`);
-
-    for (let i = 0; i < limit; i += 1) {
-      await supabase.rpc("reveal_card", {
-        p_session_id: probe.session_id, p_card_slot_key: key, p_candidate_index: i,
-      });
-      const { error } = await supabase.rpc("hold_card", {
-        p_session_id: probe.session_id, p_card_slot_key: key,
-        p_candidate_index: i, p_hold: true,
-      });
-      check(!error, `${i + 1}枚目を残せる`, error?.message ?? "");
-    }
-
-    await supabase.rpc("reveal_card", {
-      p_session_id: probe.session_id, p_card_slot_key: key, p_candidate_index: limit,
-    });
-    const { error: overErr } = await supabase.rpc("hold_card", {
-      p_session_id: probe.session_id, p_card_slot_key: key,
-      p_candidate_index: limit, p_hold: true,
-    });
-    check(
-      !!overErr && overErr.message.includes("HOLD_LIMIT"),
-      "上限を超えて残そうとすると断られる（全部は残せない）",
-      overErr ? "" : "断られなかった",
-    );
-
-    const { data: opened, error: poolErr } = await supabase.rpc("reveal_slot_pool", {
-      p_session_id: probe.session_id, p_card_slot_key: key,
-    });
-    check(!poolErr, "残した候補があるので、その枠の残りを開ける", poolErr?.message ?? "");
-    if (opened) {
-      const s2 = opened.slots.find((x) => x.card_slot_key === key);
-      check(s2.pool_revealed === true, "開示の印が付く");
-      check(s2.candidates.every((c) => c.revealed), "その枠の候補が全部見える");
-      check(s2.candidates.length === n, "開示しても候補は増えない", `実際 ${s2.candidates.length}`);
-    }
-
-    const { error: rerollErr } = await supabase.rpc("reroll_draft", {
-      p_session_id: probe.session_id,
-    });
-    check(
-      !!rerollErr && rerollErr.message.includes("POOL_ALREADY_REVEALED"),
-      "残りを開いたあとは引き直せない（新しい候補を出す抜け道が無い）",
-      rerollErr ? "" : "引き直せてしまった",
-    );
-
-    // 確認用のセッションはここで捨てる
-    await supabase.rpc("abandon_draft", { p_session_id: probe.session_id });
-  }
-
-  // 本筋の続きに使うドラフトを引き直す
-  const { data: restarted, error: restartErr } = await supabase.rpc("start_draft", {
-    p_mode_key: "hard",
-    p_time_limit_seconds: 3600,
-    p_carried_element_ids: null,
-  });
-  if (restartErr) {
-    check(false, "本筋のドラフトを開始し直せる", restartErr.message);
-    process.exit(1);
-  }
-
-  console.log(`\n${BOLD}[6] めくる → 決める の2段（D170）${RESET}`);
-  let state = restarted;
-
-  // まず1枠だけ、めくった時点で確定していないことを確かめる
-  {
-    const key = slotKeyOf(state, state.current_slot_order);
-    const idx = firstIndex(state, state.current_slot_order);
-    const { data: revealed, error: rErr } = await supabase.rpc("reveal_card", {
-      p_session_id: state.session_id,
-      p_card_slot_key: key,
-      p_candidate_index: idx,
-    });
-    if (rErr) {
-      check(false, "1枠目をめくる", rErr.message);
-      process.exit(1);
-    }
-    const slot = revealed.slots.find((x) => x.card_slot_key === key);
-    const card = slot.candidates.find((c) => c.candidate_index === idx);
-    check(card.revealed === true, "めくった印が付く");
-    check(card.is_chosen === false, "めくっただけでは確定にならない");
-    check(
-      revealed.current_slot_order === state.current_slot_order,
-      "めくっただけでは次の枠へ進まない",
-    );
-    check(revealed.chosen_count === state.chosen_count, "確定数が増えない");
-
-    const { data: chosen, error: cErr } = await supabase.rpc("choose_card", {
-      p_session_id: state.session_id,
-      p_card_slot_key: key,
-      p_candidate_index: idx,
-    });
-    if (cErr) {
-      check(false, "1枠目を決める", cErr.message);
-      process.exit(1);
-    }
-    check(chosen.chosen_count === state.chosen_count + 1, "決めると確定数が増える");
-    check(chosen.current_slot_order > state.current_slot_order, "決めると次の枠へ進む");
-    state = chosen;
-  }
-
-  // 残りの枠は、めくる→決める を続けて通す
-  while (state.chosen_count < state.slot_count) {
-    const order = state.current_slot_order;
+  // 引いた瞬間に仮採用になり、次のカテゴリへ自動で進む。
+  // 以前の「めくる → これに決める」の2段は無くなった。
+  let state = started;
+  for (let order = 1; order <= started.slot_count; order += 1) {
     const key = slotKeyOf(state, order);
-    const idx = firstIndex(state, order);
-    const { error: rErr } = await supabase.rpc("reveal_card", {
+    const before = state.chosen_count;
+    const { data, error } = await supabase.rpc("pick_card", {
       p_session_id: state.session_id,
       p_card_slot_key: key,
-      p_candidate_index: idx,
-    });
-    if (rErr) {
-      check(false, `${order}番目の枠をめくる`, rErr.message);
-      process.exit(1);
-    }
-    const { data, error } = await supabase.rpc("choose_card", {
-      p_session_id: state.session_id,
-      p_card_slot_key: key,
-      p_candidate_index: idx,
+      p_candidate_index: firstIndex(state, order),
     });
     if (error) {
-      check(false, `${order}番目の枠を決める`, error.message);
+      check(false, `${order}番目のカテゴリを引く`, error.message);
       process.exit(1);
     }
     state = data;
+    check(state.chosen_count === before + 1, `${order}番目を引くと仮採用が1つ増える`,
+      `${before} → ${state.chosen_count}`);
+    if (order < started.slot_count) {
+      check(state.initial_pass_done === false, `${order}番目の時点では一巡し終えていない`);
+    }
   }
-  check(
-    state.chosen_count === state.slot_count,
-    "すべての枠が決まった",
-    `実際 ${state.chosen_count} / ${state.slot_count}`,
-  );
+  check(state.initial_pass_done === true, "一巡し終えた");
   check(state.is_ready_to_complete === true, "確定できる状態になった");
-
-  const chosen = state.slots.flatMap((s) => s.candidates).filter((c) => c.is_chosen);
-  check(chosen.length === state.slot_count, `選ばれたカードが${state.slot_count}枚`);
   check(
-    chosen.every((c) => c.label !== null && c.tag_id !== null),
-    "選んだカードは中身が見える",
+    state.slots.filter((s) => !s.is_carried).every((s) => s.can_redo || s.candidate_count < 2),
+    "候補が2枚以上あるカテゴリは、すべて引き直せる",
   );
   const stillHidden = state.slots.flatMap((s) => s.candidates).filter((c) => !c.revealed);
   check(
     stillHidden.every((c) => c.label === null && c.tag_id === null),
-    "選ばなかったカードは伏せたまま",
+    "引かなかったカードは伏せたまま",
     `${stillHidden.length}枚`,
   );
 
@@ -404,39 +279,22 @@ async function main() {
     "2回目の引き直しは拒否される",
   );
 
-  console.log(`\n${BOLD}[8] もう一度めくって確定${RESET}`);
+  console.log(`\n${BOLD}[8] もう一度一巡して確定${RESET}`);
   // 引き直すとカテゴリの構成ごと引き直されるので、枠の数が変わりうる。
-  //
-  // **ここも2段で進める（D170）。**めくっただけでは枠が進まないので、
-  // めくって決めるまでを1周にする。片方だけだと、次の枠をめくろうとした
-  // ところで WRONG_SLOT_ORDER になる（実測: 2026-09-07 の本番スモーク）。
   state = rerolled;
   for (let order = 1; order <= rerolled.slot_count; order += 1) {
-    const key = slotKeyOf(state, order);
-    const index = firstIndex(state, order);
-
-    const { error: flipErr } = await supabase.rpc("reveal_card", {
+    const { data, error } = await supabase.rpc("pick_card", {
       p_session_id: state.session_id,
-      p_card_slot_key: key,
-      p_candidate_index: index,
-    });
-    if (flipErr) {
-      check(false, `${order}番目の枠をめくる`, flipErr.message);
-      process.exit(1);
-    }
-
-    const { data, error } = await supabase.rpc("choose_card", {
-      p_session_id: state.session_id,
-      p_card_slot_key: key,
-      p_candidate_index: index,
+      p_card_slot_key: slotKeyOf(state, order),
+      p_candidate_index: firstIndex(state, order),
     });
     if (error) {
-      check(false, `${order}番目の枠に決める`, error.message);
+      check(false, `${order}番目のカテゴリを引く`, error.message);
       process.exit(1);
     }
     state = data;
   }
-  check(state.is_ready_to_complete === true, "すべての枠が決まった");
+  check(state.is_ready_to_complete === true, "すべてのカテゴリが決まった");
 
   console.log(`\n${BOLD}[9] complete_draft${RESET}`);
   const { data: done, error: doneErr } = await supabase.rpc("complete_draft", {
@@ -506,6 +364,99 @@ async function main() {
     !!tableErr && /permission denied/i.test(tableErr.message),
     "prompt_cards を直接読むと permission denied",
   );
+
+  console.log(`\n${BOLD}[12] カテゴリの引き直しは1回だけで、捨てたカードは戻らない${RESET}`);
+  //
+  // **この節をいちばん最後に置いている。**引き直しの確認には別のドラフトが
+  // 要るが、1人が同時に持てるドラフトは1つだけ（DRAFT_IN_PROGRESS）。
+  // 上の [9] で確定し終えて手元が空になってから始める。
+  {
+    const { data: probe, error: probeErr } = await supabase.rpc("start_draft", {
+      p_mode_key: "hard",
+      p_time_limit_seconds: 3600,
+      p_carried_element_ids: null,
+    });
+    if (probeErr) {
+      check(false, "確認用のドラフトを開始できる", probeErr.message);
+    } else {
+      let ps = probe;
+      for (let order = 1; order <= ps.slot_count; order += 1) {
+        const r = await supabase.rpc("pick_card", {
+          p_session_id: ps.session_id,
+          p_card_slot_key: slotKeyOf(ps, order),
+          p_candidate_index: firstIndex(ps, order),
+        });
+        ps = r.data ?? ps;
+      }
+      const target = ps.slots.find((s) => s.can_redo);
+      check(!!target, "引き直せるカテゴリがある");
+
+      if (target) {
+        const droppedIndex = target.candidates.find((c) => c.is_chosen).candidate_index;
+        const droppedLabel = target.candidates.find((c) => c.is_chosen).label;
+
+        const { data: after, error: redoErr } = await supabase.rpc("redo_slot", {
+          p_session_id: ps.session_id,
+          p_card_slot_key: target.card_slot_key,
+        });
+        check(!redoErr, "引き直せる", redoErr?.message ?? "");
+
+        if (after) {
+          ps = after;
+          const row = ps.slots.find((s) => s.card_slot_key === target.card_slot_key);
+          check(
+            row.candidates.find((c) => c.candidate_index === droppedIndex).is_discarded,
+            "仮採用のカードが捨てられた",
+            `捨てた: ${droppedLabel}`,
+          );
+          check(!row.candidates.some((c) => c.is_chosen), "捨てたので、まだ決まっていない");
+          check(row.needs_pick === true, "選び直し待ちになった");
+          check(row.redo_used === true, "引き直しを使った記録が残る");
+          check(row.can_redo === false, "二度目は引き直せない");
+          check(row.candidates.every((c) => c.revealed), "そのカテゴリの残りが全部開いた");
+
+          const { error: deadErr } = await supabase.rpc("pick_card", {
+            p_session_id: ps.session_id,
+            p_card_slot_key: target.card_slot_key,
+            p_candidate_index: droppedIndex,
+          });
+          check(
+            !!deadErr && deadErr.message.includes("CARD_DISCARDED"),
+            "捨てたカードは選べない",
+            deadErr ? "" : "選べてしまった",
+          );
+
+          const { error: twiceErr } = await supabase.rpc("redo_slot", {
+            p_session_id: ps.session_id,
+            p_card_slot_key: target.card_slot_key,
+          });
+          check(
+            !!twiceErr && twiceErr.message.includes("REDO_ALREADY_USED"),
+            "二度目の引き直しは断られる",
+          );
+
+          const { error: rerollErr2 } = await supabase.rpc("reroll_draft", {
+            p_session_id: ps.session_id,
+          });
+          check(
+            !!rerollErr2 && rerollErr2.message.includes("POOL_ALREADY_REVEALED"),
+            "引き直したあとは、全体の引き直しもできない",
+          );
+
+          const alive = ps.slots
+            .find((s) => s.card_slot_key === target.card_slot_key)
+            .candidates.find((c) => !c.is_discarded && !c.is_chosen);
+          const { data: picked } = await supabase.rpc("pick_card", {
+            p_session_id: ps.session_id,
+            p_card_slot_key: target.card_slot_key,
+            p_candidate_index: alive.candidate_index,
+          });
+          check(picked?.is_ready_to_complete === true, "選び直すと確定できる状態に戻る");
+        }
+      }
+      await supabase.rpc("abandon_draft", { p_session_id: ps.session_id });
+    }
+  }
 
   await supabase.auth.signOut();
   await other.auth.signOut();

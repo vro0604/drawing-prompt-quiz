@@ -154,13 +154,28 @@ export async function callStartDraft(
   return data as DraftState;
 }
 
-export async function callRevealCard(
+/**
+ * カードを1枚引いて仮採用する（2026-09-08）。
+ *
+ * 【確認を挟まない】
+ *   引いた瞬間にそのカテゴリは仮採用になり、次のカテゴリへ自動で進む。
+ *   一巡し終えてから、カテゴリごとに1回だけ引き直せる。
+ *
+ *   以前は「めくる」と「これに決める」を分けていた（D170）。
+ *   その作法は画面から外した。**DB の関数（reveal_card / choose_card /
+ *   hold_card / reveal_slot_pool）は消していない。**呼ばれなくなるだけで、
+ *   既に動いている古いドラフトが壊れないようにするため。
+ *
+ * 引き直したあとの「残りから1枚選ぶ」も、この関数が受ける。
+ * 利用者がすることは同じ「1枚選ぶ」なので、入口を分けない。
+ */
+export async function callPickCard(
   sessionId: string,
   cardSlotKey: string,
   candidateIndex: number,
 ): Promise<DraftState> {
   const supabase = await createSupabaseServerClient();
-  const { data, error } = await supabase.rpc("reveal_card", {
+  const { data, error } = await supabase.rpc("pick_card", {
     p_session_id: sessionId,
     p_card_slot_key: cardSlotKey,
     p_candidate_index: candidateIndex,
@@ -171,53 +186,20 @@ export async function callRevealCard(
 }
 
 /**
- * めくったカードに決める（D170）。
+ * カテゴリを1回だけ引き直す（2026-09-08）。**取り消せない。**
  *
- * **めくることと決めることは別の操作。**めくっただけでは枠は進まない。
- * ここを呼んで初めて確定し、次の枠へ進む。二度呼んでも壊れない。
+ * 仮採用していたカードを永久に捨て、そのカテゴリの残り候補を開く。
+ * 捨てたカードは二度と選べない（判定は DB 側）。
+ *
+ * **確認はここでしない。**取り消せないことを伝える画面を通ってから呼ぶ。
+ * 二度目を送っても、DB が REDO_ALREADY_USED で断るので2枚目は捨てられない。
  */
-export async function callChooseCard(
-  sessionId: string,
-  cardSlotKey: string,
-  candidateIndex: number,
-): Promise<DraftState> {
-  const supabase = await createSupabaseServerClient();
-  const { data, error } = await supabase.rpc("choose_card", {
-    p_session_id: sessionId,
-    p_card_slot_key: cardSlotKey,
-    p_candidate_index: candidateIndex,
-  });
-
-  if (error) throw new Error(readableRpcError(error.message));
-  return data as DraftState;
-}
-
-/** 枠の中で候補を残す／外す（D170）。上限は min(2, 候補数 - 1) */
-export async function callHoldCard(
-  sessionId: string,
-  cardSlotKey: string,
-  candidateIndex: number,
-  hold: boolean,
-): Promise<DraftState> {
-  const supabase = await createSupabaseServerClient();
-  const { data, error } = await supabase.rpc("hold_card", {
-    p_session_id: sessionId,
-    p_card_slot_key: cardSlotKey,
-    p_candidate_index: candidateIndex,
-    p_hold: hold,
-  });
-
-  if (error) throw new Error(readableRpcError(error.message));
-  return data as DraftState;
-}
-
-/** その枠の残り候補を開示する（D170）。残した候補があるときだけ通る */
-export async function callRevealSlotPool(
+export async function callRedoSlot(
   sessionId: string,
   cardSlotKey: string,
 ): Promise<DraftState> {
   const supabase = await createSupabaseServerClient();
-  const { data, error } = await supabase.rpc("reveal_slot_pool", {
+  const { data, error } = await supabase.rpc("redo_slot", {
     p_session_id: sessionId,
     p_card_slot_key: cardSlotKey,
   });

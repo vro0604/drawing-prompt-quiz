@@ -38,8 +38,10 @@ export type DraftCandidate = {
   is_chosen: boolean;
   tag_id: number | null;
   label: string | null;
-  /** 枠の中で「残す」と印を付けてあるか（D170）。持ち出しとは別物 */
+  /** 枠の中で「残す」と印を付けてあるか（D170）。いまの画面は使わない */
   is_held: boolean;
+  /** 引き直しで永久に捨てたカードか（2026-09-08）。二度と選べない */
+  is_discarded: boolean;
 };
 
 /**
@@ -65,8 +67,14 @@ export type DraftSlot = {
   is_carried: boolean;
   /** その枠に配られた候補の枚数（D170）。抽選の枠は2〜5、持ち出しの枠は1 */
   candidate_count: number;
-  /** その枠の残り候補を開示済みか（D170）。開示すると、その枠の抽選は終わり */
+  /** その枠の残り候補を開示済みか。引き直すと開く */
   pool_revealed: boolean;
+  /** そのカテゴリで引き直しを使ったか（2026-09-08）。1カテゴリにつき1回だけ */
+  redo_used: boolean;
+  /** いま選び直しを待っているか。引き直した直後の状態 */
+  needs_pick: boolean;
+  /** いま引き直せるか。**画面はこの値だけを見る**（条件を組み立て直さない） */
+  can_redo: boolean;
   /** その枠で残せる上限。min(2, 候補数 - 1)。全部は残せない（D170） */
   held_limit: number;
   slot_order: number;
@@ -77,6 +85,8 @@ export type DraftSlot = {
 
 /** ドラフトの現在状態（draft_state_json の戻り値） */
 export type DraftState = {
+  /** 一巡し終えたか（2026-09-08）。仮のお題を見せてよいかの判定に使う */
+  initial_pass_done: boolean;
   session_id: string;
   mode_key: string;
   mode_label: string;

@@ -210,50 +210,31 @@ must(
 );
 must(!/万年筆|折り鶴|妖精/.test(textOf(page.html)), "伏せカードの中身が HTML に出ていない");
 
-// ── 3. めくる → 決める を枠の数だけ（D170）─────────
+// ── 3. カテゴリごとに1枚ずつ引く（2026-09-08）─────────
 //
-// 画面は2段になった。めくるボタンを押しても確定せず、
-// 「これに決める」を押して初めて次の枠へ進む。
+// 画面から確認の段が無くなった。伏せカードを押した瞬間に仮採用になり、
+// 次のカテゴリへ自動で進む。
 //
-// **この2段は、引き直したあとの節でも同じことをする。**
-// 片方だけ書くと、片方だけが古い作法のまま残る（実測: 2026-09-07 の
-// 本番スモークで、引き直し後の節がめくるだけを繰り返して 3/6 で止まった）。
-// だから1つの関数にして、両方から呼ぶ。
-async function decideAllSlots(start, count, { checkPending = false } = {}) {
+// **この手順は、引き直したあとの節でも同じことをする。**
+// 片方だけ書くと、片方だけが古い作法のまま残る。だから1つの関数にする。
+async function drawAllSlots(start, count, { checkNoConfirm = false } = {}) {
   let p = start;
 
   for (let i = 1; i <= count; i += 1) {
-    // めくるボタンは、まだ伏せているカードのボタン。
-    // 「これに決める」「残しておく」も candidateIndex を持つので、
-    // 文言で外してから選ぶ。
-    const flip = forms(p.html).find(
-      (x) =>
-        x.fields.candidateIndex !== undefined &&
-        !/これに決める|残しておく/.test(x.text),
-    );
+    const flip = forms(p.html).find((x) => x.fields.candidateIndex !== undefined);
     if (!flip) {
-      must(false, `${i}枠目のめくるボタンが見つかる`);
+      must(false, `${i}番目のカテゴリの伏せカードが見つかる`);
       return p;
     }
     p = await post("/play", { [flip.actionId]: "", ...flip.fields });
 
-    if (checkPending && i === 1) {
-      must(
-        progress(p.html) === `0/${count}`,
-        "めくっただけでは決まらない",
-        progress(p.html) ?? "-",
-      );
+    if (checkNoConfirm && i === 1) {
+      must(!/これに決める/.test(p.html), "引いたあとに確認のボタンが出ていない");
+      must(!/残しておく/.test(p.html), "引いたあとに「残しておく」が出ていない");
     }
-
-    const decide = forms(p.html).find((x) => /これに決める/.test(x.text));
-    if (!decide) {
-      must(false, `${i}枠目の「これに決める」が出る`);
-      return p;
-    }
-    p = await post("/play", { [decide.actionId]: "", ...decide.fields });
     must(
       progress(p.html) === `${i}/${count}`,
-      `${i}枠目を決定`,
+      `${i}番目を引くと仮採用が1つ増える`,
       progress(p.html) ?? "-",
     );
   }
@@ -261,30 +242,60 @@ async function decideAllSlots(start, count, { checkPending = false } = {}) {
   return p;
 }
 
-page = await decideAllSlots(page, slotCount, { checkPending: true });
+must(!/これに決める/.test(page.html), "一巡目に確認のボタンが出ていない");
+page = await drawAllSlots(page, slotCount, { checkNoConfirm: true });
 must(/このお題で確定する/.test(page.html), "確定ボタンが出た");
+must(/仮のお題がそろいました/.test(textOf(page.html)), "仮のお題がそろった案内が出た");
+must(/data-redo-link/.test(page.html), "カテゴリの引き直しの入口が出た");
 
-// ── 4. reroll ─────────────────────────────────────
-const rerollForm = forms(page.html).find((f) => /全部引き直す/.test(f.text));
-must(!!rerollForm, "引き直しボタンがある");
-page = await post("/play", { [rerollForm.actionId]: "", ...rerollForm.fields });
+// ── 3-b. カテゴリの引き直し（確認 → 破棄 → 選び直し）──────
+{
+  const key = /data-redo-link="([^"]+)"/.exec(page.html)?.[1];
+  must(!!key, "引き直せるカテゴリがある");
 
-// 引き直すとカテゴリの構成ごと引き直されるので、枠の数が変わりうる
-const slotCount2 = Number(/data-slots="(\d+)"/.exec(page.html)?.[1] ?? "0");
+  if (key) {
+    const confirm = await get(`/play?redo=${encodeURIComponent(key)}`);
+    const ctext = textOf(confirm.html);
+    must(confirm.status === 200, "確認の画面が開ける", `実際 ${confirm.status}`);
+    must(/元には戻せません/.test(ctext), "取り消せないことが書かれている");
+    must(/後悔しませんね/.test(ctext), "念を押す一文がある");
+    must(!/data-card="discarded"/.test(confirm.html), "確認しただけでは捨てていない");
+
+    const form = forms(confirm.html).find((f) => /捨てて引き直す/.test(f.text));
+    must(!!form?.actionId, "捨てるボタンがある");
+
+    if (form?.actionId) {
+      page = await post("/play", { [form.actionId]: "", ...form.fields });
+      must(/data-card="discarded"/.test(page.html), "捨てたカードが灰色で残っている");
+      must(/data-card="open"/.test(page.html), "残りの候補が開いた");
+      must(!/data-redo-link/.test(page.html), "引き直したのに、また引き直せる入口が出ている");
+      must(!/全部引き直す/.test(page.html), "引き直したのに、全部引き直すが残っている");
+
+      // 二度目は断られる（戻るボタンで送り直した場合に当たる）
+      const again = await post("/play", { [form.actionId]: "", ...form.fields });
+      must(
+        (again.html.match(/data-card="discarded"/g) ?? []).length === 1,
+        "二度目の送信で2枚目が捨てられた",
+      );
+
+      const openForm = forms(page.html).find((x) => x.fields.candidateIndex !== undefined);
+      must(!!openForm, "開いた候補から選べる");
+      if (openForm) {
+        page = await post("/play", { [openForm.actionId]: "", ...openForm.fields });
+        must(/このお題で確定する/.test(page.html), "選び直すと確定できる状態に戻る");
+      }
+    }
+  }
+}
+
+// ── 4. 全体の引き直しは、もうできない ──────────────
+//
+// カテゴリを1つでも引き直すと、全体の引き直しは断られる。
+// **押しても断られるボタンを、置いたままにしない。**
+must(!/全部引き直す/.test(page.html), "引き直したあとに、全部引き直すボタンが出ていない");
 must(
-  progress(page.html) === `0/${slotCount2}`,
-  "引き直して白紙に戻った",
-  progress(page.html) ?? "-",
-);
-must(/引き直し 残り 0 回/.test(textOf(page.html)), "残り回数が0になった");
-must(!/全部引き直す/.test(page.html), "引き直しボタンが消えた");
-
-// ── 5. 再度めくって確定 ────────────────────────────
-page = await decideAllSlots(page, slotCount2);
-must(
-  progress(page.html) === `${slotCount2}/${slotCount2}`,
-  "すべての枠が決定",
-  progress(page.html) ?? "-",
+  /全部の引き直しはもうできません/.test(textOf(page.html)),
+  "全部引き直せない理由が書かれている",
 );
 
 // ── 6. complete_draft → 確定お題ページ ─────────────
@@ -298,13 +309,14 @@ must(/お題が確定しました/.test(page.html), "確定の見出しが出た
 //   **その数**を見る。名前の一覧で照合すると、構成が変わるたびに落ちる。
 const cardCount = (page.html.match(/data-prompt-card="/g) ?? []).length;
 must(
-  cardCount === slotCount2,
-  `${slotCount2}枠すべての答えが並んでいる`,
+  cardCount === slotCount,
+  `${slotCount}枠すべての答えが並んでいる`,
   `実際 ${cardCount}枚`,
 );
 must(/モーフ/.test(textOf(page.html)), "描く対象（モーフ）が並んでいる");
 must(/残り |無制限|制作時間/.test(textOf(page.html)), "制作時間が出ている");
-must(/引き直し 1 回/.test(textOf(page.html)), "引き直しの記録が出ている");
+// 全体の引き直しは使っていないので、引き直しの記録は出ない（カテゴリの
+// 引き直しは prompts.reroll_count に数えない）。ここでは数を見ない。
 must(/引かなかったカードは/.test(page.html), "未選択カードは未開示のまま");
 
 console.log("\n答え: " + textOf(page.html).match(/お題[\s\S]{0,200}/)?.[0]?.slice(0, 200));

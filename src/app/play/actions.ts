@@ -17,10 +17,8 @@ import {
   callAbandonDraft,
   callCompleteDraft,
   callRerollDraft,
-  callRevealCard,
-  callChooseCard,
-  callHoldCard,
-  callRevealSlotPool,
+  callPickCard,
+  callRedoSlot,
   callStartDraft,
   fetchCurrentDraft,
   fetchDraftModes,
@@ -181,7 +179,16 @@ export async function startDraftAction(form: FormData): Promise<void> {
   redirect(PAGE);
 }
 
-export async function revealCardAction(form: FormData): Promise<void> {
+/**
+ * カードを1枚引く（2026-09-08）。
+ *
+ * 引いた瞬間に仮採用になり、次のカテゴリへ自動で進む。**確認は挟まない。**
+ * 引き直したあとの「残りから1枚選ぶ」も、同じ入口を通る。
+ *
+ * 二度押されても壊れない。すでに決まっているカテゴリなら、DB が
+ * いまの状態をそのまま返すので、2回目は何も起きない。
+ */
+export async function pickCardAction(form: FormData): Promise<void> {
   const sessionId = str(form, "sessionId");
   const cardSlotKey = str(form, "cardSlotKey");
   const candidateIndex = Number.parseInt(str(form, "candidateIndex"), 10);
@@ -190,7 +197,7 @@ export async function revealCardAction(form: FormData): Promise<void> {
     if (!Number.isFinite(candidateIndex)) {
       throw new Error("カードの番号が読み取れませんでした。");
     }
-    await callRevealCard(sessionId, cardSlotKey, candidateIndex);
+    await callPickCard(sessionId, cardSlotKey, candidateIndex);
   } catch (e) {
     backWithError(e);
   }
@@ -200,99 +207,30 @@ export async function revealCardAction(form: FormData): Promise<void> {
 }
 
 /**
- * めくったカードに決める（D170）。
+ * カテゴリを引き直す（2026-09-08）。**取り消せない。**
  *
- * **めくる操作とは分けてある。**押した瞬間に確定するのは、この操作だけ。
- * ドローの途中で読み込み直しても、決めていないカードは確定にならない。
+ * ここへ来る前に、取り消せないことを伝える画面を通っている
+ * （/play?redo=<カテゴリ>）。この処理は確認しない。捨てる。
+ *
+ * 【戻るボタンで送り直されても、2枚目は捨てられない】
+ *   引き直しを使ったかどうかは DB の枠に記録されている。
+ *   2回目は REDO_ALREADY_USED で断られる。
+ *
+ * 捨てた直後の画面にだけ退場の動きを出すため、戻り先に印を付ける。
+ * 印は見た目のためだけのもので、状態は持たない。
  */
-export async function chooseCardAction(form: FormData): Promise<void> {
+export async function redoSlotAction(form: FormData): Promise<void> {
   const sessionId = str(form, "sessionId");
   const cardSlotKey = str(form, "cardSlotKey");
-  const candidateIndex = Number.parseInt(str(form, "candidateIndex"), 10);
 
   try {
-    if (!Number.isFinite(candidateIndex)) {
-      throw new Error("カードの番号が読み取れませんでした。");
-    }
-
-    // --- サブ指令（D193） ------------------------------------------------
-    //
-    // 【なぜここで決めるか】
-    //   決められるのは、その枠にどの語が入るか分かってからである。
-    //   「恐怖」に付く手がかりは「恐怖」を見ないと選べない。
-    //   だから、決める操作のここで、選ばれようとしている語を読んでから決める。
-    //
-    // 【画面から鍵を受け取らない】
-    //   フォームで受け取ると、送る側が好きな値を書ける。
-    //   ここでは**いま盤面にある語をサーバー側で読み直して**決める。
-    //   出所: ユーザー指示（2026-09-10）「ブラウザclient bundleへ
-    //   『選ばれたkeyを任意送信するための入口』を作らない。」
-    //
-    // 【DB へ渡す経路も分けてある】
-    //   カードを決める窓口（choose_card）はサブ指令を知らない。
-    //   鍵はサーバーだけが持つ秘密の鍵から、別の窓口で書く。
-    //   利用者の証明書ではその窓口を呼べない。
-    const state = await fetchCurrentDraft();
-    const slot = state?.slots.find((s) => s.card_slot_key === cardSlotKey);
-    const picked = slot?.candidates.find((c) => c.candidate_index === candidateIndex);
-    const subDirectiveKey = pickSubDirective(picked?.label ?? null);
-
-    await callChooseCard(sessionId, cardSlotKey, candidateIndex);
-
-    // カードが決まってから書く。書く側は「決めたときと同じ世代・同じ語か」を
-    // 見るので、この間に引き直しが割り込んでいたら1行も書かれない。
-    // 書けなくてもお題は成立している（サブ指令が付かないだけ）。
-    if (subDirectiveKey !== null && state !== null && picked?.tag_id != null) {
-      await writeSubDirective({
-        userId: await ensureUserId(),
-        sessionId,
-        generation: state.generation,
-        cardSlotKey,
-        tagId: picked.tag_id,
-        key: subDirectiveKey,
-      });
-    }
+    await callRedoSlot(sessionId, cardSlotKey);
   } catch (e) {
     backWithError(e);
   }
 
   revalidatePath(PAGE);
-  redirect(PAGE);
-}
-
-/** 枠の中で候補を残す／外す（D170） */
-export async function holdCardAction(form: FormData): Promise<void> {
-  const sessionId = str(form, "sessionId");
-  const cardSlotKey = str(form, "cardSlotKey");
-  const candidateIndex = Number.parseInt(str(form, "candidateIndex"), 10);
-  const hold = str(form, "hold") !== "off";
-
-  try {
-    if (!Number.isFinite(candidateIndex)) {
-      throw new Error("カードの番号が読み取れませんでした。");
-    }
-    await callHoldCard(sessionId, cardSlotKey, candidateIndex, hold);
-  } catch (e) {
-    backWithError(e);
-  }
-
-  revalidatePath(PAGE);
-  redirect(PAGE);
-}
-
-/** その枠の残り候補を開示する（D170）。新しい候補は増えない */
-export async function revealSlotPoolAction(form: FormData): Promise<void> {
-  const sessionId = str(form, "sessionId");
-  const cardSlotKey = str(form, "cardSlotKey");
-
-  try {
-    await callRevealSlotPool(sessionId, cardSlotKey);
-  } catch (e) {
-    backWithError(e);
-  }
-
-  revalidatePath(PAGE);
-  redirect(PAGE);
+  redirect(`${PAGE}?discarded=${encodeURIComponent(cardSlotKey)}`);
 }
 
 export async function rerollDraftAction(form: FormData): Promise<void> {

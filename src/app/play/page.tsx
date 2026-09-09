@@ -4,7 +4,7 @@ import { fetchCurrentDraft, fetchDraftModes } from "@/features/draft/rpc";
 import { fetchSavedElements } from "@/features/carry/rpc";
 import { EMPTY_SAVED, type SavedElements } from "@/features/carry/types";
 import type { DraftState } from "@/features/draft/types";
-import { DraftBoard, ErrorBox, StartForm } from "./_components";
+import { DraftBoard, ErrorBox, RedoConfirm, StartForm } from "./_components";
 import { surface } from "@/app/_surface";
 
 /**
@@ -30,7 +30,7 @@ export const metadata = {
 export default async function PlayPage({
   searchParams,
 }: {
-  searchParams: Promise<{ error?: string }>;
+  searchParams: Promise<{ error?: string; redo?: string; discarded?: string }>;
 }) {
   const { error } = await searchParams;
 
@@ -76,8 +76,14 @@ export default async function PlayPage({
       {error ? <ErrorBox message={error} /> : null}
       {loadError ? <ErrorBox message={loadError} /> : null}
 
-      {draft ? (
-        <DraftBoard state={draft} />
+      {/* 引き直しの確認は、盤面の上に重ねずに画面を1枚使う（2026-09-08）。
+          取り消せない操作なので、押し間違いでは辿り着けない場所に置く。
+          URL に印があるだけなので、戻るボタンでもここへ戻るだけで、
+          戻った先で送り直しても DB が2枚目を捨てない。 */}
+      {draft && redo ? (
+        <RedoConfirm state={draft} cardSlotKey={redo} />
+      ) : draft ? (
+        <DraftBoard state={draft} discardedKey={discarded ?? null} />
       ) : (
         <StartForm modes={modes} saved={savedElements} signedIn={user !== null} />
       )}

@@ -1,3 +1,4 @@
+import Link from "next/link";
 import {
   TIME_LIMIT_CHOICES,
   formatDuration,
@@ -21,17 +22,16 @@ import {
 import { SubmitButton } from "@/app/_pending";
 import {
   abandonDraftAction,
-  chooseCardAction,
-  holdCardAction,
-  revealSlotPoolAction,
   completeDraftAction,
   deleteSavedCarrySlotAction,
+  pickCardAction,
   promoteSessionCarryAction,
+  redoSlotAction,
   rerollDraftAction,
-  revealCardAction,
   startDraftAction,
 } from "./actions";
 import {
+  btnDanger,
   btnPrimary,
   btnQuiet,
   btnSecondary,
@@ -353,106 +353,45 @@ function SavedElementsManager({ saved }: { saved: SavedElements }) {
   );
 }
 
-/** 伏せカード1枚。めくる前は中身を持っていない */
-function CandidateButton({
+
+/* ===========================================================================
+ * カード1枚
+ * ===========================================================================
+ *
+ * カードの状態は4つ。**画面はこの4つしか知らない。**
+ *
+ *   hidden     まだ引いていない。中身を持っていない（サーバーが返さない）
+ *   picked     仮に採用したカード。一巡目に引いたもの
+ *   discarded  引き直しで捨てたカード。灰色になり × が付く。もう選べない
+ *   open       引き直しのあとに開いた、選べる残りのカード
+ *
+ * 以前あった「めくったが決めていない」状態は無くなった（2026-09-08）。
+ * 引いた瞬間に仮採用になるので、確認を待つ段が存在しない。
+ */
+
+const cardBase =
+  "flex min-h-24 items-center justify-center rounded-2xl border px-3 py-4 text-center text-sm font-bold transition";
+
+function HiddenCard({
   sessionId,
-  slot,
+  cardSlotKey,
   candidateIndex,
-  revealed,
-  isChosen,
-  isHeld,
-  label,
-  selectable,
-  canHold,
 }: {
   sessionId: string;
-  slot: DraftSlot;
+  cardSlotKey: string;
   candidateIndex: number;
-  revealed: boolean;
-  isChosen: boolean;
-  isHeld: boolean;
-  label: string | null;
-  selectable: boolean;
-  canHold: boolean;
 }) {
-  const base =
-    "flex h-24 w-full items-center justify-center rounded-xl border text-center text-sm font-bold transition";
-
-  if (isChosen) {
-    return (
-      <div
-        className={`${base} border-success-tint/50 bg-success-tint/10 text-success`}
-      >
-        {label}
-      </div>
-    );
-  }
-
-  // めくってあるが、まだ決めていない（D170）。
-  // **ここで確定しない。**決めるのは下のボタンを押したときだけ。
-  if (revealed && selectable) {
-    return (
-      <div className="space-y-2">
-        <div className={`${base} border-line-firm bg-surface`} data-card="revealed">
-          {label}
-        </div>
-        <form action={chooseCardAction}>
-          <input type="hidden" name="sessionId" value={sessionId} />
-          <input type="hidden" name="cardSlotKey" value={slot.card_slot_key} />
-          <input type="hidden" name="candidateIndex" value={candidateIndex} />
-          <SubmitButton
-            pendingLabel="決めています…"
-            className={`${btnPrimary} w-full`}
-          >
-            これに決める
-          </SubmitButton>
-        </form>
-        {canHold || isHeld ? (
-          <form action={holdCardAction}>
-            <input type="hidden" name="sessionId" value={sessionId} />
-            <input type="hidden" name="cardSlotKey" value={slot.card_slot_key} />
-            <input type="hidden" name="candidateIndex" value={candidateIndex} />
-            <input type="hidden" name="hold" value={isHeld ? "off" : "on"} />
-            <SubmitButton
-              pendingLabel="…"
-              className={`${btnSecondary} w-full`}
-            >
-              {isHeld ? "残すのをやめる" : "残しておく"}
-            </SubmitButton>
-          </form>
-        ) : null}
-      </div>
-    );
-  }
-
-  if (revealed) {
-    return (
-      <div className={`${base} border-ink/10 bg-sunken text-faint`}>
-        {label}
-      </div>
-    );
-  }
-
-  if (!selectable) {
-    return (
-      <div className={`${base} border-dashed border-ink/15 text-decor`}>
-        ?
-      </div>
-    );
-  }
-
   return (
-    <form action={revealCardAction}>
+    <form action={pickCardAction}>
       <input type="hidden" name="sessionId" value={sessionId} />
-      <input type="hidden" name="cardSlotKey" value={slot.card_slot_key} />
+      <input type="hidden" name="cardSlotKey" value={cardSlotKey} />
       <input type="hidden" name="candidateIndex" value={candidateIndex} />
-      {/* data-card が検査の手がかり。「?」という**文字**を数えさせない。
-          めくる前のカードをどんな見た目にしても、枚数の検査は通る。 */}
+      {/* data-card が検査の手がかり。見た目を変えても枚数の検査は通る */}
       <SubmitButton
         pendingLabel="…"
-        title="このカードをめくる"
+        title="このカードを引く"
         data={{ "data-card": "hidden" }}
-        className={`${base} cursor-pointer border-line-firm hover:border-ink/60 hover:bg-hover`}
+        className={`${cardBase} w-full cursor-pointer border-line-firm hover:border-ink/60 hover:bg-hover`}
       >
         ?
       </SubmitButton>
@@ -460,27 +399,121 @@ function CandidateButton({
   );
 }
 
-/** 1つの枠と、その伏せカード一式 */
-function SlotRow({ state, slot }: { state: DraftState; slot: DraftSlot }) {
+/** 引き直しのあとに開いた、選べる残りのカード */
+function OpenCard({
+  sessionId,
+  cardSlotKey,
+  candidateIndex,
+  label,
+}: {
+  sessionId: string;
+  cardSlotKey: string;
+  candidateIndex: number;
+  label: string | null;
+}) {
+  return (
+    <form action={pickCardAction}>
+      <input type="hidden" name="sessionId" value={sessionId} />
+      <input type="hidden" name="cardSlotKey" value={cardSlotKey} />
+      <input type="hidden" name="candidateIndex" value={candidateIndex} />
+      <SubmitButton
+        pendingLabel="…"
+        data={{ "data-card": "open" }}
+        className={`${cardBase} w-full cursor-pointer border-line-firm bg-surface hover:border-ink/60 hover:bg-hover`}
+      >
+        {label}
+      </SubmitButton>
+    </form>
+  );
+}
+
+/** 仮に採用したカード */
+function PickedCard({ label }: { label: string | null }) {
+  return (
+    <div
+      data-card="picked"
+      className={`${cardBase} border-line-active bg-hover`}
+    >
+      {label}
+    </div>
+  );
+}
+
+/**
+ * 捨てたカード。
+ *
+ * **消さない。**何を捨てたかが見えていないと、引き直した意味が分からない。
+ * 灰色にして大きな × を重ね、押せなくする。
+ * `justDiscarded` が真のときだけ、短い退場の動きが1回出る。
+ */
+function DiscardedCard({
+  label,
+  justDiscarded,
+}: {
+  label: string | null;
+  justDiscarded: boolean;
+}) {
+  return (
+    <div
+      data-card="discarded"
+      aria-label={`捨てたカード ${label ?? ""}`}
+      className={[
+        cardBase,
+        "relative select-none border-dashed border-ink/20 bg-sunken text-faint line-through",
+        justDiscarded ? "dpq-discarded" : "grayscale opacity-60",
+      ].join(" ")}
+    >
+      {label}
+      <span
+        aria-hidden
+        className="pointer-events-none absolute inset-0 flex items-center justify-center text-4xl font-bold text-danger/70"
+      >
+        ×
+      </span>
+    </div>
+  );
+}
+
+/* ===========================================================================
+ * カテゴリ1つぶん
+ * =========================================================================== */
+
+function SlotRow({
+  state,
+  slot,
+  discardedKey,
+}: {
+  state: DraftState;
+  slot: DraftSlot;
+  /** 直前に引き直したカテゴリ。ここだけ退場の動きを出す */
+  discardedKey: string | null;
+}) {
   const decided = slot.candidates.some((c) => c.is_chosen);
-  const heldCount = slot.candidates.filter((c) => c.is_held).length;
+  const justDiscarded = discardedKey === slot.card_slot_key;
+
+  // 一巡目に「いま引く」カテゴリか
+  const pickingNow = slot.is_current && !decided && !slot.redo_used;
 
   return (
-    <section className="space-y-3">
-      <div className="flex items-center gap-3">
+    <section className="space-y-3" data-slot-row={slot.card_slot_key}>
+      <div className="flex flex-wrap items-center gap-3">
         <h3 className="text-sm font-bold">
           {slot.slot_order}. {slot.card_slot_label}
         </h3>
-        {/* 持ち出した枠は、めくる前から中身が決まっている（D161）。
-            「決定」とだけ書くと、自分が引いたものと見分けが付かない */}
         {slot.is_carried ? (
           <span className="text-xs text-success">持ち出し</span>
-        ) : decided ? (
-          <span className="text-xs text-success">決定</span>
-        ) : slot.is_current ? (
-          <span className="text-xs font-bold">
-            ← いまここ。めくって中身を見てから決めます
+        ) : slot.needs_pick ? (
+          <span className="text-xs font-bold text-danger">
+            ← 引き直しました。残りから1枚選んでください
           </span>
+        ) : decided && slot.redo_used ? (
+          <span className="text-xs text-success">引き直して確定</span>
+        ) : decided ? (
+          <span className="text-xs text-success">
+            {state.initial_pass_done ? "仮に採用" : "決定"}
+          </span>
+        ) : pickingNow ? (
+          <span className="text-xs font-bold">← いまここ。1枚引きます</span>
         ) : (
           <span className="text-xs text-faint">順番待ち</span>
         )}
@@ -501,74 +534,191 @@ function SlotRow({ state, slot }: { state: DraftState; slot: DraftSlot }) {
 
       <div
         className="grid gap-3"
-        style={{ gridTemplateColumns: `repeat(${slot.candidates.length}, minmax(0, 1fr))` }}
+        style={{
+          gridTemplateColumns: `repeat(${slot.candidates.length}, minmax(0, 1fr))`,
+        }}
       >
-        {slot.candidates.map((c) => (
-          <CandidateButton
-            key={c.candidate_index}
-            sessionId={state.session_id}
-            slot={slot}
-            candidateIndex={c.candidate_index}
-            revealed={c.revealed}
-            isChosen={c.is_chosen}
-            isHeld={c.is_held}
-            label={c.label}
-            selectable={slot.is_current && !decided}
-            canHold={heldCount < slot.held_limit && !slot.pool_revealed}
-          />
-        ))}
+        {slot.candidates.map((c) => {
+          if (c.is_discarded) {
+            return (
+              <DiscardedCard
+                key={c.candidate_index}
+                label={c.label}
+                justDiscarded={justDiscarded}
+              />
+            );
+          }
+          if (c.is_chosen) {
+            return <PickedCard key={c.candidate_index} label={c.label} />;
+          }
+          if (slot.needs_pick) {
+            return (
+              <OpenCard
+                key={c.candidate_index}
+                sessionId={state.session_id}
+                cardSlotKey={slot.card_slot_key}
+                candidateIndex={c.candidate_index}
+                label={c.label}
+              />
+            );
+          }
+          if (pickingNow) {
+            return (
+              <HiddenCard
+                key={c.candidate_index}
+                sessionId={state.session_id}
+                cardSlotKey={slot.card_slot_key}
+                candidateIndex={c.candidate_index}
+              />
+            );
+          }
+          // 順番待ち、または決まったあとの残り。押せない伏せカード
+          return (
+            <div
+              key={c.candidate_index}
+              className={`${cardBase} border-dashed border-ink/15 text-decor`}
+            >
+              ?
+            </div>
+          );
+        })}
       </div>
 
-      {/*
-        残した候補があるときだけ、その枠の残りを開ける（D170）。
-        **開いても候補は増えない。**総ドラフト基数は動かない。
-        開いた枠は、そこで抽選が終わる。
-      */}
-      {slot.is_current && !decided && heldCount > 0 && !slot.pool_revealed ? (
-        <form action={revealSlotPoolAction}>
-          <input type="hidden" name="sessionId" value={state.session_id} />
-          <input type="hidden" name="cardSlotKey" value={slot.card_slot_key} />
-          <SubmitButton pendingLabel="開いています…" className={btnSecondary}>
-            残した{heldCount}枚はそのままに、この枠の残りを見る
-          </SubmitButton>
-        </form>
-      ) : null}
-
-      {slot.is_current && !decided && !slot.pool_revealed ? (
+      {slot.needs_pick ? (
         <p className="text-xs text-faint">
-          この枠の候補は {slot.candidate_count} 枚。残しておけるのは {slot.held_limit} 枚までです
-          （全部は残せません）。
+          捨てたカードは戻りません。残りから1枚選ぶと、このカテゴリは確定します。
         </p>
       ) : null}
 
-      {slot.pool_revealed ? (
+      {/* 引き直しの入口。**押してもここでは捨てない。**確認の画面へ移る。
+          出すかどうかは DB が返す can_redo だけで決める（条件を組み立て直さない）。 */}
+      {slot.can_redo ? (
+        <Link
+          href={`/play?redo=${encodeURIComponent(slot.card_slot_key)}`}
+          data-redo-link={slot.card_slot_key}
+          className={`${btnQuiet} inline-block`}
+        >
+          このカテゴリを引き直す（1回だけ）
+        </Link>
+      ) : null}
+
+      {state.initial_pass_done && slot.redo_used && decided ? (
         <p className="text-xs text-faint">
-          この枠は残りを開きました。ここから1枚選んでください。新しい候補は増えません。
+          このカテゴリは引き直しを使いました。もう引き直せません。
         </p>
       ) : null}
     </section>
   );
 }
 
-/** 進行中のドラフト盤面 */
-export function DraftBoard({ state }: { state: DraftState }) {
-  // 【残りを開いた枠が1つでもあると、もう引き直せない（D171）】
-  //   引き直しはドラフト全体を作り直すので、開いた枠があると
-  //   総ドラフト基数を超えて候補を見られてしまう。DB 側が
-  //   POOL_ALREADY_REVEALED で断る。
-  //
-  //   **断られるボタンを置いたままにしない。**押してから断られるのは、
-  //   押す前に分かることを隠しているのと同じ。理由をその場に書いて消す。
-  const poolRevealed = state.slots.some((s) => s.pool_revealed);
+/* ===========================================================================
+ * 引き直しの確認
+ * ===========================================================================
+ *
+ * **弱い確認にしない。**取り消せない操作なので、盤面の上に小さく出す形では
+ * なく、画面を1枚使って何が起きるかを書く。押し間違いでは辿り着けない。
+ *
+ * JavaScript の confirm() を使わないのは、
+ *   ・切っている人には出ない
+ *   ・戻るボタンで押し直せてしまう
+ *   ・文面を組み立てられない
+ * の3つ。ここはサーバーが描く普通の画面で、戻ってもう一度送っても
+ * DB が2枚目を捨てないことは別に保証してある。
+ */
+export function RedoConfirm({
+  state,
+  cardSlotKey,
+}: {
+  state: DraftState;
+  cardSlotKey: string;
+}) {
+  const slot = state.slots.find((s) => s.card_slot_key === cardSlotKey);
+  const picked = slot?.candidates.find((c) => c.is_chosen);
+
+  if (!slot || !picked || !slot.can_redo) {
+    return (
+      <div className={`${surface} space-y-3`}>
+        <h2 className="text-sm font-bold">このカテゴリは引き直せません</h2>
+        <p className="text-sm text-muted">
+          すでに引き直したか、ほかに候補が残っていません。引き直せるのは
+          1つのカテゴリにつき1回だけです。
+        </p>
+        <Link href="/play" className={`${btnSecondary} inline-block`}>
+          盤面へ戻る
+        </Link>
+      </div>
+    );
+  }
+
+  return (
+    <div
+      data-redo-confirm={cardSlotKey}
+      className="space-y-6 rounded-2xl border-2 border-danger-solid bg-danger-tint/10 p-6 sm:p-8"
+    >
+      <div className="space-y-2">
+        <p className="text-xs font-bold tracking-wider text-danger">
+          取り消せません
+        </p>
+        <h2 className="text-xl font-bold">
+          「{picked.label}」を捨てて、{slot.card_slot_label}を引き直します
+        </h2>
+      </div>
+
+      <div className="space-y-3 text-sm">
+        <p className="font-bold">このカードは捨てられます。元には戻せません。</p>
+        <ul className="space-y-1 text-muted">
+          <li>- 捨てたカードは、このあとの選択肢に出てきません</li>
+          <li>- 引き直せるのは、このカテゴリにつき1回だけです</li>
+          <li>- 引き直すと、このカテゴリの残りの候補がすべて開きます</li>
+          <li>- 開いた中から1枚選ぶと、そこで確定します</li>
+          <li>- ドラフト全体の引き直しも、以降はできなくなります</li>
+        </ul>
+        <p className="font-bold">後悔しませんね？</p>
+      </div>
+
+      <div className="flex flex-wrap gap-3">
+        <form action={redoSlotAction}>
+          <input type="hidden" name="sessionId" value={state.session_id} />
+          <input type="hidden" name="cardSlotKey" value={cardSlotKey} />
+          <SubmitButton
+            pendingLabel="捨てています…"
+            className={btnDanger}
+            data={{ "data-redo-confirm-submit": cardSlotKey }}
+          >
+            「{picked.label}」を捨てて引き直す
+          </SubmitButton>
+        </form>
+        <Link href="/play" className={`${btnSecondary} inline-block`}>
+          やめる（このまま残す）
+        </Link>
+      </div>
+    </div>
+  );
+}
+
+/* ===========================================================================
+ * 盤面
+ * =========================================================================== */
+
+export function DraftBoard({
+  state,
+  discardedKey = null,
+}: {
+  state: DraftState;
+  discardedKey?: string | null;
+}) {
+  // 引き直したカテゴリが1つでもあると、全体の引き直しはできない。
+  // **断られるボタンを置いたままにしない。**
+  const locked = state.slots.some((s) => s.redo_used || s.pool_revealed);
+  const waiting = state.slots.find((s) => s.needs_pick) ?? null;
 
   return (
     <div className="space-y-8">
-      {/* 進み具合は data-* にも出す。以前の検査は「0 / 5 枠 決定」という
-          **文言**で盤面が出たことを確かめていたので、言い回しを変えると落ちた。 */}
       <div
         data-board=""
         data-chosen={state.chosen_count}
         data-slots={state.slot_count}
+        data-pass-done={state.initial_pass_done ? "1" : "0"}
         className={`${surface} space-y-2`}
       >
         <div className="flex flex-wrap items-baseline gap-x-4 gap-y-1">
@@ -579,12 +729,9 @@ export function DraftBoard({ state }: { state: DraftState }) {
           <span className="text-xs text-faint">
             {state.chosen_count} / {state.slot_count} 枠 決定
           </span>
-          <span className="text-xs text-faint">
-            引き直し 残り {state.rerolls_left} 回
-          </span>
-          {state.carried_count > 0 ? (
-            <span className="text-xs text-success">
-              持ち出し {state.carried_count} 個
+          {state.rerolls_left > 0 && !locked ? (
+            <span className="text-xs text-faint">
+              引き直し 残り {state.rerolls_left} 回
             </span>
           ) : null}
           {/* 形状アシスト（D191）。**お題ではない**ので、枠と同じ大きさで出さない。
@@ -595,17 +742,36 @@ export function DraftBoard({ state }: { state: DraftState }) {
             </span>
           ) : null}
         </div>
-        <p className="text-xs text-faint">
-          カードをめくっても、まだ決まりません。中身を見てから「これに決める」を押すと確定します。気に入ったものを残したまま、その枠の残りを開くこともできます。
-          {state.carried_count > 0
-            ? "持ち出した枠は最初から決まっているので、その次から始まります。"
-            : ""}
-        </p>
+
+        {/* いまの段階で、利用者が次にすることを1行で書く */}
+        {waiting ? (
+          <p className="text-xs text-faint">
+            {waiting.card_slot_label}の残りが開いています。1枚選ぶと確定します。
+          </p>
+        ) : state.initial_pass_done ? (
+          <p className="text-xs text-faint">
+            仮のお題がそろいました。気に入らないカテゴリは1回だけ引き直せます。
+            引き直すと、いまのカードは捨てられて戻りません。
+          </p>
+        ) : (
+          <p className="text-xs text-faint">
+            カテゴリごとに1枚引きます。引いた時点で仮に採用され、次のカテゴリへ進みます。
+            全部引き終わってから、気に入らないカテゴリだけ引き直せます。
+            {state.carried_count > 0
+              ? "持ち出した枠は最初から決まっているので、その次から始まります。"
+              : ""}
+          </p>
+        )}
       </div>
 
       <div className="space-y-8">
         {state.slots.map((slot) => (
-          <SlotRow key={slot.card_slot_key} state={state} slot={slot} />
+          <SlotRow
+            key={slot.card_slot_key}
+            state={state}
+            slot={slot}
+            discardedKey={discardedKey}
+          />
         ))}
       </div>
 
@@ -613,22 +779,16 @@ export function DraftBoard({ state }: { state: DraftState }) {
         {state.is_ready_to_complete ? (
           <form action={completeDraftAction}>
             <input type="hidden" name="sessionId" value={state.session_id} />
-            <SubmitButton
-              pendingLabel="確定しています…"
-              className={btnPrimary}
-            >
+            <SubmitButton pendingLabel="確定しています…" className={btnPrimary}>
               このお題で確定する
             </SubmitButton>
           </form>
         ) : null}
 
-        {state.rerolls_left > 0 && !poolRevealed ? (
+        {state.rerolls_left > 0 && !locked ? (
           <form action={rerollDraftAction}>
             <input type="hidden" name="sessionId" value={state.session_id} />
-            <SubmitButton
-              pendingLabel="引き直しています…"
-              className={btnSecondary}
-            >
+            <SubmitButton pendingLabel="引き直しています…" className={btnSecondary}>
               全部引き直す（残り {state.rerolls_left} 回）
             </SubmitButton>
           </form>
@@ -636,26 +796,21 @@ export function DraftBoard({ state }: { state: DraftState }) {
 
         <form action={abandonDraftAction}>
           <input type="hidden" name="sessionId" value={state.session_id} />
-          <SubmitButton
-            pendingLabel="捨てています…"
-            className={btnQuiet}
-          >
+          <SubmitButton pendingLabel="捨てています…" className={btnQuiet}>
             このドラフトを捨てる
           </SubmitButton>
         </form>
       </div>
 
-      {poolRevealed && state.rerolls_left > 0 ? (
+      {locked && state.rerolls_left > 0 ? (
         <p className="text-xs text-faint">
-          候補の残りを開いた枠があるので、このドラフトはもう引き直せません。
-          開いた候補の中から選んでください。
+          引き直したカテゴリがあるので、全部の引き直しはもうできません。
         </p>
       ) : (
         <p className="text-xs text-faint">
-          引き直すと選んだカードは白紙に戻り、カテゴリの組み合わせから引き直しになります。
-          {state.carried_count > 0
-            ? "持ち出した要素は引き直しても残ります。"
-            : ""}
+          全部引き直すと、引いたカードは白紙に戻り、カテゴリの組み合わせから
+          抽選し直しになります。
+          {state.carried_count > 0 ? "持ち出した要素は引き直しても残ります。" : ""}
         </p>
       )}
     </div>
