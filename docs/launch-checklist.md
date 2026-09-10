@@ -551,6 +551,7 @@ curl -o /dev/null -w "%{http_code}\n" https://<本番>/api/cron/cleanup
 **Vercel** → Settings → Cron Jobs
 
 - [ ] `/api/cron/cleanup` が毎日 `17 3 * * *`（UTC）で登録されている
+      （毎時にはできない。無料プランは1日1回まで。詳しくは D184 の「掃除の頻度」）
 - [ ] 手動実行（Run）を1回押し、成功が記録される
 - [ ] **翌日、押さずに動いたことを確かめる**（下記）
 

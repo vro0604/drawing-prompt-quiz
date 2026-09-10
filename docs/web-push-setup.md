@@ -33,6 +33,12 @@ Vercel のプロジェクト → Settings → Environment Variables に4つ入�
 | `VAPID_PRIVATE_KEY` | 秘密鍵 | サーバーだけ |
 | `VAPID_SUBJECT` | `mailto:` ＋ 自分のアドレス | サーバーだけ |
 
+`VAPID_SUBJECT` は「この通知は誰が出しているか」の連絡先です。ブラウザの
+製造元（Google / Apple / Mozilla）のサーバーが、配れない宛先が続いたときに
+連絡する先として使います。**利用者には見えません。**
+`mailto:` で始める形を推しますが、`https://` で始まる連絡先ページでも構いません
+（`npm run check:env` はどちらも通します）。
+
 `VAPID_PRIVATE_KEY` に `NEXT_PUBLIC_` を付けないでください。付けると
 ブラウザに埋め込まれ、誰でも読めます（`npm run check:env` がこれを見張っています）。
 
