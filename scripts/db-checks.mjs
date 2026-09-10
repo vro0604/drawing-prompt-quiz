@@ -2986,6 +2986,67 @@ export const diagnostics = [
            where n.nspname = 'public' and p.proname = 'choose_card'
              and (p.pronargs <> 3 or pg_get_functiondef(p.oid) like '%sub_directive%')`,
   },
+  {
+    // 回答の出所（D194）。**空の出所を作らない。**
+    // 「人が答えたのか仕組みが答えたのか分からない回答」を残さない。
+    id: "A50",
+    label: "出所が空の回答",
+    sql: `select a.id::text from public.answers a where a.answer_source is null`,
+  },
+  {
+    // 決めた2種類以外が入っていないこと（D194）。
+    // 制約があるので入らないはずだが、制約が外れたときに気づけるようにする。
+    id: "A51",
+    label: "決めた種類以外の出所を持つ回答",
+    sql: `select a.id::text from public.answers a
+           where a.answer_source not in ('human', 'system')`,
+  },
+  {
+    // 1作品につきシステム回答は1つまで（D194）。
+    // 人間の側の UNIQUE(work_id, user_id) は user_id が null だと効かないので、
+    // 種別で絞った索引を別に置いてある。それが効いていることを数える。
+    id: "A52",
+    label: "システム回答が2件以上ある作品",
+    sql: `select w.work_id::text as id
+            from (select a.work_id, count(*) n from public.answers a
+                   where a.answer_source = 'system' group by a.work_id) w
+           where w.n > 1`,
+  },
+  {
+    // 統計を数える引き金が、すべて出所を見ていること（D194）。
+    // 1本でも見落とすと、システム回答が人間の数字を動かす。
+    id: "A53",
+    label: "出所を見ていない集計の引き金",
+    sql: `select p.proname
+            from pg_proc p join pg_namespace n on n.oid = p.pronamespace
+           where n.nspname = 'public'
+             and p.proname in ('answers_after_insert_stats',
+                               'answers_after_insert_hint_stats',
+                               'answer_items_after_insert_stats',
+                               'answer_items_after_insert_hint_stats')
+             and pg_get_functiondef(p.oid) not like '%answer_source%'`,
+  },
+  {
+    // 配給と作者向け集計と回答履歴も同じ（D194）。
+    id: "A54",
+    label: "出所を見ていない配給・集計・履歴",
+    sql: `select p.proname
+            from pg_proc p join pg_namespace n on n.oid = p.pronamespace
+           where n.nspname = 'public'
+             and p.proname in ('next_work_candidates', 'get_my_work_result',
+                               'get_public_answers', 'get_my_answers', 'get_my_answer')
+             and pg_get_functiondef(p.oid) not like '%answer_source%'`,
+  },
+  {
+    // 回答を出す窓口は、出所を引数に取らない（D194）。
+    // 取ると、そこが「システムを名乗る口」になる。
+    id: "A55",
+    label: "回答を出す窓口が出所を扱っている",
+    sql: `select p.proname
+            from pg_proc p join pg_namespace n on n.oid = p.pronamespace
+           where n.nspname = 'public' and p.proname = 'submit_answer'
+             and pg_get_functiondef(p.oid) like '%answer_source%'`,
+  },
 ];
 
 /**
