@@ -151,9 +151,10 @@
 src/app/          画面（Server Components が既定）
 src/features/     機能ごとの RPC 呼び出しと型
 src/lib/supabase/ クライアント4種（ブラウザ／サーバー／ルート／管理）
-supabase/migrations/  52本<!--count:migration-->。スキーマと関数の全部
-                      （本番へ未適用は6本。**この作業木は P0〜P5 だけを持つので、課金 v0 と
-                      管理 v0 の3本は入っていない。**本流は55本）
+supabase/migrations/  53本<!--count:migration-->。スキーマと関数の全部
+                      （本番へ未適用は7本。**この作業木は P0〜P5 と、その読み出し口を
+                      本番の先行分と合流させる1本だけを持つ。**課金 v0 と管理 v0 は
+                      入っていない。2026-09-10 の実測で、本番の履歴は51本）
 test/db/             本番に触れずに DB を丸ごと動かす縦断試験
 ```
 
