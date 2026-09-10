@@ -53,7 +53,8 @@
     "test:guard": "node test/guard/selftest.mjs",
     "test:all": "node scripts/run-all-checks.mjs",
     "smoke:shape-assist": "node scripts/smoke-shape-assist.mjs",
-    "smoke:notice": "node scripts/smoke-notice.mjs"
+    "smoke:notice": "node scripts/smoke-notice.mjs",
+    "smoke:sub-directive": "node scripts/smoke-sub-directive.mjs"
   },
   "dependencies": {
     "@supabase/ssr": "^0.12.4",
