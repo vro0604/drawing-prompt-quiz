@@ -5072,11 +5072,57 @@ async function main() {
       }
       await drawAllSlots(page);
 
+      // **決め残しがあるまま先へ進まない。**
+      // 負荷が高いと押した結果の描画が追いつかず、盤面が途中のまま
+      // 次の操作へ進んでしまう（実測 2026-09-10。押したはずの
+      // 「引き直す」で revealCardAction が走っていた）。
+      // 決まった枠の数が、この人のいまの世代の枠数と一致するまで待つ。
+      const decided = await waitForAllSlotsDecided(page);
+      if (!decided) continue;
+
       if ((await page.locator('[data-testid="board-sub-directive"]').count()) > 0) {
         return true;
       }
     }
     return false;
+  }
+
+  /** いまの世代の枠が全部決まるまで待つ。決まったら true */
+  async function waitForAllSlotsDecided(page, timeoutMs = 20000) {
+    const until = Date.now() + timeoutMs;
+    while (Date.now() < until) {
+      const r = await db.query(
+        `select count(*)::int total,
+                count(*) filter (where exists (
+                  select 1 from public.draft_candidates dc
+                   where dc.session_id = s.session_id
+                     and dc.generation = s.generation
+                     and dc.card_slot_key = s.card_slot_key
+                     and dc.is_chosen))::int done
+           from public.draft_session_slots s
+           join public.draft_sessions ds on ds.id = s.session_id
+          where ds.user_id = $1 and ds.status = 'in_progress'
+            and s.generation = ds.current_generation`,
+        [seeded.viewer],
+      );
+      const { total, done } = r.rows[0];
+      if (total > 0 && total === done) {
+        await settledBody(page);
+        return true;
+      }
+      await new Promise((ok) => setTimeout(ok, 250));
+    }
+    return false;
+  }
+
+  /** いまのドラフトの世代を読む */
+  async function currentGeneration() {
+    const r = await db.query(
+      `select current_generation from public.draft_sessions
+        where user_id = $1 and status = 'in_progress' limit 1`,
+      [seeded.viewer],
+    );
+    return r.rows[0]?.current_generation ?? null;
   }
 
   await test("S2", "対応表にある語を引くと、盤面にサブ指令が出る", async (t) => {
@@ -5186,7 +5232,21 @@ async function main() {
       assert(before >= 1, "準備で出ていない");
 
       t.stage("引き直す");
+      const gen = await currentGeneration();
       await clickSafely(m.getByRole("button", { name: "引き直す" }));
+
+      // **画面の数を数える前に、引き直しが本当に済んだことを確かめる。**
+      // 押した直後に数えると、まだ古い盤面を見ていることがある。
+      // 世代が進んだかどうかは DB が持っているので、そちらで待つ。
+      const until = Date.now() + 20000;
+      let now = gen;
+      while (Date.now() < until && now === gen) {
+        await new Promise((ok) => setTimeout(ok, 250));
+        now = await currentGeneration();
+      }
+      assert(now !== null && now > gen, `世代が進まなかった（${gen} → ${now}）`);
+
+      await m.goto(`${base}/play`);
       await settledBody(m);
 
       // 引き直すと世代が変わり、枠ごと作り直される。
