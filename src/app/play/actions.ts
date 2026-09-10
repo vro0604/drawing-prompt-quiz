@@ -197,7 +197,44 @@ export async function pickCardAction(form: FormData): Promise<void> {
     if (!Number.isFinite(candidateIndex)) {
       throw new Error("カードの番号が読み取れませんでした。");
     }
-    await callPickCard(sessionId, cardSlotKey, candidateIndex);
+
+    const state = await callPickCard(sessionId, cardSlotKey, candidateIndex);
+
+    // --- サブ指令（D193） ------------------------------------------------
+    //
+    // 【なぜここで決めるか】
+    //   決められるのは、その枠にどの語が入るか分かってからである。
+    //   「恐怖」に付く手がかりは「恐怖」を見ないと選べない。
+    //   1回で引いて決める作り（P0）では、決まった直後に盤面が返ってくる。
+    //   その盤面から語を読んで決める。
+    //
+    // 【画面から鍵を受け取らない】
+    //   フォームで受け取ると、送る側が好きな値を書ける。
+    //   ここでは**決まった盤面をサーバー側で読み直して**決める。
+    //   出所: ユーザー指示（2026-09-10）「ブラウザclient bundleへ
+    //   『選ばれたkeyを任意送信するための入口』を作らない。」
+    //
+    // 【DB へ渡す経路も分けてある】
+    //   カードを決める窓口（pick_card）はサブ指令を知らない。
+    //   鍵はサーバーだけが持つ秘密の鍵から、別の窓口で書く。
+    //   利用者の証明書ではその窓口を呼べない。
+    const slot = state.slots.find((s) => s.card_slot_key === cardSlotKey);
+    const picked = slot?.candidates.find((c) => c.is_chosen);
+    const subDirectiveKey = pickSubDirective(picked?.label ?? null);
+
+    // 書く側は「決めたときと同じ世代・同じ語か」を見るので、
+    // この間に引き直しが割り込んでいたら1行も書かれない。
+    // 書けなくてもお題は成立している（サブ指令が付かないだけ）。
+    if (subDirectiveKey !== null && picked?.tag_id != null) {
+      await writeSubDirective({
+        userId: await ensureUserId(),
+        sessionId,
+        generation: state.generation,
+        cardSlotKey,
+        tagId: picked.tag_id,
+        key: subDirectiveKey,
+      });
+    }
   } catch (e) {
     backWithError(e);
   }

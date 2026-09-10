@@ -412,6 +412,18 @@ async function assertBody(page, pattern, message, { timeout = 10000 } = {}) {
   }
 }
 
+/**
+ * 本文に出ていないことを確かめる。
+ *
+ * **待たない。**「出ていない」は待っても変わらないうえ、
+ * 待つと「まだ描かれていないだけ」を「出ていない」と読んでしまう。
+ * 呼ぶ前に settledBody で本文が届いていることを確かめておくこと。
+ */
+async function assertBodyNot(page, pattern, message) {
+  const seen = (await page.innerText("body")).replace(/\s+/g, " ");
+  if (pattern.test(seen)) throw new Error(`${message}: ${seen.slice(0, 400)}`);
+}
+
 /** 帯の中身を読む */
 async function readBar(page) {
   const bar = page.locator("[data-challenge-bar]");
@@ -420,7 +432,9 @@ async function readBar(page) {
     text: (await bar.innerText()).replace(/\s+/g, " "),
     elapsed: Number(await bar.getAttribute("data-elapsed")),
     kind: await bar.getAttribute("data-kind"),
-    expired: (await bar.getAttribute("data-expired")) === "1",
+    phase: await bar.getAttribute("data-phase"),
+    overrun: (await bar.getAttribute("data-overrun")) === "1",
+    overrunSeconds: Number(await bar.getAttribute("data-overrun-seconds")),
     finished: (await bar.getAttribute("data-finished")) === "1",
     stale: (await bar.getAttribute("data-stale")) === "1",
   };
@@ -628,6 +642,12 @@ async function main() {
     `/u/${"e2e-author"}`,
     "/terms",
     "/privacy",
+    // **画面だけでは足りない。**帯と知らせは、どの画面でもブラウザ側から
+    //   この2本を呼ぶ。ここで先に組み立てておかないと、画面の組み立てと
+    //   同時に走って、どちらも十数秒かかる（2026-09-09 の実測。
+    //   運営の画面の組み立て中に /api/notifications が 12.9秒）
+    "/api/challenge",
+    "/api/notifications",
   ]);
   const warmBad = warm.filter((w) => w.error || (w.status ?? 500) >= 500);
   console.log(
@@ -814,64 +834,125 @@ async function main() {
   });
 
   /* =====================================================================
-   * C. 時間の規則（更新・超過・猶予・無制限）
+   * C. 時間の規則（延長・超過・放置による破棄・無制限）
+   *
+   *   2026-09-09 に「予定終了時刻を過ぎたら失敗」をやめた。
+   *   過ぎても挑戦は続き、投稿も延長もできる。
+   *   消えるのは「長いあいだ操作が無かった」ときだけ。
    * ===================================================================== */
 
-  await test("C", "残りが 1/4 を切るまで、延ばすボタンは出ない", async () => {
+  await test("C", "始めた直後から延ばせる（押せる時刻の窓が無い）", async () => {
     await g.goto(`${base}/play`);
     await waitForBar(g);
     const count = await g.locator("[data-action=renew]").count();
-    assert(count === 0, "始めた直後から延ばせてしまう");
+    assert(count === 1, "始めた直後は延ばせない（旧実装の窓が残っている）");
   });
 
-  await test("C", "1/4 を切ると延ばせて、押すと残りが 0.75T になる", async () => {
-    const sessionId = await currentSessionId(db);
-    // 30分枠（T = 1800秒）。更新できるのは残りが 0.25T = 450秒 を切ってから。
-    // 残り 350秒 になるところまで進める
-    await rewindChallenge(db, { sessionId }, 1800 - 350);
-    await g.reload();
-    await waitForBar(g);
-
+  await test("C", "押すと残り時間に足され、延ばした量と新しい終了予定が出る", async () => {
     const before = await readBar(g);
+    const leftBefore = /残り (\d\d):(\d\d):(\d\d)/.exec(before.text);
+    assert(leftBefore, `押す前に残りが出ていない: ${before.text}`);
+    const secondsBefore =
+      Number(leftBefore[1]) * 3600 + Number(leftBefore[2]) * 60 + Number(leftBefore[3]);
+
     await clickSafely(g.locator("[data-action=renew]"));
     await g.waitForTimeout(2000);
     const after = await readBar(g);
 
-    const left = /残り (\d\d):(\d\d):(\d\d)/.exec(after.text);
-    assert(left, `更新後に残りが出ていない: ${after.text}`);
     assert(
       !/延ばせませんでした|通信できませんでした/.test(after.text),
-      `更新が断られた: ${after.text}`,
+      `延長が断られた: ${after.text}`,
     );
+
+    const left = /残り (\d\d):(\d\d):(\d\d)/.exec(after.text);
+    assert(left, `延長後に残りが出ていない: ${after.text}`);
     const seconds = Number(left[1]) * 3600 + Number(left[2]) * 60 + Number(left[3]);
+
+    // 30分枠（T=1800）。残っていた時間に 0.75T = 1350秒 が積まれる
     assert(
-      seconds > 1300 && seconds <= 1350,
-      `更新後の残りが ${seconds} 秒（0.75T = 1350秒のはず）。帯: ${after.text}`,
+      seconds > secondsBefore + 1300,
+      `残りが ${secondsBefore} → ${seconds} 秒（1350秒ぶん増えるはず）。帯: ${after.text}`,
     );
+
+    // **押しただけで「成功」と書かない。**延ばした量と新しい終了予定を出す
+    assert(/延長しました/.test(after.text), `延長できたことが出ていない: ${after.text}`);
     assert(
-      after.elapsed >= before.elapsed,
-      `更新で経過が ${before.elapsed} → ${after.elapsed} へ減った`,
+      /新しい終了予定は \d\d:\d\d です/.test(after.text),
+      `新しい終了予定が出ていない: ${after.text}`,
     );
     assert(/1 回延長/.test(after.text), `延長の回数が出ていない: ${after.text}`);
+    assert(
+      after.elapsed >= before.elapsed,
+      `延長で経過が ${before.elapsed} → ${after.elapsed} へ減った`,
+    );
   });
 
-  await test("C", "期限を過ぎると、超過と猶予の残りが出る", async () => {
+  await test("C", "予定終了時刻を過ぎると、超過した量が出る（失敗にしない）", async () => {
     const sessionId = await currentSessionId(db);
-    // 更新後の期限は「押した時刻 ＋ 0.75T = 1350秒」。そこを3分だけ過ぎさせる
-    await rewindChallenge(db, { sessionId }, 1350 + 180);
+    // 延長後の終了予定は「残り1800 + 1350 ＝ 約3150秒後」。8分32秒だけ過ぎさせる
+    await rewindChallenge(db, { sessionId }, 3150 + 512);
     await g.reload();
     const bar = await waitForBar(g);
 
-    assert(/超過 \d\d:\d\d:\d\d/.test(bar.text), `超過が出ていない: ${bar.text}`);
-    assert(/猶予残り \d\d:\d\d:\d\d/.test(bar.text), `猶予の残りが出ていない: ${bar.text}`);
-    assert(bar.expired === false, "猶予の中なのに終了になっている");
-    await g
-      .locator("[data-action=renew]")
-      .waitFor({ state: "attached", timeout: 15000 })
-      .catch(() => null);
+    assert(bar.overrun === true, `超過として出ていない: ${bar.text}`);
+    assert(bar.phase === "overrun", `段階が ${bar.phase}（overrun のはず）`);
+    assert(
+      /制作時間の超過/.test(bar.text),
+      `何の時間かが書かれていない: ${bar.text}`,
+    );
+    assert(
+      /制作時間を \d\d:\d\d:\d\d 超過しています/.test(bar.text),
+      `超過した量が文で出ていない: ${bar.text}`,
+    );
+    assert(
+      /制作はそのまま続けられます/.test(bar.text),
+      `続けられることが書かれていない: ${bar.text}`,
+    );
+
+    // **失敗の言葉を出さない**
+    await assertBodyNot(g, /時間切れ|挑戦が終了しました|猶予/, "超過を失敗として出している");
+  });
+
+  await test("C", "超過中でも延ばせる（何時間過ぎていても）", async () => {
+    const sessionId = await currentSessionId(db);
+    // さらに6時間過ぎさせる。旧実装ではここで二度と押せなくなっていた
+    await rewindChallenge(db, { sessionId }, 6 * 3600);
+    await g.reload();
+    await waitForBar(g);
+
     assert(
       (await g.locator("[data-action=renew]").count()) === 1,
-      "猶予の中なのに延ばせない",
+      "何時間も超過すると延ばせなくなっている",
+    );
+
+    await clickSafely(g.locator("[data-action=renew]"));
+    await g.waitForTimeout(2000);
+    const after = await readBar(g);
+
+    assert(after.overrun === false, `延長したのに超過のまま: ${after.text}`);
+    assert(/延長しました/.test(after.text), `延長できたことが出ていない: ${after.text}`);
+    assert(/2 回延長/.test(after.text), `延長の回数が増えていない: ${after.text}`);
+  });
+
+  await test("C", "超過中でも、他のページの細い帯に出続ける", async () => {
+    const sessionId = await currentSessionId(db);
+    await rewindChallenge(db, { sessionId }, 1350 + 300);
+
+    await g.goto(`${base}/works`);
+    const bar = await waitForBar(g);
+
+    assert(bar.overrun === true, `他のページで超過が出ていない: ${bar.text}`);
+    assert(
+      /制作時間を \d\d:\d\d:\d\d 超過しています/.test(bar.text),
+      `細い帯に超過した量が出ていない: ${bar.text}`,
+    );
+    assert(
+      (await g.locator("[data-action=back]").count()) === 1,
+      "超過中に「制作へ戻る」が消えている",
+    );
+    assert(
+      (await g.locator("[data-action=renew]").count()) === 1,
+      "他のページから延ばせない",
     );
   });
 
@@ -899,7 +980,7 @@ async function main() {
         /時間は延びていません|延ばせませんでした/.test(text),
         `延ばせなかったことが出ていない: ${text}`,
       );
-      assert(!/制作時間を延ばしました/.test(text), `成功として出ている: ${text}`);
+      assert(!/延長しました/.test(text), `成功として出ている: ${text}`);
     } finally {
       await guest.setOffline(false);
     }
@@ -909,7 +990,7 @@ async function main() {
     ).rows[0].renew_count;
     assert(
       after === before,
-      `通信できないのに更新回数が ${before} → ${after} に増えた`,
+      `通信できないのに延長回数が ${before} → ${after} に増えた`,
     );
 
     // つながり直したら「未同期」が消える
@@ -921,30 +1002,84 @@ async function main() {
     );
   });
 
-  await test("C", "猶予を使い切ると、どのページでも終了と分かる", async () => {
+  await test("C", "48時間の放置で破棄されると、帯も「制作へ戻る」も消える", async () => {
     const sessionId = await currentSessionId(db);
-    // 猶予は 0.5T = 15分。さらに過ぎさせる
-    await rewindChallenge(db, { sessionId }, 1200);
+
+    // 【超過ではなく放置で消す】
+    //   予定終了時刻はすでに何時間も過ぎているが、それでは消えない。
+    //   最終操作を48時間前にして初めて消える
+    await db.query(
+      `update public.draft_lifecycle_policy set updated_at = clock_timestamp() - interval '30 days'`,
+    );
+    await db.query(
+      `update public.draft_sessions
+          set last_activity_at = clock_timestamp() - interval '49 hours'
+        where id = $1`,
+      [sessionId],
+    );
+    await db.query(`select public.discard_inactive_challenges(500)`);
 
     await g.goto(`${base}/works`);
-    const bar = await waitForBar(g);
-    assert(bar.expired === true, `終了になっていない: ${bar.text}`);
-    assert(/挑戦が終了しました/.test(bar.text), `終了の表示が無い: ${bar.text}`);
+    await settledBody(g);
+    await g.waitForTimeout(2000);
+
     assert(
-      (await g.locator("[data-action=renew]").count()) === 0,
-      "終了したのに延ばすボタンが出ている",
+      (await g.locator("[data-challenge-bar]").count()) === 0,
+      "破棄されたのに帯が出ている",
+    );
+    assert(
+      (await g.locator("[data-action=back]").count()) === 0,
+      "破棄されたのに「制作へ戻る」が出ている",
     );
   });
 
-  await test("C", "終了しても、勝手に別のページへ飛ばされない", async () => {
+  await test("C", "破棄の知らせが出て、確認すると繰り返さない", async () => {
+    await g.goto(`${base}/works`);
+    await g.waitForSelector("[data-notice=inactivity_discard]", { timeout: 15000 });
+
+    const notice = g.locator("[data-notice=inactivity_discard]");
+    const text = (await notice.innerText()).replace(/\s+/g, " ");
+    assert(
+      /2日間操作がなかったため/.test(text),
+      `何が起きたかが書かれていない: ${text}`,
+    );
+
+    await clickSafely(notice.locator("[data-action=acknowledge]"));
+    await g.waitForTimeout(2000);
+    assert(
+      (await g.locator("[data-notice=inactivity_discard]").count()) === 0,
+      "確認しても知らせが消えない",
+    );
+
+    // 別のページへ移っても、もう出ない
+    await g.goto(`${base}/works`);
+    await settledBody(g);
+    await g.waitForTimeout(2000);
+    assert(
+      (await g.locator("[data-notice=inactivity_discard]").count()) === 0,
+      "確認したのに次のページでまた出た",
+    );
+
+    await db.query(`update public.draft_lifecycle_policy set updated_at = clock_timestamp()`);
+  });
+
+  await test("C", "超過しても、勝手に別のページへ飛ばされない", async () => {
+    await db.query(
+      `update public.draft_sessions set status = 'abandoned', abandoned_at = now()
+        where status = 'in_progress'`,
+    );
+    await drawThroughUi(g, base, { timeLimit: "1800" });
+    const sessionId = await currentSessionId(db);
+    await rewindChallenge(db, { sessionId }, 1800 + 600);
+
+    await g.goto(`${base}/account`);
+    await settledBody(g);
     const url = g.url();
-    await g.waitForTimeout(2500);
+    await g.waitForTimeout(3000);
     assert(g.url() === url, `${url} から ${g.url()} へ勝手に移動した`);
   });
 
-  await test("C", "終了しても、書きかけの入力が消えない", async () => {
-    await g.goto(`${base}/account`);
-    await waitForBar(g);
+  await test("C", "超過中でも、書きかけの入力が消えない", async () => {
     const input = g.locator("input[name=email]").first();
     await input.fill("kakikake@example.test");
     await g.waitForTimeout(3000);
@@ -954,8 +1089,7 @@ async function main() {
     );
   });
 
-  await test("C", "無制限は、経過だけが出て期限も更新も無い", async () => {
-    // 終わった挑戦を片づけてから、無制限で始め直す
+  await test("C", "無制限は、経過だけが出て終了予定も延長も無い", async () => {
     await db.query(
       `update public.draft_sessions set status = 'abandoned', abandoned_at = now()
         where status = 'in_progress'`,
@@ -966,7 +1100,7 @@ async function main() {
     assert(/無制限/.test(bar.text), `無制限と出ていない: ${bar.text}`);
     assert(/経過 \d\d:\d\d:\d\d/.test(bar.text), `経過が出ていない: ${bar.text}`);
     assert(!/残り/.test(bar.text), `無制限なのに残りが出ている: ${bar.text}`);
-    assert(!/猶予/.test(bar.text), `無制限なのに猶予が出ている: ${bar.text}`);
+    assert(!/超過/.test(bar.text), `無制限なのに超過が出ている: ${bar.text}`);
     assert(
       (await g.locator("[data-action=renew]").count()) === 0,
       "無制限なのに延ばすボタンが出ている",
@@ -991,7 +1125,7 @@ async function main() {
     const inDraft = await waitForBar(g);
     assert(inDraft.elapsed >= 1200, `ドラフト中の経過が ${inDraft.elapsed} 秒`);
 
-    await revealAll(g);
+    await drawAllSlots(g);
     await clickSafely(g.getByRole("button", { name: "このお題で確定する" }));
     await g.waitForURL("**/prompt/**");
     const afterFix = await waitForBar(g);
@@ -4571,7 +4705,7 @@ async function main() {
     assert(/怪物型/.test(board), `盤面の表示が「${board}」`);
 
     t.stage("お題を確定しても残っている");
-    await revealAll(p);
+    await drawAllSlots(p);
     await clickSafely(p.getByRole("button", { name: "このお題で確定する" }));
     await p.waitForURL("**/prompt/**");
 
@@ -4603,7 +4737,7 @@ async function main() {
     );
 
     t.stage("確定したお題にも出ない");
-    await revealAll(p);
+    await drawAllSlots(p);
     await clickSafely(p.getByRole("button", { name: "このお題で確定する" }));
     await p.waitForURL("**/prompt/**");
     assert(
@@ -4615,7 +4749,7 @@ async function main() {
   await test("U", "回答者の画面には出ない", async (t) => {
     const p = m;
     await drawWithAssist(p, "pick", "vehicle");
-    await revealAll(p);
+    await drawAllSlots(p);
     await clickSafely(p.getByRole("button", { name: "このお題で確定する" }));
     await p.waitForURL("**/prompt/**");
 
@@ -4936,7 +5070,7 @@ async function main() {
       } catch {
         continue; // 候補が足りずに始められなかった回
       }
-      await revealAll(page);
+      await drawAllSlots(page);
 
       if ((await page.locator('[data-testid="board-sub-directive"]').count()) > 0) {
         return true;
@@ -5176,6 +5310,652 @@ async function main() {
 
 
 
+
+  /* =====================================================================
+   * K. 規約への同意（P5）
+   * =====================================================================
+   *
+   * 止めるかどうかの判定そのものは DB 側の試験（test/db/run.mjs の P 群）。
+   * ここで見るのは画面だけ。**同意欄がどこに出て、どこから消えたか。**
+   */
+
+  await test("K", "投稿の画面に規約の同意欄が無い", async (t) => {
+    const { ctx, page } = await signedInPage(seeded.authorEmail);
+
+    t.stage("お題からの投稿");
+    const { prompt_id: promptId } = await drawPrompt(db, seeded.author, { timeLimit: 3600 });
+    await page.goto(`${base}/works/new?promptId=${promptId}`);
+    await settledBody(page);
+    assert(
+      (await page.locator('input[name="agreeDocs"]').count()) === 0,
+      "投稿の画面に同意のチェック欄が残っている",
+    );
+    await assertBodyNot(page, /投稿の前に同意が必要です/, "投稿の画面に同意の見出しが残っている");
+
+    t.stage("持ち込みの投稿");
+    await page.goto(`${base}/works/import`);
+    await settledBody(page);
+    assert(
+      (await page.locator('input[name="agreeDocs"]').count()) === 0,
+      "持ち込みの画面に同意のチェック欄が残っている",
+    );
+
+    await ctx.close();
+  });
+
+  await test("K", "登録の画面には同意欄があり、外すと登録できない", async (t) => {
+    const ctx = await browser.newContext();
+    const page = await ctx.newPage();
+
+    await page.goto(`${base}/account`);
+    await settledBody(page);
+
+    t.stage("同意欄が出ている");
+    const panel = page.locator("[data-register-consent]").first();
+    await panel.waitFor({ state: "visible", timeout: 15000 });
+    assert(
+      (await page.locator('input[name="agreeDocs"]').count()) > 0,
+      "登録の画面に同意のチェック欄が無い",
+    );
+    assert(
+      (await page.locator('input[name="termsVersion"]').first().inputValue()) !== "",
+      "同意した版が欄に入っていない",
+    );
+
+    t.stage("チェックを外したままでは送れない");
+    const form = page.locator("form:has(button:has-text('登録する'))").first();
+    await form.locator('input[name="email"]').fill("k-consent@example.test");
+    await form.locator('input[name="password"]').fill("dummy-password");
+    await form.getByRole("button", { name: "登録する" }).click();
+    // required なので、ブラウザが送信そのものを止める
+    await page.waitForTimeout(600);
+    const { rows } = await db.query(
+      `select count(*)::int n from auth.users where email = 'k-consent@example.test'`,
+    );
+    assert(rows[0].n === 0, "同意していないのに登録が通ってしまった");
+
+    await ctx.close();
+  });
+
+  await test("K", "未同意の登録者は、通常の画面へ進めず同意の画面へ送られる", async (t) => {
+    // 同意していない人を1人作る。**このセッションは、いま始まる**
+    const email = "k-gate@example.test";
+    const { rows: made } = await db.query(
+      `insert into auth.users (email, is_anonymous) values ($1, false) returning id`,
+      [email],
+    );
+    await db.query(`update public.profiles set handle = 'k-gate' where id = $1`, [made[0].id]);
+
+    const ctx = await browser.newContext();
+    const page = await ctx.newPage();
+    await signInAs(page, base, email);
+
+    t.stage("通常の画面が同意の画面に変わる");
+    await page.goto(`${base}/play`);
+    await settledBody(page);
+    assert(
+      page.url().includes("/consent"),
+      `同意の画面へ送られていない（いまの場所 ${page.url()}）`,
+    );
+    assert(
+      (await page.locator("[data-consent-gate]").count()) === 1,
+      "同意の画面の中身が出ていない",
+    );
+
+    t.stage("同意しない道が塞がっていない");
+    await assertBody(page, /退会/, "同意しない人の行き先が出ていない");
+
+    t.stage("同意すると通れる");
+    await submitAndSettle(page, page.getByRole("button", { name: "同意して続ける" }));
+    await settledBody(page);
+    await page.goto(`${base}/play`);
+    await settledBody(page);
+    assert(!page.url().includes("/consent"), "同意したのにまだ止められている");
+
+    const { rows: agreed } = await db.query(
+      `select count(*)::int n from public.terms_agreements where user_id = $1`,
+      [made[0].id],
+    );
+    assert(agreed[0].n === 2, `同意の記録が ${agreed[0].n} 件（2件のはず）`);
+
+    await ctx.close();
+  });
+
+  /* =====================================================================
+   * L. 文章の組み立て（P5）
+   * =====================================================================
+   *
+   * 語の足し方・並べ替え・文の区切りの勘定そのものは単体試験（test:unit）。
+   * ここで見るのは、画面から実際に押せて、押した結果が保存されるか。
+   */
+
+  await test("L", "分類から語を選び、並べ替えて、文を切って保存できる", async (t) => {
+    const { ctx, page } = await signedInPage(seeded.authorEmail);
+
+    const { prompt_id: promptId } = await drawPrompt(db, seeded.author, { timeLimit: 3600 });
+    const workId = await postWork(db, seeded.author, promptId, "文章を組み立てる作品");
+
+    await page.goto(`${base}/works/${workId}`);
+    await settledBody(page);
+
+    const composer = page.locator("[data-flavor-composer]");
+    await composer.waitFor({ state: "visible", timeout: 15000 });
+
+    t.stage("分類が並んでいる");
+    const cats = composer.locator("[data-flavor-categories] [data-category]");
+    assert((await cats.count()) === 9, `分類が ${await cats.count()} 個（9個のはず）`);
+
+    t.stage("助詞の分類から語を足せる");
+    await composer.locator('[data-category="particle"]').click();
+    const particle = composer.locator("[data-flavor-words] [data-word]").first();
+    const particleLabel = await particle.getAttribute("data-word");
+    await particle.click();
+
+    t.stage("別の分類からも足せる（分類ごとの枠が無い）");
+    await composer.locator('[data-category="phenomenon"]').click();
+    const words = composer.locator("[data-flavor-words] [data-word]");
+    await words.nth(0).click();
+    await words.nth(1).click();
+
+    let tokens = composer.locator("[data-flavor-tokens] li");
+    assert((await tokens.count()) === 3, `${await tokens.count()} 語しか入っていない`);
+    assert(
+      (await tokens.nth(0).getAttribute("data-token-label")) === particleLabel,
+      "1つ目の語が入れ替わっている",
+    );
+
+    t.stage("キーボードで押せるボタンで並べ替えられる");
+    await tokens.nth(0).locator('[data-action="down"]').click();
+    tokens = composer.locator("[data-flavor-tokens] li");
+    assert(
+      (await tokens.nth(1).getAttribute("data-token-label")) === particleLabel,
+      "下へで語順が変わっていない",
+    );
+    const upIsButton = await tokens
+      .nth(1)
+      .locator('button[data-action="up"]')
+      .count();
+    assert(upIsButton === 1, "並べ替えが本物のボタンになっていない（キーボードで押せない）");
+
+    t.stage("文を切れる。切ったぶんだけ文が増える");
+    await tokens.nth(0).locator('[data-action="break"]').click();
+    await assertBody(page, /2 \/ 3 文/, "文の数が2つになっていない");
+
+    t.stage("最後の語では切れない");
+    const lastBreak = tokens.nth(2).locator('[data-action="break"]');
+    assert(await lastBreak.isDisabled(), "最後の語のあとで切れてしまう");
+
+    t.stage("保存すると、文ごとに分かれて残る");
+    await submitAndSettle(page, page.getByRole("button", { name: "この文章にする" }));
+    await settledBody(page);
+
+    const { rows } = await db.query(
+      `select tk.position, tk.break_after
+         from public.flavor_texts f
+         join public.flavor_text_tokens tk on tk.flavor_text_id = f.id
+        where f.work_id = $1 order by tk.position`,
+      [workId],
+    );
+    assert(rows.length === 3, `保存された語が ${rows.length} 個`);
+    assert(rows[0].break_after === true, "文の区切りが保存されていない");
+    assert(rows[2].break_after === false, "最後の語に区切りが付いている");
+
+    t.stage("開き直すと、同じ語順・同じ切れ目で戻る");
+    await page.reload();
+    await settledBody(page);
+    const again = page.locator("[data-flavor-composer]");
+    await again.waitFor({ state: "visible", timeout: 15000 });
+
+    const back = again.locator("[data-flavor-tokens] li");
+    assert((await back.count()) === 3, `開き直したら ${await back.count()} 語になった`);
+    assert(
+      (await back.nth(1).getAttribute("data-token-label")) === particleLabel,
+      "開き直すと語順が変わっている",
+    );
+    assert(
+      (await back.nth(0).getAttribute("data-break")) === "1",
+      "開き直すと文の切れ目が消えている",
+    );
+
+    await ctx.close();
+  });
+
+  await test("L", "打ち込む欄は絞り込みだけで、送信されない", async (t) => {
+    const { ctx, page } = await signedInPage(seeded.authorEmail);
+
+    const { prompt_id: promptId } = await drawPrompt(db, seeded.author, { timeLimit: 3600 });
+    const workId = await postWork(db, seeded.author, promptId, "自由入力が無いことを見る作品");
+
+    await page.goto(`${base}/works/${workId}`);
+    await settledBody(page);
+    const composer = page.locator("[data-flavor-composer]");
+    await composer.waitFor({ state: "visible", timeout: 15000 });
+
+    t.stage("送信する欄に、自由に打てるものが無い");
+    const form = composer.locator("form");
+    const freeText = await form
+      .locator('input[type="text"], textarea, input:not([type])')
+      .count();
+    assert(freeText === 0, `送信する側に打ち込める欄が ${freeText} 個ある`);
+
+    t.stage("絞り込みの欄は、送信の外にある");
+    const search = composer.locator("[data-flavor-search]");
+    assert((await search.count()) === 1, "絞り込みの欄が無い");
+    assert(
+      (await search.getAttribute("name")) === null,
+      "絞り込みの欄に名前が付いていて、送信に乗ってしまう",
+    );
+
+    await ctx.close();
+  });
+
+  await test("L", "回答前に、答えていない人へ文章が出ない", async (t) => {
+    // **まだ1問も答えていない人で見る。**ほかの試験で使った人だと、
+    // 既に答え終わっていて「回答後の開示」の画面になる
+    const fresh = await makeMember(db, `lf${drillPerson++}`);
+    const email = `l-fresh-${drillPerson}@example.test`;
+    await db.query(`update auth.users set email = $1 where id = $2`, [email, fresh]);
+    const { ctx, page } = await signedInPage(email);
+
+    t.stage("文章のある作品を、まだ答えずに開く");
+    await page.goto(`${base}/works/${seeded.flavorWork}`);
+    await settledBody(page);
+
+    await assertBody(page, /作者からの言葉があります/, "文章があることの案内が出ていない");
+    await assertBodyNot(
+      page,
+      /作者からの言葉（ヒント）/,
+      "開いていないのに文章そのものが出ている",
+    );
+
+    await ctx.close();
+  });
+
+  /* =====================================================================
+   * M. 制作中の時計（P5）
+   * =====================================================================
+   *
+   * しきい値の勘定そのものは単体試験（test:unit）。
+   * ここで見るのは、どのページでどちらの形が出るか。
+   */
+
+  await test("M", "制作中のページでは大きい帯、他のページでは細い帯", async (t) => {
+    // **まだ何も引いていない人で見る。**ほかの試験で使った人だと、
+    // 進行中のドラフトが残っていて「お題を引く」の欄が出ない
+    const fresh = await makeMember(db, `mb${drillPerson++}`);
+    const email = `m-bar-${drillPerson}@example.test`;
+    await db.query(`update auth.users set email = $1 where id = $2`, [email, fresh]);
+
+    const ctx = await browser.newContext();
+    const page = await ctx.newPage();
+    await signInAs(page, base, email);
+
+    t.stage("挑戦を始める");
+    await drawThroughUi(page, base, { timeLimit: "1800" });
+
+    const bar = page.locator("[data-challenge-bar]");
+    await bar.waitFor({ state: "visible", timeout: 20000 });
+
+    t.stage("制作中のページでは大きい帯");
+    assert(
+      (await bar.getAttribute("data-form")) === "large",
+      `制作中なのに ${await bar.getAttribute("data-form")} の帯が出ている`,
+    );
+    assert(
+      (await bar.locator('[data-field="time"]').count()) === 1,
+      "残り時間の数字が出ていない",
+    );
+
+    t.stage("画面に貼り付いていて、本文と分かれている");
+    const position = await bar.evaluate((el) => getComputedStyle(el).position);
+    assert(position === "fixed", `帯の位置が ${position}（fixed のはず）`);
+    const bg = await bar.evaluate((el) => getComputedStyle(el).backgroundColor);
+    assert(
+      !bg.includes("rgba") || !bg.endsWith(", 0)"),
+      `帯の地が透けている（${bg}）`,
+    );
+
+    t.stage("他のページでは細い帯になり、制作へ戻る導線が出る");
+    await page.goto(`${base}/works`);
+    await settledBody(page);
+    const thin = page.locator("[data-challenge-bar]");
+    await thin.waitFor({ state: "visible", timeout: 20000 });
+    assert(
+      (await thin.getAttribute("data-form")) === "thin",
+      `他のページなのに ${await thin.getAttribute("data-form")} の帯が出ている`,
+    );
+    assert(
+      (await thin.locator('[data-action="back"]').count()) === 1,
+      "制作へ戻る導線が無い",
+    );
+
+    t.stage("ページを移っても、同じ挑戦の同じ時計のまま");
+    const elapsedA = Number(await thin.getAttribute("data-elapsed"));
+    await page.reload();
+    await settledBody(page);
+    const again = page.locator("[data-challenge-bar]");
+    await again.waitFor({ state: "visible", timeout: 20000 });
+    const elapsedB = Number(await again.getAttribute("data-elapsed"));
+    assert(elapsedB >= elapsedA, `読み込み直しで経過が戻った（${elapsedA} → ${elapsedB}）`);
+
+    await ctx.close();
+  });
+
+  await test("M", "残りが減ると段階が上がり、色以外の言葉も出る", async (t) => {
+    const answerer = await makeMember(db, `mt${drillPerson++}`);
+    const email = `m-timer-${drillPerson}@example.test`;
+    await db.query(`update auth.users set email = $1 where id = $2`, [email, answerer]);
+
+    const ctx = await browser.newContext();
+    const page = await ctx.newPage();
+    await signInAs(page, base, email);
+
+    t.stage("30分枠で挑戦を始め、期限を残り30秒まで進める");
+    const { prompt_id: promptId } = await drawPrompt(db, answerer, { timeLimit: 1800 });
+    // 期限を 1770 秒ぶん手前へずらす（残り 30 秒にする）
+    await shiftDeadline(db, promptId, 1800 - 30);
+
+    await page.goto(`${base}/prompt/${promptId}`);
+    await settledBody(page);
+
+    const bar = page.locator("[data-challenge-bar]");
+    await bar.waitFor({ state: "visible", timeout: 20000 });
+
+    t.stage("最終段階になっている");
+    const level = await bar.getAttribute("data-level");
+    assert(level === "danger", `段階が ${level}（danger のはず）`);
+    assert((await bar.getAttribute("data-blink")) === "1", "最終段階なのに点滅の印が無い");
+
+    t.stage("色だけでなく、言葉でも出ている");
+    const note = bar.locator('[data-field="warn-note"]');
+    assert((await note.count()) === 1, "危険度を示す言葉が出ていない");
+    assert((await note.innerText()).trim() !== "", "危険度の言葉が空");
+
+    t.stage("読み上げは節目だけ。時計そのものは読ませない");
+    const live = bar.locator('[data-field="announce"]');
+    assert((await live.count()) === 1, "読み上げ用の場所が無い");
+    assert(
+      (await bar.locator('[data-field="time"]').getAttribute("aria-live")) === null,
+      "時計そのものが毎秒読み上げられる作りになっている",
+    );
+
+    await ctx.close();
+  });
+
+  await test("M", "動きを減らす設定でも、危険度は色と言葉で伝わる", async (t) => {
+    const answerer = await makeMember(db, `mr${drillPerson++}`);
+    const email = `m-reduce-${drillPerson}@example.test`;
+    await db.query(`update auth.users set email = $1 where id = $2`, [email, answerer]);
+
+    // **ブラウザ側の設定として動きを減らす。**画面はこれを見て点滅を止める
+    const ctx = await browser.newContext({ reducedMotion: "reduce" });
+    const page = await ctx.newPage();
+    await signInAs(page, base, email);
+
+    t.stage("残り30秒まで進める");
+    const { prompt_id: promptId } = await drawPrompt(db, answerer, { timeLimit: 1800 });
+    await shiftDeadline(db, promptId, 1800 - 30);
+
+    await page.goto(`${base}/prompt/${promptId}`);
+    await settledBody(page);
+    const bar = page.locator("[data-challenge-bar]");
+    await bar.waitFor({ state: "visible", timeout: 20000 });
+
+    t.stage("点滅は止まっている");
+    const time = bar.locator('[data-field="time"]');
+    const animation = await time.evaluate((el) => getComputedStyle(el).animationName);
+    assert(
+      animation === "none" || animation === "",
+      `動きを減らす設定なのに ${animation} が動いている`,
+    );
+
+    t.stage("時計そのものは止まっていない");
+    const first = await time.innerText();
+    await page.waitForTimeout(2200);
+    const second = await time.innerText();
+    assert(first !== second, `時計が止まっている（${first} のまま）`);
+
+    t.stage("色と言葉で危険度が伝わる");
+    assert((await bar.getAttribute("data-level")) === "danger", "段階が最終になっていない");
+    const note = bar.locator('[data-field="warn-note"]');
+    assert((await note.count()) === 1, "危険度を示す言葉が出ていない");
+    const color = await note.evaluate((el) => getComputedStyle(el).color);
+    assert(color !== "", "言葉に色が付いていない");
+
+    await ctx.close();
+  });
+
+  /* =====================================================================
+   * O. 超過の見せ方・制作時間の記録・通知の許可（2026-09-09）
+   * ===================================================================== */
+
+  await test("O", "制作中の大きい帯は、超過した量をいちばん大きく出す", async (t) => {
+    const person = await makeMember(db, `ov${drillPerson++}`);
+    const email = `o-overrun-${drillPerson}@example.test`;
+    await db.query(`update auth.users set email = $1 where id = $2`, [email, person]);
+
+    const ctx = await browser.newContext();
+    const page = await ctx.newPage();
+    await signInAs(page, base, email);
+
+    t.stage("30分枠を8分32秒だけ超過させる");
+    const { prompt_id: promptId } = await drawPrompt(db, person, { timeLimit: 1800 });
+    await shiftDeadline(db, promptId, 1800 + 512);
+
+    // **「load」まで待たない。**帯が定期的に問い合わせるので、
+    // 読み込み完了の合図がなかなか来ないことがある（drawThroughUi と同じ理由）
+    await page.goto(`${base}/prompt/${promptId}`, { waitUntil: "domcontentloaded" });
+    await settledBody(page);
+
+    const bar = page.locator("[data-challenge-bar]");
+    await bar.waitFor({ state: "visible", timeout: 20000 });
+
+    t.stage("大きい帯のまま、超過として出ている");
+    assert((await bar.getAttribute("data-form")) === "large", "制作中なのに細い帯になった");
+    assert((await bar.getAttribute("data-overrun")) === "1", "超過として出ていない");
+
+    t.stage("いちばん大きい数字が、超過した量になっている");
+    const time = bar.locator('[data-field="time"]');
+    const shown = (await time.innerText()).trim();
+    // 【秒をぴったりで見ない】
+    //   DB の期限をずらしてから画面が出るまでに実時間が経つ。
+    //   実測（2026-09-09）では 512秒 でずらして 00:08:43 が出た。
+    //   見たいのは「超過した量が大きい字で出ているか」なので幅を持たせ、
+    //   帯が持っている秒数と食い違っていないことを合わせて見る。
+    assert(/^00:0[89]:\d\d$/.test(shown), `大きい数字が ${shown}（8分半すぎのはず）`);
+
+    const overrunSeconds = Number(await bar.getAttribute("data-overrun-seconds"));
+    assert(
+      overrunSeconds >= 505 && overrunSeconds <= 590,
+      `超過が ${overrunSeconds} 秒（512秒前後のはず）`,
+    );
+    const parts = /^00:(\d\d):(\d\d)$/.exec(shown);
+    assert(
+      Math.abs(Number(parts[1]) * 60 + Number(parts[2]) - overrunSeconds) <= 2,
+      `大きい字 ${shown} と超過の秒 ${overrunSeconds} が食い違っている`,
+    );
+
+    const size = await time.evaluate((el) => parseFloat(getComputedStyle(el).fontSize));
+    const caption = await bar
+      .locator('[data-field="overrun-note"]')
+      .evaluate((el) => parseFloat(getComputedStyle(el).fontSize));
+    assert(size > caption * 2, `数字 ${size}px と説明 ${caption}px の差が小さい`);
+
+    t.stage("失敗の言葉が出ていない");
+    await assertBodyNot(page, /時間切れ|猶予/, "超過を失敗として出している");
+
+    t.stage("制作の画面にも、続けられることと延長の道が出ている");
+    const note = page.locator('[data-field="overrun-note"]').last();
+    const text = (await note.innerText()).replace(/\s+/g, " ");
+    assert(/制作はそのまま続けられます/.test(text), `続けられることが無い: ${text}`);
+    assert(
+      (await page.locator('button:has-text("制作時間を延ばす")').count()) >= 1,
+      "超過中の制作画面に延長のボタンが無い",
+    );
+
+    await ctx.close();
+  });
+
+  await test("O", "投稿の画面に自己申告の欄が無く、計測値が出る", async (t) => {
+    const person = await makeMember(db, `pt${drillPerson++}`);
+    const email = `o-prod-${drillPerson}@example.test`;
+    await db.query(`update auth.users set email = $1 where id = $2`, [email, person]);
+
+    const ctx = await browser.newContext();
+    const page = await ctx.newPage();
+    await signInAs(page, base, email);
+
+    const { prompt_id: promptId } = await drawPrompt(db, person, { timeLimit: 1800 });
+    // 1回延長し、25分たった状態にする
+    const { asRole } = await import("../db/harness.mjs");
+    await asRole(db, { role: "authenticated", uid: person, isAnonymous: false }, async (c) => {
+      await c.query(`select public.renew_prompt_deadline($1)`, [promptId]);
+    });
+    await rewindChallenge(db, { promptId }, 1500);
+
+    await page.goto(`${base}/works/new?promptId=${promptId}`, {
+      waitUntil: "domcontentloaded",
+    });
+    await settledBody(page);
+
+    t.stage("申告の欄が無い");
+    assert(
+      (await page.locator('select[name="actualTimeSeconds"]').count()) === 0,
+      "実制作時間を選ぶ欄が残っている",
+    );
+    await assertBodyNot(page, /自己申告です/, "自己申告の案内が残っている");
+
+    t.stage("計測値が3つとも出ている");
+    const box = page.locator('[data-field="production-time"]');
+    await box.waitFor({ state: "visible", timeout: 15000 });
+    const shown = (await box.innerText()).replace(/\s+/g, " ");
+    assert(/30分/.test(shown), `最初に選んだ時間が出ていない: ${shown}`);
+    assert(/1 回/.test(shown), `延長の回数が出ていない: ${shown}`);
+    assert(/25分/.test(shown), `実際にかかった時間が出ていない: ${shown}`);
+
+    await ctx.close();
+  });
+
+  await test("O", "確認したあとも、知らせをアカウントの画面で読み返せる", async (t) => {
+    const person = await makeMember(db, `nh${drillPerson++}`);
+    const email = `o-history-${drillPerson}@example.test`;
+    await db.query(`update auth.users set email = $1 where id = $2`, [email, person]);
+
+    const ctx = await browser.newContext();
+    const page = await ctx.newPage();
+    await signInAs(page, base, email);
+
+    t.stage("48時間の放置で破棄させる");
+    const { prompt_id: promptId } = await drawPrompt(db, person, { timeLimit: 1800 });
+    await db.query(
+      `update public.draft_lifecycle_policy set updated_at = clock_timestamp() - interval '30 days'`,
+    );
+    await db.query(
+      `update public.prompts set last_activity_at = clock_timestamp() - interval '49 hours'
+        where id = $1`,
+      [promptId],
+    );
+    await db.query(`select public.discard_inactive_challenges(500)`);
+
+    t.stage("前へ出た知らせを確認する");
+    await page.goto(`${base}/works`);
+    const notice = page.locator("[data-notice=inactivity_discard]");
+    await notice.waitFor({ state: "visible", timeout: 20000 });
+    await clickSafely(notice.locator("[data-action=acknowledge]"));
+    await page.waitForTimeout(2000);
+
+    t.stage("確認したので、もう前へは出ない");
+    assert(
+      (await page.locator("[data-notice=inactivity_discard]").count()) === 0,
+      "確認しても前へ出たままになっている",
+    );
+
+    t.stage("アカウントの画面には履歴として残っている");
+    await page.goto(`${base}/account`);
+    await settledBody(page);
+    const history = page.locator("[data-notification-history]");
+    await history.waitFor({ state: "visible", timeout: 20000 });
+    const item = history.locator("[data-history-item=inactivity_discard]");
+    await item.waitFor({ state: "visible", timeout: 20000 });
+
+    const text = (await item.innerText()).replace(/\s+/g, " ");
+    assert(/確認済み/.test(text), `確認した印が無い: ${text}`);
+    assert(/2日間操作がなかったため/.test(text), `本文が残っていない: ${text}`);
+
+    await db.query(`update public.draft_lifecycle_policy set updated_at = clock_timestamp()`);
+    await ctx.close();
+  });
+
+  await test("O", "通知の許可は制作の場面でだけ尋ね、勝手に窓を出さない", async (t) => {
+    const person = await makeMember(db, `pu${drillPerson++}`);
+    const email = `o-push-${drillPerson}@example.test`;
+    await db.query(`update auth.users set email = $1 where id = $2`, [email, person]);
+
+    const ctx = await browser.newContext();
+    const page = await ctx.newPage();
+
+    // **ブラウザの許可の窓が開いたかどうかを数える。**
+    // 開いてから断られると、利用者は設定を開かないと戻せない
+    await page.addInitScript(() => {
+      window.__askedForPush = 0;
+      if (typeof Notification !== "undefined") {
+        Object.defineProperty(Notification, "permission", {
+          get: () => "default",
+          configurable: true,
+        });
+        Notification.requestPermission = () => {
+          window.__askedForPush += 1;
+          return Promise.resolve("default");
+        };
+      }
+    });
+
+    await signInAs(page, base, email);
+
+    t.stage("一覧を開いても案内は出ないし、窓も開かない");
+    await page.goto(`${base}/works`, { waitUntil: "domcontentloaded" });
+    await settledBody(page);
+    await page.waitForTimeout(1500);
+    assert(
+      (await page.locator("[data-push-optin]").count()) === 0,
+      "制作していない画面に通知の案内が出ている",
+    );
+    assert(
+      (await page.evaluate(() => window.__askedForPush)) === 0,
+      "開いただけでブラウザの許可の窓が開いた",
+    );
+
+    t.stage("制作の画面では案内が出る。ただし窓はまだ開かない");
+    const { prompt_id: promptId } = await drawPrompt(db, person, { timeLimit: 1800 });
+    await page.goto(`${base}/prompt/${promptId}`, { waitUntil: "domcontentloaded" });
+    await settledBody(page);
+
+    const panel = page.locator("[data-push-optin]");
+    await panel.waitFor({ state: "visible", timeout: 15000 });
+    const text = (await panel.innerText()).replace(/\s+/g, " ");
+    assert(/通知しますか/.test(text), `何を尋ねているか分からない: ${text}`);
+    assert(/お題の語や答えは入りません/.test(text), `中身の説明が無い: ${text}`);
+    assert(
+      (await page.evaluate(() => window.__askedForPush)) === 0,
+      "案内を出しただけで許可の窓が開いた",
+    );
+
+    t.stage("押したときに初めて窓が開く");
+    await clickSafely(panel.locator('[data-action="enable-push"]'));
+    await page.waitForTimeout(1500);
+    assert(
+      (await page.evaluate(() => window.__askedForPush)) === 1,
+      "押しても許可の窓が開かない",
+    );
+
+    t.stage("断られても、制作は続けられる");
+    assert(
+      (await page.locator("[data-challenge-bar]").count()) === 1,
+      "通知を断ると帯まで消えた",
+    );
+
+    await ctx.close();
+  });
 
   /* =====================================================================
    * !. 記録の自己試験（E2E_FORCE_FAIL=1 のときだけ動く）

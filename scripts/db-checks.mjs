@@ -565,12 +565,15 @@ export const checks = [
     //   ・notification_events       … 利用者へ伝える出来事。自動破棄の記録も兼ねる
     //   ・notification_deliveries   … どの経路で送ったか
     //   ・push_subscriptions        … ブラウザのプッシュの宛先
-    // 合わせて 62。数が合わないときは、どの migration が入っていないかを先に見る。
+    // 2026-09-08 にさらに1表増えた（管理 v0 / D177）。
+    //   ・admin_audit_log … 運営が誰の作品に何をしたかの記録
+    // 合わせて 63。数が合わないときは、どの migration が入っていないかを先に見る。
     //
-    // **この作業木（p0-p5-only）は P0〜P5 だけを持つ。**課金 v0 の5表と
-    // 管理 v0 の admin_audit_log は入っていないので、本流の 68 とは合わない。
-    name: "public スキーマの表が62個",
-    expected: 62,
+    // **この作業木（p0-p5-production-integration）は
+    // origin/main の全機能と P0〜P5 の両方を持つ。**課金 v0 の5表は入っていない。
+    // 出所: 2026-09-10 の実測（npm run db:verify:local）。
+    name: "public スキーマの表が63個",
+    expected: 63,
     sql: `select count(*)::int from pg_tables where schemaname = 'public'`,
     detailSql: `select tablename from pg_tables
                  where schemaname = 'public' order by tablename`,
@@ -585,8 +588,8 @@ export const checks = [
   },
   {
     group: "構造",
-    name: "62表すべてで RLS が有効",
-    expected: 62,
+    name: "63表すべてで RLS が有効",
+    expected: 63,
     sql: `select count(*)::int from pg_class c
             join pg_namespace n on n.oid = c.relnamespace
            where n.nspname = 'public' and c.relkind = 'r' and c.relrowsecurity`,

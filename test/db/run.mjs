@@ -42,21 +42,28 @@ import {
   answerWork,
   asGuest,
   asMember,
+  asMemberAt,
+  asMemberIatOnly,
+  agePolicy,
   buildPromptWithTags,
   drawPrompt,
+  freshPolicy,
+  runChallengeSweep,
+  setLastActivity,
   finishDraft,
   rewindChallenge,
   startDraftOnly,
   makeGuest,
   makeMember,
+  makeMemberWithoutConsent,
+  pickLegacyTag,
+  pickTags,
+  postArtFirstWork,
   postWork,
   promptTags,
   saveCarrySlot,
   shiftDeadline,
   value,
-  pickLegacyTag,
-  pickTags,
-  postArtFirstWork,
 } from "./helpers.mjs";
 
 const results = [];
@@ -69,6 +76,17 @@ async function test(group, name, fn) {
   } catch (e) {
     results.push({ group, name, ok: false, message: e.message ?? String(e) });
   }
+}
+
+/**
+ * 分類ごとに返る語彙を、1本の並びに直す（P5）。
+ *
+ * get_flavor_vocab は分類ごとに語を返すようになった。
+ * **分類は探すためのものなので、「使えるか」を見る検査には関係が無い。**
+ * ここで平らにして、これまでと同じ形で数える。
+ */
+function flatVocab(set) {
+  return (set?.categories ?? []).flatMap((c) => c.words);
 }
 
 function assert(cond, message) {
@@ -1619,7 +1637,7 @@ async function main() {
     const workId = await postWork(db, u, promptId, "フレーバー候補の作品");
 
     const set = await value(db, asMember(u), `select public.get_flavor_vocab($1)`, [workId]);
-    const labels = set.vocab.map((v) => v.label);
+    const labels = flatVocab(set).map((v) => v.label);
 
     assert(!labels.includes("暗い"), "「暗闇」が正解なのに「暗い」が候補に出ている");
     assert(!labels.includes("新しい"), "「真新しい」が正解なのに「新しい」が候補に出ている");
@@ -1651,8 +1669,9 @@ async function main() {
     const u = await makeMember(db, "kana-kanji");
     const promptId = await buildPromptWithTags(db, u, ["馬", "怒り", "水中"]);
     const workId = await postWork(db, u, promptId, "馬の作品");
-    const list = (await value(db, asMember(u), `select public.get_flavor_vocab($1)`, [workId]))
-      .vocab;
+    const list = flatVocab(
+      await value(db, asMember(u), `select public.get_flavor_vocab($1)`, [workId]),
+    );
     assert(
       !list.some((x) => x.label === "うま"),
       "読みが同じ語が、そのお題の候補に出ている",
@@ -1668,8 +1687,9 @@ async function main() {
     const u = await makeMember(db, "kanji-share");
     const promptId = await buildPromptWithTags(db, u, ["古書", "怒り", "水中"]);
     const workId = await postWork(db, u, promptId, "古書の作品");
-    const list = (await value(db, asMember(u), `select public.get_flavor_vocab($1)`, [workId]))
-      .vocab;
+    const list = flatVocab(
+      await value(db, asMember(u), `select public.get_flavor_vocab($1)`, [workId]),
+    );
 
     assert(
       !list.some((x) => x.label === "古い"),
@@ -1692,7 +1712,7 @@ async function main() {
 
     const set = await value(db, asMember(u), `select public.get_flavor_vocab($1)`, [workId]);
     assert(
-      !set.vocab.some((v) => v.label === "まんと"),
+      !flatVocab(set).some((v) => v.label === "まんと"),
       "「マント」が正解なのに「まんと」が候補に出ている",
     );
 
@@ -1711,7 +1731,7 @@ async function main() {
       otherWork,
     ]);
     assert(
-      otherSet.vocab.some((v) => v.label === "まんと"),
+      flatVocab(otherSet).some((v) => v.label === "まんと"),
       "関係の無いお題でも「まんと」が使えなくなっている（絞りすぎ）",
     );
   });
@@ -1739,7 +1759,7 @@ async function main() {
     const workId = await postWork(db, u, promptId, "文章つきの作品");
 
     const set = await value(db, asMember(u), `select public.get_flavor_vocab($1)`, [workId]);
-    const ids = set.vocab.slice(0, 4).map((v) => v.id);
+    const ids = flatVocab(set).slice(0, 4).map((v) => v.id);
     await value(db, asMember(u), `select public.set_flavor_text($1, $2)`, [workId, ids]);
 
     // 回答前は、開いていない人に返らない
@@ -1765,7 +1785,7 @@ async function main() {
     const set = await value(db, asMember(u), `select public.get_flavor_vocab($1)`, [workId]);
     await value(db, asMember(u), `select public.set_flavor_text($1, $2)`, [
       workId,
-      set.vocab.slice(0, 3).map((v) => v.id),
+      flatVocab(set).slice(0, 3).map((v) => v.id),
     ]);
 
     const withHint = await makeMember(db, "fl4a");
@@ -1808,7 +1828,7 @@ async function main() {
     const set = await value(db, asMember(u), `select public.get_flavor_vocab($1)`, [workId]);
     await value(db, asMember(u), `select public.set_flavor_text($1, $2)`, [
       workId,
-      set.vocab.slice(0, 3).map((v) => v.id),
+      flatVocab(set).slice(0, 3).map((v) => v.id),
     ]);
 
     await answerWork(db, r, workId);
@@ -7922,6 +7942,385 @@ async function main() {
         `知らない鍵 ${unknown} から表示文が出た`);
     }
   });
+  /* ---------------------------------------------------------------------
+   * Q. 文章の組み立て（分類・助詞・文の区切り／P5）
+   * ------------------------------------------------------------------- */
+
+  /** 作者の作品を1件作り、語彙一式を返す */
+  async function flavorFixture(db_, handle, tags) {
+    const u = await makeMember(db_, handle);
+    const promptId = await buildPromptWithTags(db_, u, tags);
+    const workId = await postWork(db_, u, promptId, `${handle} の作品`);
+    const set = await value(db_, asMember(u), `select public.get_flavor_vocab($1)`, [workId]);
+    return { u, promptId, workId, set };
+  }
+
+  await test("Q", "語は分類ごとに返る。分類ごとの選べる数の枠は無い", async () => {
+    const { set } = await flavorFixture(db, "qflv01", ["傘", "怒り", "水中"]);
+
+    assert(Array.isArray(set.categories), "分類が並びで返っていない");
+    assert(set.categories.length === 9, `分類が ${set.categories.length} 件（9件のはず）`);
+
+    // 枠を意味する項目がどこにも無いこと。**お題の語彙とは別のもの**
+    for (const c of set.categories) {
+      assert(!("capacity" in c), `分類 ${c.key} に枠が付いている`);
+      assert(Array.isArray(c.words), `分類 ${c.key} に語の並びが無い`);
+    }
+    assert(typeof set.max_tokens === "number" && set.max_tokens > 0, "語数の上限が返らない");
+    assert(set.max_sentences === 3, `文の上限が ${set.max_sentences}（3のはず）`);
+  });
+
+  await test("Q", "同じ分類から何語でも選べる（分類の枠が無いことの実測）", async () => {
+    const { u, workId, set } = await flavorFixture(db, "qflv02", ["蝶", "歓喜", "強風"]);
+    const one = set.categories.find((c) => c.words.length >= 5);
+    assert(one, "5語以上ある分類が1つも無い");
+
+    const ids = one.words.slice(0, 5).map((w) => w.id);
+    const saved = await value(db, asMember(u),
+      `select public.set_flavor_text($1, $2)`, [workId, ids]);
+
+    assert(saved.tokens.length === 5, `同じ分類から5語入らない（${saved.tokens.length}語）`);
+  });
+
+  await test("Q", "助詞は、正解語と文字が重なっても候補に残る", async () => {
+    // 「の」を含む正解語のお題を作り、助詞の「の」が消えないことを見る
+    const { set } = await flavorFixture(db, "qflv03", ["傘", "怒り", "水中"]);
+    const particles = set.categories.find((c) => c.key === "particle");
+
+    assert(particles && particles.words.length >= 10,
+      `助詞が ${particles?.words.length ?? 0} 語しか出ていない`);
+
+    for (const need of ["が", "を", "に", "の"]) {
+      assert(particles.words.some((w) => w.label === need), `助詞「${need}」が消えている`);
+    }
+  });
+
+  await test("Q", "助詞でも、人が登録した禁止は効く", async () => {
+    const { u, promptId, workId } = await flavorFixture(db, "qflv04", ["傘", "怒り", "水中"]);
+
+    const ga = Number(
+      (await db.query(`select id from public.flavor_vocab where label = 'が'`)).rows[0].id,
+    );
+    const tagId = Number(
+      (await db.query(
+        `select tag_id from public.prompt_cards where prompt_id = $1 order by slot_order limit 1`,
+        [promptId],
+      )).rows[0].tag_id,
+    );
+
+    await db.query(
+      `insert into public.flavor_vocab_blocks (vocab_id, tag_id, reason)
+       values ($1, $2, '検査のために登録した禁止')`,
+      [ga, tagId],
+    );
+
+    const set = await value(db, asMember(u), `select public.get_flavor_vocab($1)`, [workId]);
+    const particles = set.categories.find((c) => c.key === "particle");
+    assert(!particles.words.some((w) => w.label === "が"), "登録した禁止が助詞に効いていない");
+
+    await expectFailure(
+      () => value(db, asMember(u), `select public.set_flavor_text($1, $2)`, [workId, [ga]]),
+      "FLAVOR_LEAK",
+    );
+
+    await db.query(`delete from public.flavor_vocab_blocks where vocab_id = $1`, [ga]);
+  });
+
+  await test("Q", "文の区切りを保存して、文ごとに読み出せる", async () => {
+    const { u, workId, set } = await flavorFixture(db, "qflv05", ["傘", "怒り", "水中"]);
+    const ids = flatVocab(set).slice(0, 5).map((w) => w.id);
+
+    const saved = await value(db, asMember(u),
+      `select public.set_flavor_text($1, $2, $3)`, [workId, ids, [1, 3]]);
+
+    assert(saved.sentences.length === 3, `${saved.sentences.length} 文になった（3文のはず）`);
+    assert(saved.sentences[0].length === 2, "1文目の語数が違う");
+    assert(saved.sentences[1].length === 2, "2文目の語数が違う");
+    assert(saved.sentences[2].length === 1, "3文目の語数が違う");
+    assert(saved.tokens.length === 5, "語の並びが失われている");
+  });
+
+  await test("Q", "文は3つまで。4つ目の区切りは断る", async () => {
+    const { u, workId, set } = await flavorFixture(db, "qflv06", ["蝶", "歓喜", "強風"]);
+    const ids = flatVocab(set).slice(0, 6).map((w) => w.id);
+
+    await expectFailure(
+      () =>
+        value(db, asMember(u), `select public.set_flavor_text($1, $2, $3)`, [
+          workId, ids, [0, 1, 2],
+        ]),
+      "TOO_MANY_SENTENCES",
+    );
+  });
+
+  await test("Q", "最後の語に付いた区切りは捨てる（1文多く数えない）", async () => {
+    const { u, workId, set } = await flavorFixture(db, "qflv07", ["傘", "怒り", "水中"]);
+    const ids = flatVocab(set).slice(0, 3).map((w) => w.id);
+
+    // 最後（位置2）に印を付けて送っても、2文のまま
+    const saved = await value(db, asMember(u),
+      `select public.set_flavor_text($1, $2, $3)`, [workId, ids, [1, 2]]);
+
+    assert(saved.sentences.length === 2, `${saved.sentences.length} 文になった（2文のはず）`);
+    assert(saved.breaks.length === 1, `残った印が ${saved.breaks.length} 個（1個のはず）`);
+  });
+
+  await test("Q", "語数の上限を超えると断る", async () => {
+    const { u, workId, set } = await flavorFixture(db, "qflv08", ["蝶", "歓喜", "強風"]);
+    const max = set.max_tokens;
+    const pool = flatVocab(set);
+    assert(pool.length > max, "語が上限より少なく、超過を試せない");
+
+    const tooMany = pool.slice(0, max + 1).map((w) => w.id);
+    await expectFailure(
+      () => value(db, asMember(u), `select public.set_flavor_text($1, $2)`, [workId, tooMany]),
+      "BAD_TOKEN_COUNT",
+    );
+
+    // ちょうど上限なら通る
+    const ok = await value(db, asMember(u),
+      `select public.set_flavor_text($1, $2)`, [workId, pool.slice(0, max).map((w) => w.id)]);
+    assert(ok.tokens.length === max, `上限ちょうどが入らない（${ok.tokens.length}語）`);
+  });
+
+  await test("Q", "同じ語を2回置ける（助詞は繰り返し出る）", async () => {
+    const { u, workId, set } = await flavorFixture(db, "qflv09", ["傘", "怒り", "水中"]);
+    const particles = set.categories.find((c) => c.key === "particle");
+    const ga = particles.words.find((w) => w.label === "が").id;
+    const other = flatVocab(set).find((w) => w.id !== ga).id;
+
+    const saved = await value(db, asMember(u),
+      `select public.set_flavor_text($1, $2)`, [workId, [other, ga, other, ga]]);
+
+    assert(saved.tokens.length === 4, `${saved.tokens.length} 語しか入らなかった`);
+    assert(saved.tokens[1] === saved.tokens[3], "2回目の同じ語が別の語に変わっている");
+  });
+
+  await test("Q", "語のIDと区切りは、作者にだけ返る", async () => {
+    const { u, workId, set } = await flavorFixture(db, "qflv10", ["蝶", "歓喜", "強風"]);
+    const r = await makeMember(db, "qflv10r");
+    const ids = flatVocab(set).slice(0, 3).map((w) => w.id);
+    await value(db, asMember(u), `select public.set_flavor_text($1, $2, $3)`, [workId, ids, [1]]);
+
+    const mine = await value(db, asMember(u), `select public.get_work_flavor($1)`, [workId]);
+    assert(Array.isArray(mine.token_ids), "作者に語のIDが返らない");
+    assert(Array.isArray(mine.breaks), "作者に区切りが返らない");
+
+    await answerWork(db, r, workId);
+    const theirs = await value(db, asMember(r), `select public.get_work_flavor($1)`, [workId]);
+    assert(theirs.sentences.length === 2, "読む人に文が分けて返らない");
+    assert(theirs.token_ids === undefined, "読む人に語のIDまで返っている");
+    assert(theirs.breaks === undefined, "読む人に区切りの位置まで返っている");
+  });
+
+  await test("Q", "回答前は、いままでどおり開いた人にしか返らない", async () => {
+    const { u, workId, set } = await flavorFixture(db, "qflv11", ["傘", "怒り", "水中"]);
+    const r = await makeMember(db, "qflv11r");
+    const g = await makeGuest(db);
+
+    await value(db, asMember(u), `select public.set_flavor_text($1, $2, $3)`, [
+      workId, flatVocab(set).slice(0, 3).map((w) => w.id), [1],
+    ]);
+
+    const before = await value(db, asMember(r), `select public.get_work_flavor($1)`, [workId]);
+    assert(before === null, "回答も開封もしていない人に文章が返っている");
+
+    const guest = await value(db, asGuest(g), `select public.get_work_flavor($1)`, [workId]);
+    assert(guest === null, "ゲストに文章が返っている");
+
+    await value(db, asMember(r), `select public.open_flavor_hint($1)`, [workId]);
+    const opened = await value(db, asMember(r), `select public.get_work_flavor($1)`, [workId]);
+    assert(opened !== null && opened.sentences.length === 2, "開いた人に文が返らない");
+  });
+
+  /* ---------------------------------------------------------------------
+   * P. 規約同意の関門（P5）
+   * ------------------------------------------------------------------- */
+
+  /** 関門を置いた時刻（秒）。ここを基準にセッションの開始時刻を作る */
+  async function gateAt() {
+    // consent_gate はどの役からも読めない（封じてある）。準備なので所有者として読む
+    const r = await db.query(`select installed_at from public.consent_gate`);
+    return Math.floor(new Date(r.rows[0].installed_at).getTime() / 1000);
+  }
+
+  /** いま有効な版 */
+  async function currentVersions() {
+    const r = await db.query(
+      `select (select version from public.terms_versions where is_current) t,
+              (select version from public.privacy_versions where is_current) p`,
+    );
+    return r.rows[0];
+  }
+
+  await test("P", "関門を置く前に始まったセッションは、未同意でも止めない", async () => {
+    const u = await makeMemberWithoutConsent(db, "p-old");
+    const gate = await gateAt();
+    const st = await value(db, asMemberAt(u, gate - 3600), `select public.consent_status()`);
+
+    assert(st.needs_consent === true, "未同意なのに同意済みと出ている");
+    assert(st.gate_required === false, "作業中のセッションを止めてしまっている");
+  });
+
+  await test("P", "関門より後に始まったセッションは、未同意なら止める", async () => {
+    const u = await makeMemberWithoutConsent(db, "p-new");
+    const gate = await gateAt();
+    const st = await value(db, asMemberAt(u, gate + 60), `select public.consent_status()`);
+
+    assert(st.gate_required === true, "登録したばかりの人を止めていない");
+  });
+
+  await test("P", "同意すると止まらなくなる。版も記録される", async () => {
+    const u = await makeMemberWithoutConsent(db, "p-agree");
+    const gate = await gateAt();
+    const v = await currentVersions();
+
+    await value(db, asMemberAt(u, gate + 60),
+      `select public.agree_to_documents($1, $2)`, [v.t, v.p]);
+
+    const st = await value(db, asMemberAt(u, gate + 60), `select public.consent_status()`);
+    assert(st.needs_consent === false, "同意したのに未同意のまま");
+    assert(st.gate_required === false, "同意したのに止まる");
+    assert(st.terms_agreed === true && st.privacy_agreed === true, "片方しか記録されていない");
+
+    // terms_agreements はどの役からも読めない。数えるのは所有者として
+    const rows = (
+      await db.query(
+        `select count(*)::int n from public.terms_agreements where user_id = $1`,
+        [u],
+      )
+    ).rows[0].n;
+    assert(rows === 2, `同意の記録が ${rows} 件（規約とポリシーで2件のはず）`);
+  });
+
+  await test("P", "ゲストは同意の対象にしない（止めない）", async () => {
+    const g = await makeGuest(db);
+    const gate = await gateAt();
+    const st = await value(db, { role: "authenticated", uid: g, isAnonymous: true, iat: gate + 60 },
+      `select public.consent_status()`);
+
+    assert(st.is_anonymous === true, "ゲストと見なされていない");
+    assert(st.needs_consent === false, "ゲストに同意を求めている");
+    assert(st.gate_required === false, "ゲストを止めている");
+  });
+
+  await test("P", "券を作り直しただけでは、作業中の人を止めない", async () => {
+    // ログインは関門より前。ところが券は1時間ごとに作り直されるので、
+    // iat（券を作った時刻）は関門より後になる。**それで止めてはいけない。**
+    const u = await makeMemberWithoutConsent(db, "p-refresh");
+    const gate = await gateAt();
+    const st = await value(
+      db,
+      {
+        role: "authenticated",
+        uid: u,
+        isAnonymous: false,
+        iat: gate + 3600,                                    // 券は関門より後に作られた
+        amr: [{ method: "password", timestamp: gate - 3600 }], // ログインは関門より前
+      },
+      `select public.consent_status()`,
+    );
+
+    assert(st.needs_consent === true, "未同意と判定できていない");
+    assert(st.gate_required === false, "券を作り直しただけで作業中の人を止めている");
+  });
+
+  await test("P", "amr が無い券では、iat に落として判定する", async () => {
+    const u = await makeMemberWithoutConsent(db, "p-iatonly");
+    const gate = await gateAt();
+
+    const before = await value(db, asMemberIatOnly(u, gate - 3600),
+      `select public.consent_status()`);
+    assert(before.gate_required === false, "関門より前の券で止めている");
+
+    const after = await value(db, asMemberIatOnly(u, gate + 60),
+      `select public.consent_status()`);
+    assert(after.gate_required === true, "関門より後の券で止めていない");
+  });
+
+  await test("P", "セッションの開始時刻が読めなければ止めない", async () => {
+    const u = await makeMemberWithoutConsent(db, "p-noiat");
+    const st = await value(db, asMember(u), `select public.consent_status()`);
+
+    assert(st.needs_consent === true, "未同意と判定できていない");
+    assert(st.session_started_at === null, "開始時刻が入ってしまっている");
+    assert(st.gate_required === false, "根拠が無いのに止めている");
+  });
+
+  await test("P", "規約を改定すると、改定より後に始まったセッションだけ止まる", async () => {
+    const u = await makeMemberWithoutConsent(db, "p-renew");
+    const gate = await gateAt();
+    const v = await currentVersions();
+
+    await value(db, asMemberAt(u, gate + 60),
+      `select public.agree_to_documents($1, $2)`, [v.t, v.p]);
+
+    // 新しい版を掲示する。掲示の時刻は「いま」
+    await db.query(`update public.terms_versions set is_current = false where is_current`);
+    await db.query(
+      `insert into public.terms_versions (version, body_md, is_current, published_at)
+       values ('9999-01-01', '# 新しい規約', true, now())`,
+    );
+
+    const after = Math.floor(Date.now() / 1000) + 60;
+    const before = Math.floor(Date.now() / 1000) - 3600;
+
+    const stAfter = await value(db, asMemberAt(u, after), `select public.consent_status()`);
+    assert(stAfter.needs_consent === true, "改定したのに未同意にならない");
+    assert(stAfter.gate_required === true, "改定後にログインした人を止めていない");
+
+    const stBefore = await value(db, asMemberAt(u, before), `select public.consent_status()`);
+    assert(stBefore.gate_required === false, "改定前から作業している人を途中で止めている");
+
+    // ポリシーは変えていないので、そちらの同意は残っている
+    assert(stAfter.privacy_agreed === true, "触っていないポリシーの同意まで外れた");
+    assert(stAfter.terms_agreed === false, "古い版の同意が新しい版に効いてしまっている");
+
+    // 後片付け。元の版へ戻す
+    await db.query(`delete from public.terms_versions where version = '9999-01-01'`);
+    await db.query(`update public.terms_versions set is_current = true where version = $1`, [v.t]);
+  });
+
+  await test("P", "いま有効でない版には同意できない", async () => {
+    const u = await makeMember(db, "p-badver");
+    await expectFailure(
+      () =>
+        value(
+          db,
+          asMemberAt(u, Math.floor(Date.now() / 1000)),
+          `select public.agree_to_documents('0000-00-00', '0000-00-00')`,
+        ),
+      "VERSION_MISMATCH",
+    );
+  });
+
+  await test("P", "未同意のままでは作品を投稿できない（画面を外しても穴が開かない）", async () => {
+    const u = await makeMemberWithoutConsent(db, "p-guard");
+    const p = await drawPrompt(db, u);
+    const workId = await value(db, asMember(u), `select gen_random_uuid()`);
+    await expectFailure(
+      () =>
+        value(
+          db,
+          asMember(u),
+          `select public.create_work($1, $2, '未同意の投稿', $3, 800, 600, 'original', null)`,
+          [workId, p.prompt_id, `${u}/${workId}.png`],
+        ),
+      "TERMS_NOT_AGREED",
+    );
+  });
+
+  await test("P", "同意すれば投稿できる", async () => {
+    const u = await makeMember(db, "p-ok");
+    const v = await currentVersions();
+    await value(db, asMember(u), `select public.agree_to_documents($1, $2)`, [v.t, v.p]);
+
+    const p = await drawPrompt(db, u);
+    const workId = await postWork(db, u, p.prompt_id, "同意済みの投稿");
+    assert(typeof workId === "string" && workId.length > 0, "投稿できていない");
+  });
+
+
 
 
 }
