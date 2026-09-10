@@ -40,6 +40,7 @@ import {
   fixtureSession,
   makePng,
   must,
+  parseQuiz,
   section,
   submitWork,
   targetEnv,
@@ -241,9 +242,11 @@ async function postWork(promptId, title) {
  * 開くのは**この作品を作っていない別の人**。
  */
 let viewerPage = null;
+let viewerHttp = null;
 async function asViewer(workId) {
   if (!viewerPage) {
     const viewerSession = await fixtureSession("shape-viewer");
+    viewerHttp = viewerSession;
     const viewerCtx = await browser.newContext({ viewport: { width: 1280, height: 900 } });
     await viewerCtx.addCookies(
       Object.entries(viewerSession.cookies()).map(([name, value]) => ({
@@ -268,12 +271,46 @@ async function asViewer(workId) {
       { timeout: 30000 },
     )
     .catch(() => {});
+
+  // **同意の関門で止まっていないこと（P5）。**
+  // ここを見ないと、関門の画面を「クイズが0問の作品ページ」として数えてしまい、
+  // 出題の作りが壊れたように見える。2026-09-10 の本番切り替えで実際にそうなった。
+  must(
+    (await viewerPage.locator("[data-consent-gate]").count()) === 0,
+    "回答者が同意の関門で止まっていない",
+    viewerPage.url(),
+  );
+
+  const text = await viewerPage.locator("body").innerText();
+
+  // 出題の数と選択肢は、**ブラウザの見た目からは数えない。**
+  //
+  // P1 で回答の画面が1セクションずつ進む形になった（_answer.tsx）。
+  // JavaScript が動くときに見えているのはいま開いている1セクションだけで、
+  // 全部を並べる古い形（QuizForm）は <noscript> の中にある。
+  // ブラウザは noscript の中身を要素として読まないので、
+  // `fieldset[data-question]` を数えると 0 問になる。
+  // 2026-09-10 に、この 0 を「出題が壊れた」と読み違えた。
+  //
+  // 数と選択肢が全部そろっているのは、通信で受け取った HTML のほう。
+  // そこを parseQuiz で読む。**同じ人の Cookie で開く。**
+  const raw = await viewerHttp.get(`/works/${workId}`);
+  const parsed = parseQuiz(raw.html);
+
   return {
-    questionCount: await viewerPage.locator("fieldset[data-question]").count(),
-    choices: await viewerPage
-      .locator("input[data-choice-label]")
-      .evaluateAll((els) => els.map((e) => e.getAttribute("data-choice-label"))),
-    text: await viewerPage.locator("body").innerText(),
+    questionCount: parsed.length,
+    // いま画面に出ているセクションの総数。上の数と食い違えば、どちらかが違う
+    sectionTotal: Number(
+      (await viewerPage
+        .locator("[data-section-total]")
+        .first()
+        .getAttribute("data-section-total")
+        .catch(() => null)) ?? 0,
+    ),
+    choices: parsed.flatMap((q) => q.choices.map((c) => c.label)),
+    text,
+    // 0 問だったときに「何の画面を見ていたか」を言えるようにしておく
+    lead: text.replace(/\s+/g, " ").slice(0, 160),
     assistCount: await viewerPage.locator('[data-testid="prompt-shape-assist"]').count(),
   };
 }
@@ -302,7 +339,11 @@ must(factsA.savedKey === null, "DBにも何も入っていない", String(factsA
 
 const workA = await postWork(idA, `かたち検査A ${Date.now().toString().slice(-6)}`);
 const viewA = await asViewer(workA);
-must(viewA.questionCount > 0, "回答者にクイズが出ている", `${viewA.questionCount} 問`);
+must(viewA.questionCount > 0, "回答者にクイズが出ている",
+  `${viewA.questionCount} 問 ／ 見えていた画面: ${viewA.lead}`);
+must(viewA.sectionTotal === viewA.questionCount,
+  "画面に出ている段数と、出題数が同じ",
+  `画面 ${viewA.sectionTotal} 段 / 出題 ${viewA.questionCount} 問`);
 must(
   viewA.questionCount === factsA.eligibleCount,
   "出題数が、そのお題の出題対象の枠数とぴったり同じ",

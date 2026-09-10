@@ -696,6 +696,17 @@ export async function passConsent(s) {
   return true;
 }
 
+/**
+ * いま開いた画面が「同意の関門」かどうか。
+ *
+ * 関門の画面には `data-consent-gate` が付いている（src/app/consent/page.tsx）。
+ * 検査が「クイズが0問」のような遠い形で落ちると原因が分からないので、
+ * **関門で止まっているならそう言う**ためだけに使う。
+ */
+export function isConsentGate(html) {
+  return /data-consent-gate/.test(html);
+}
+
 /** /account でサインイン済みかどうか */
 export function isSignedIn(html) {
   return /登録ユーザーとしてサインインしています/.test(textOf(html));
@@ -709,7 +720,7 @@ export function isSignedIn(html) {
  * さらに fixtureSession が Cookie を使い回すので、
  * ふだんはここまで来ない。
  */
-export async function signIn(s, email, password) {
+export async function signIn(s, email, password, { consent = true } = {}) {
   const page = await s.get("/account");
   const form = forms(page.html).find((f) => /サインインする/.test(f.text));
   if (!form?.actionId) throw new Error("/account にサインインフォームが見つかりません");
@@ -725,7 +736,10 @@ export async function signIn(s, email, password) {
   // ログインした直後に、規約への同意を求められることがある（P5）。
   // **人がやることと同じことをする。**検査用の利用者は運営の口から直接
   // 作っているので、登録の画面を通っておらず、同意の記録が無い。
-  await passConsent(s);
+  //
+  // consent:false を渡せるのは、**関門そのものを確かめる検査**のためだけ
+  // （scripts/smoke-consent.mjs）。押す前の状態を見たいので、ここでは押さない。
+  if (consent) await passConsent(s);
 
   return after;
 }
@@ -754,6 +768,13 @@ export async function fixtureSession(role) {
   if (Object.keys(cached).length > 0) {
     const page = await s.get("/account");
     if (isSignedIn(page.html)) {
+      // **控えの Cookie で通る道でも、同意を1回確かめる。**
+      // 関門（P5）が見ているのは「同意したか」であって「たった今サインイン
+      // したか」ではない。ここを飛ばすと、Cookie が生きているあいだ、その人は
+      // 未同意のまま /consent へ送られ続け、作品も回答も開けない。
+      // 2026-09-10 の本番切り替えで実際にそうなった（回答者の画面が
+      // 「クイズ0問」に見えて、原因が関門だと分からなかった）。
+      await passConsent(s);
       storeCookies(role, s.cookies());
       return s;
     }
@@ -772,10 +793,10 @@ export async function fixtureSession(role) {
  * 退会の検査のように、**その人が消える前提**の流れで使う。
  * 使い回すと次の実行で「もう居ない人」になってしまうため。
  */
-export async function throwawaySession(role) {
+export async function throwawaySession(role, { consent = true } = {}) {
   const user = await createThrowawayUser(role);
   const s = session(`${role}-throwaway`);
-  await signIn(s, user.email, user.password);
+  await signIn(s, user.email, user.password, { consent });
 
   // 片づけの範囲に入れる。**ここに入った人の行しか消さない**
   throwawayIds.push(user.id);
@@ -905,6 +926,54 @@ export async function submitWork(s, promptId, fields, png) {
   // **ここでは積まない。**積む場所を2つ持つと、片方を通らない
   // 書きかた（smoke-race の連打）が生まれたときに気づけない。
   return after;
+}
+
+/**
+ * 作者の言葉を組む画面から、いま押せる語を読む（P5-A）。
+ *
+ * 【なぜ読み方を変えたか】
+ *   以前の画面は「語ごとに1つ欄がある」形で、`name="vocabId"` を数えれば
+ *   選べる語が分かった。P5-A で画面がブラウザの中で動く形に変わり、
+ *   語は欄ではなくボタンになった。送るのは隠し欄2つだけになっている。
+ *   数え方を変えないと、**語が0個に見える。**2026-09-10 に実際にそうなった。
+ *
+ * 【何を読むか】
+ *   ボタンに付いている data-word-id と data-word。
+ *   最初に開いている分類のぶんだけが出ている（他の分類はブラウザ側で開く）。
+ *   通信だけの検査には、そのぶんで足りる。
+ */
+export function flavorChoices(html) {
+  const out = [];
+  const re = /data-word="([^"]*)"\s+data-word-id="(\d+)"/g;
+  for (const m of clean(html).matchAll(re)) {
+    out.push({ label: m[1].trim(), id: m[2] });
+  }
+  return out;
+}
+
+/**
+ * 作者の言葉を保存する（通信だけ。ブラウザは使わない）。
+ *
+ * 【送る形は画面ではなく受け口から取っている】
+ *   src/app/works/[id]/actions.ts が読むのは vocabIds と breaks の2つで、
+ *   どちらも数をカンマでつないだ文字列。breaks は「その番号の語のあとで
+ *   文を切る」という位置で、最後の語には付けられない。
+ *   画面の見た目ではなく、この契約に合わせる。
+ *
+ * @param ids     語のID（文字列か数の配列）
+ * @param breaks  文を切る位置（0 起点。最後の語の位置は入れない）
+ */
+export async function setFlavor(s, workId, ids, breaks = []) {
+  const page = await s.get(`/works/${workId}`);
+  const form = forms(page.html).find((f) => /この文章にする/.test(f.text));
+  if (!form?.actionId) throw new Error(`/works/${workId} に文章を組む欄が見つかりません`);
+
+  return s.post(`/works/${workId}`, {
+    [form.actionId]: "",
+    workId,
+    vocabIds: ids.join(","),
+    breaks: breaks.join(","),
+  });
 }
 
 /**

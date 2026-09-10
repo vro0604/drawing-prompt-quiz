@@ -44,8 +44,10 @@ import {
   accountUserId,
   finish,
   fixtureSession,
+  forms,
   makePng,
   must,
+  parseQuiz,
   section,
   submitWork,
   targetEnv,
@@ -123,7 +125,14 @@ async function press(locator) {
   return Date.now() - started;
 }
 
-/** カードを決めるのにかかった時間。2往復になったことの影響を見る */
+/**
+ * カードを1枚引くのにかかった時間。2往復になったことの影響を見る。
+ *
+ * P0 で「めくる → これに決める」の2段が無くなり、**伏せカードを1回押すと
+ * その枠が決まる**ようになった。決める操作はこの1押しなので、ここを測る。
+ * 以前は「これに決める」を押した時間を測っていて、そのボタンが消えたあと
+ * 1回も測れず、検査だけが落ちていた（2026-09-10 の実測）。
+ */
 const chooseTimes = [];
 
 /** 進行中のドラフトを片づけてから、新しく1つ始める */
@@ -144,37 +153,17 @@ async function startFreshDraft() {
 /**
  * 盤面を最後まで進める。
  *
- * seekCovered が true なら、めくった中に対応表の語があればそれに決める。
- * 無ければ、その枠の伏せカードを全部めくってから最初のものに決める。
- * **候補は増えない。**めくるだけでは総ドラフト基数は動かない。
+ * P0 以後、押せるのは伏せカードだけ。**1回押すとその枠が決まる。**
+ * 引く前にどれになるかは選べないので、seekCovered は「どの枠から先に
+ * 引くか」を変えるだけになった。対応表の語に当たるかどうかは運で、
+ * 当たったかどうかは引いたあとに盤面を読んで確かめる。
  */
-async function playBoard({ seekCovered }) {
+async function playBoard({ seekCovered } = {}) {
+  void seekCovered;
   for (let guard = 0; guard < 60; guard += 1) {
-    const decide = author.page.locator("button:not([disabled])", { hasText: "これに決める" });
     const hidden = author.page.locator("button[data-card=hidden]:not([disabled])");
-    const nDecide = await decide.count();
-    const nHidden = await hidden.count();
-    if (nDecide === 0 && nHidden === 0) break;
-
-    if (seekCovered && nDecide > 0) {
-      const shown = await author.page.locator('[data-card="revealed"]').allInnerTexts();
-      const hit = shown.findIndex((t) => COVERED.has(t.trim()));
-      if (hit >= 0) {
-        chooseTimes.push(await press(decide.nth(hit)));
-        continue;
-      }
-    }
-
-    if (seekCovered && nHidden > 0) {
-      await press(hidden.first());
-      continue;
-    }
-
-    if (nDecide > 0) {
-      chooseTimes.push(await press(decide.first()));
-      continue;
-    }
-    await press(hidden.first());
+    if ((await hidden.count()) === 0) break;
+    chooseTimes.push(await press(hidden.first()));
   }
 }
 
@@ -204,15 +193,32 @@ async function promptDirectives() {
   return Object.fromEntries(pairs);
 }
 
-/** 対応表の語を引き当てて、サブ指令が出るまでやり直す */
-async function drawUntilDirective(tries) {
+/**
+ * 対応表の語を引き当てて、サブ指令が出るまでやり直す。
+ *
+ * 【なぜ何度もやり直すのか】
+ *   P0 以後、引く前にどのカードになるかは選べない。対応表にあるのは
+ *   語彙のうち24語で、当たっても付くのは7割。**1回のドラフトで当たる
+ *   保証は無い。**だから当たるまで引き直す。
+ *
+ * 【回数の決め方】
+ *   1回のドラフトで3〜4枠を引くので、25回で75〜100枚。
+ *   以前は10回で、10回とも外れて検査だけが落ちたことがある
+ *   （2026-09-10 の実測。同じ日の別の実行では4回目で当たっていた）。
+ *   割合そのものは手元の S3 群が乱数を固定して見ているので、
+ *   ここは「当たれば出る」ことだけを見る。
+ */
+async function drawUntilDirective(tries = 25) {
+  let drawn = 0;
   for (let i = 0; i < tries; i += 1) {
     await startFreshDraft();
-    await playBoard({ seekCovered: true });
+    const before = chooseTimes.length;
+    await playBoard();
+    drawn += chooseTimes.length - before;
     const found = await boardDirectives();
-    if (Object.keys(found).length > 0) return { attempt: i + 1, found };
+    if (Object.keys(found).length > 0) return { attempt: i + 1, drawn, found };
   }
-  return { attempt: tries, found: {} };
+  return { attempt: tries, drawn, found: {} };
 }
 
 /** いま進行中のドラフトの id と世代 */
@@ -270,7 +276,7 @@ must(
 
 section("E. 引き直すと、いまの世代に古いサブ指令が残らない");
 
-const rerollDraw = await drawUntilDirective(10);
+const rerollDraw = await drawUntilDirective();
 must(
   Object.keys(rerollDraw.found).length > 0,
   "対応表の語を引いて、盤面にサブ指令が出た",
@@ -308,10 +314,10 @@ if (Object.keys(rerollDraw.found).length > 0 && (await rerollButton.count()) > 0
 
 section("B. 対応表の語を引くと、盤面にサブ指令が出る");
 
-const draw = await drawUntilDirective(10);
+const draw = await drawUntilDirective();
 const onBoard = draw.found;
 must(Object.keys(onBoard).length > 0, "盤面にサブ指令が出た",
-  `${draw.attempt} 回目 / ${JSON.stringify(onBoard)}`);
+  `${draw.attempt} 回目 / ${draw.drawn} 枚引いた / ${JSON.stringify(onBoard)}`);
 
 // 出ているのが対応表の表示文であること（鍵がそのまま出ていない）
 for (const [slot, text] of Object.entries(onBoard)) {
@@ -412,9 +418,39 @@ if (workId) {
   });
 
   await guesser.page.goto(`${BASE}/works/${workId}`, { waitUntil: "domcontentloaded" });
-  const groups = guesser.page.locator("fieldset[data-question]");
-  await groups.first().waitFor({ state: "attached", timeout: 30000 });
-  const questionCount = await groups.count();
+
+  // **同意の関門で止まっていないこと（P5）。**
+  // 止まっていると出題の枠が1つも無く、下の待ち合わせが時間切れで落ちる。
+  // 落ちると後片づけまで届かず、本番に検査用の作品が残る。
+  // 2026-09-10 の本番切り替えで実際にそうなった。先に見て、先に言う。
+  must(
+    (await guesser.page.locator("[data-consent-gate]").count()) === 0,
+    "回答者が同意の関門で止まっていない",
+    guesser.page.url(),
+  );
+
+  // 出題の数は、**ブラウザの見た目からは数えない。**
+  //
+  // P1 で回答の画面が1セクションずつ進む形になった（_answer.tsx）。
+  // JavaScript が動くときに見えているのは、いま開いている1セクションだけ。
+  // 全部を並べる古い形（QuizForm）は <noscript> の中にあり、
+  // ブラウザはその中身を要素として読まない。だから
+  // `fieldset[data-question]` を数えると 0 問になる。
+  // 2026-09-10 に、この 0 を「出題が壊れた」と読み違えた。
+  //
+  // 数がそろっているのは、通信で受け取った HTML のほう。同じ人の Cookie で読む。
+  const guessRaw = await guesser.s.get(`/works/${workId}`);
+  const guessQuiz = parseQuiz(guessRaw.html);
+  const questionCount = guessQuiz.length;
+
+  // いま画面に出ている段の総数。上の数と食い違えば、どちらかが違う
+  const sectionTotal = Number(
+    (await guesser.page
+      .locator("[data-section-total]")
+      .first()
+      .getAttribute("data-section-total")
+      .catch(() => null)) ?? 0,
+  );
 
   const eligible = await admin()
     .rpc("get_work_quiz", { p_work_id: workId })
@@ -430,6 +466,8 @@ if (workId) {
 
   must(withKey.length > 0, "確定したお題にサブ指令が入っている", `${withKey.length} 件`);
   must(questionCount > 0, "回答者にクイズが出た", `${questionCount} 問`);
+  must(sectionTotal === questionCount, "画面に出ている段数と、出題数が同じ",
+    `画面 ${sectionTotal} 段 / 出題 ${questionCount} 問`);
   if (eligible !== null) {
     must(questionCount === eligible, "問数がDB側と一致", `画面 ${questionCount} / DB ${eligible}`);
   }
@@ -443,15 +481,23 @@ if (workId) {
   must(leakedLabels.length === 0, "回答者の画面に表示文が1つも出ていない", leakedLabels.join(","));
   must(!/sub_directive/.test(guessHtml), "回答者の画面に列の名前が出ていない");
 
-  // 答えて、採点が動くこと
-  for (let i = 0; i < questionCount; i += 1) {
-    await groups.nth(i).locator("input[type=checkbox]").first().check();
+  // 答えて、採点が動くこと。
+  //
+  // **押し方はここの本題ではない。**新しい画面は「長押しで確定して次の段へ」
+  // という指の操作で、それを機械に真似させると、押し方が変わるたびに
+  // サブ指令の検査が落ちる。答え方そのものは smoke:cutover と手元の
+  // ブラウザ試験が見ている。ここは通信で1回答えて、
+  // **答えたあとの画面と通信に漏れが無いか**へ進む。
+  const answerForm = forms(guessRaw.html).find((f) => /回答する/.test(f.text));
+  must(!!answerForm?.actionId, "回答の口がある");
+  if (answerForm?.actionId) {
+    const fields = { [answerForm.actionId]: "", workId };
+    for (const q of guessQuiz) fields[q.name] = q.choices[0].tagId;
+    await guesser.s.post(`/works/${workId}`, fields);
   }
-  const waiting = guesser.page
-    .waitForResponse((r) => r.request().method() === "POST", { timeout: 30000 })
-    .catch(() => null);
-  await guesser.page.getByRole("button", { name: "回答する" }).click();
-  await waiting;
+
+  // 答えたあとの画面を、ブラウザでもう一度開き直す（通信も拾い直す）
+  await guesser.page.reload({ waitUntil: "domcontentloaded" });
   await guesser.page
     .waitForFunction(() => document.querySelectorAll('[aria-busy="true"]').length === 0, {
       timeout: 40000,
@@ -641,16 +687,16 @@ if (token && target && targetSlot) {
 
 // ── 7. 速さ ────────────────────────────────────────────
 
-section("速さ（カードを決める操作。2往復になったことの影響）");
+section("速さ（カードを1枚引く操作。2往復になったことの影響）");
 
 if (chooseTimes.length > 0) {
   const sorted = [...chooseTimes].sort((a, b) => a - b);
   const median = sorted[Math.floor(sorted.length / 2)];
   const max = sorted[sorted.length - 1];
   console.log(`  中央値 ${median}ms ／ 最大 ${max}ms ／ ${chooseTimes.length} 回`);
-  must(max < 15000, "決める操作が待たされていない", `最大 ${max}ms`);
+  must(max < 15000, "引く操作が待たされていない", `最大 ${max}ms`);
 } else {
-  must(false, "決める操作の時間を測れなかった");
+  must(false, "引く操作の時間を測れなかった（伏せカードを1回も押していない）");
 }
 
 // ── 後片づけ ──────────────────────────────────────────

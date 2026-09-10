@@ -5,6 +5,99 @@
 日時は JST。全体が400行を超えたら、一番下（最も古いもの）から削ります。
 
 ---
+## 2026-09-10 本番向けの検査を、新しい画面に追いつかせた
+
+### 何ができるようになったか
+
+本番でだけ確かめられることを、7本の検査で自動的に確かめられるようになった。
+切り替えの直後は5本のうち3本が落ちていて、落ちかたが
+「クイズが0問」「使える語が0語」だったため、**本番の機能が壊れたように見えていた。**
+実際に壊れていたのは検査の数えかたで、機能は動いていた。
+
+新しく確かめられるようになったこと。
+
+- まだ同意していない登録者が、同意して先へ進めること（本番では未確認だった）
+- 作者が語を選んで文章を組み、語順と文の切れ目が保存されること
+- 端末への通知を頼む入口が出ること。断っても画面が壊れないこと
+
+### 何を引き換えにしたか
+
+答え方そのものを、知らせとサブ指令の検査では見なくなった。
+新しい回答画面は「1セクションずつ・長押しで確定」で、その操作を機械に真似させると
+押し方が変わるたびに関係のない検査が落ちる。押し方は、それを本題にしている
+手元のブラウザ試験と、切り替えの検査が見る。
+
+もう一つ。検査用の利用者を消す道具が、消しながら並べていたせいで取りこぼしていた。
+先に全部並べてから消す形に直したので、対象が多いときは時間がかかるようになった。
+
+### どこまでで、どこからが未着手か
+
+済み: 本番向け検査7本（うち新規2本）／同意の往復／語を組む画面／
+回答者側の非漏洩（形状アシスト・サブ指令）／知らせの深い検査／通知の入口／
+検査用の作品0件／検査用の利用者198人を削除
+
+未着手: 実機で通知の許可を出して宛先が保存されること（手で確かめる）。
+消せない検査用の利用者119人（認証サービスが500を返す。SQLでは消える）。
+
+### 触ったファイル
+
+```
+scripts/_smoke-http.mjs       同意の確認・語の読み取り・文章の保存を足す
+scripts/_smoke-users.mjs      取りこぼしと握りつぶしを直す。下見を足す
+scripts/smoke-cutover.mjs     4節を新しい語選びの画面へ。偽の合格を直す
+scripts/smoke-shape-assist.mjs  出題の数え方を直す。関門の印を見る
+scripts/smoke-sub-directive.mjs 同上。引く操作の時間を測る
+scripts/smoke-notice.mjs      答え方を通信へ
+scripts/smoke-consent.mjs     新規。同意の関門を1周する
+scripts/smoke-push.mjs        新規。通知の入口を確かめる
+scripts/smoke-fixtures.mjs    新規。検査用の利用者を本番の入口から片づける
+```
+
+アプリのコードと migration は1行も変えていない。
+
+### 次の一手
+
+実機で通知の許可を1台だけ出して、宛先が保存されることを確かめる。
+
+---
+## 2026-09-10 本番へ切り替えた（DB 7本 → アプリ 12 commit）
+
+### 何ができるようになったか
+
+本番のデータベースとアプリが、P0〜P5 と origin/main の後発機能の両方を持つ状態になった。
+利用者から見て変わるのは次の3つ。カードは1回引けばその枠が決まる（めくって決める2段は消えた）。
+規約の同意が、作品を出すときではなく、次に開いたときに求められる。
+自分の作品に回答が届くと知らせが出て、許可すれば端末の通知でも届く。
+
+### 何を引き換えにしたか
+
+登録している人のうち、いまの版（2026-08-08）に同意していない人は、次に開いたときに
+同意の画面へ送られる。同意するまで先へ進めない。作品を出したことのある34人は
+すでに同意済みなので当たらない。本物の作品2件の作者も当たらない。
+
+もう一つ。本番向けのスモーク3本（cutover / shape-assist / sub-directive）は、
+回答者の画面を開く手前で同意の関門に当たって止まる。スクリプトが関門を知らないため。
+作者側の確認はすべて通っている。
+
+### どこまでで、どこからが未着手か
+
+済み: DB適用（7本を1トランザクション）／履歴の記録7件／未適用0本／構造検査208項目／
+関数185・表63／push（早送り 83d1d0f → dd71970）／Production deployment 成功／
+公開の検査18項目／本番の引く・確定・引き直し66項目／形状アシスト／サブ指令（作者側）
+
+未着手: 同意の画面を実際に承諾できるかの本番確認（関門に当たる利用者を作れないため）。
+本番向けスモークを関門に対応させること。課金2本の版番号の衝突（別件）。
+
+### 触ったファイル
+
+なし（コードは1行も変えていない）。本番へ出したのは既存の12 commit。
+Production deployment: dd719709a07fc580e131aa323e7bbe187fbaf92d
+
+### 次の一手
+
+本番向けスモーク3本へ、同意の関門を通る手順を足す。
+
+---
 ## 2026-09-10 本番へ切り替える道具を作った（7本を1つのトランザクションで）
 
 ### 何ができるようになったか
@@ -268,57 +361,3 @@ Vercel へはまだ設定していない。この環境に Vercel CLI も資格�
   docs/decisions.md（D184 の「掃除の頻度」）
   docs/launch-checklist.md（Cron の確認項目）
   docs/web-push-setup.md（VAPID_SUBJECT の説明）
-
----
-## 2026-09-10 P0〜P5 を段ごとの 8 commit にした（まだ deploy しない）
-
-### 直前に終えたこと
-
-150edda を土台に、この木の未コミット分（95ファイル）を段ごとの 8 commit に分けた。
-ファイル単位ではなく、行の塊ごとに段を割ってから index へ載せている
-（作業木の中身は 1 バイトも動かさず、index だけを段ごとに組み立てた）。
-
-  1. feat(draft): add single-pass draw and per-slot redo            11ファイル
-  2. feat(quiz): add staged exact and place answer flow             10
-  3. feat(results): add answer analysis and respondent comparison   11
-  4. feat(analysis): add creator drilldown and answer exclusion     10
-  5. feat(analysis): add per-work import capacity                   11
-  6. feat(consent): add consent gate and flavor composer            35
-  7. feat(challenge): add overrun inactivity and push notifications 46
-  8. docs: align P0-P5 launch and verification records              11
-
-自動生成物（統合.md ／ 統合サムネイル/）はどの commit にも入れていない。
-
-### 分けきれなかったところ（そのまま残した）
-
-P2 の作者結果の部品（_results.tsx の AuthorAnalysis）は、P3 の掘り下げと
-P4 の母数表示を body の中に持っている。P2 だけの姿は一度も書かれていないので、
-作り出さずに P2 の commit へ置いた。
-同じ理由で、P2 と P3 の試験は P4 の取り込み関数を呼ぶ（P4 で母数の定義が
-変わったときに書き直したため）。該当は 22 行。
-
-### 8 commit を作ったあとの実測（HEAD で回した）
-
-  型検査 0 / lint 0（警告2・既存）/ 単体 79 / 柵 30 / 配色 合格 / 語彙 652
-  DB構造 179 / DB横断 269 / upgrade 31 / スモーク 11 / ブラウザ 106
-  check:docs 14/14 / VAPID 無しの build 通過
-  本番相当DB: 6本すべて適用でき、関数 201 本・表 68 個
-
-ブラウザ試験は 2 回、別セッションとの端末の取り合いで壊れた（サーバーが落ちた／
-EADDRINUSE）。3 回目で 106/106。待ち受けの判定が pgrep -f で「待っている
-シェル自身」を数えていたので、process 名が node のものだけを見る形へ直した。
-
-### 次の一手
-
-deploy はまだしない。本番へ当てるときは db:apply:one で 6 本を順に当て、
-migration repair で履歴へ記録してから app を出す。db:deploy は通らない。
-
-### 触ったファイルのパス
-
-- `supabase/migrations/20260910140000_sub_directive.sql`（本番適用済み）
-- `src/features/modifier/{types.ts,rpc.ts}`（新規）
-- `src/app/play/actions.ts`、`src/features/draft/rpc.ts`、`src/lib/supabase/admin.ts`
-- `src/app/play/_components.tsx`、`src/app/prompt/[id]/page.tsx`
-- `scripts/db-checks.mjs`、`scripts/smoke-sub-directive.mjs`（新規）、`package.json`
-- `test/db/run.mjs`、`test/e2e/browser.mjs`
-- `docs/decisions.md`（D193）、`docs/spec.md`（18節）

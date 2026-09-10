@@ -24,12 +24,14 @@ import {
   clean,
   drawPrompt,
   finish,
+  flavorChoices,
   forms,
   makePng,
   must,
   parseQuiz,
   section,
   session,
+  setFlavor,
   fixtureSession,
   submitWork,
   textOf,
@@ -220,18 +222,44 @@ section("4. フレーバーテキストを作る");
   const page = await author.get(`/works/${workId}`);
   const f = formByText(page.html, /この文章にする/);
   if (f?.actionId) {
-    const pairs = [...clean(page.html).matchAll(
-      /name="vocabId" value="(\d+)"[^>]*\/>\s*([^<]{1,16})</g)];
-    must(pairs.length > 0, "使える語が出ている", `${pairs.length}語`);
-    const chosen = pairs.slice(0, 2);
-    const after = await author.post(`/works/${workId}`, {
-      [f.actionId]: "", workId, vocabId: chosen.map((m) => m[1]),
-    });
-    // 保存できたかは、保存後にだけ出る「いまの文章」の欄で見る。
-    // 「作者の言葉を付ける」は保存前から出ている見出しなので手がかりにしない。
-    const saved = /いまの文章/.test(textOf(after.html));
-    must(saved, "作者の言葉を付けられた", after.path);
-    record("flavorWords", chosen.map((m) => m[2].trim()));
+    // 語はボタンとして出ている（P5-A でブラウザの中で動く形になった）。
+    // 送るのは vocabIds と breaks の2つで、どちらもカンマつなぎ。
+    const choices = flavorChoices(page.html);
+    must(choices.length > 0, "使える語が出ている", `${choices.length}語`);
+
+    const chosen = choices.slice(0, 3);
+    // 1語目のあとで文を切る。**最後の語のあとには付けられない**契約
+    const after = await setFlavor(
+      author,
+      workId,
+      chosen.map((c) => c.id),
+      chosen.length >= 2 ? [0] : [],
+    );
+
+    // 断られると ?error= を付けて戻ってくる。**行き先で先に見分ける。**
+    // 「いまの文章」は前の保存が残っていても出るので、それだけを手がかりに
+    // すると、断られたのに合格になる（2026-09-10 に実際にそうなった）。
+    must(!/[?&]error=/.test(after.path), "保存が断られていない",
+      decodeURIComponent(after.path));
+    must(/いまの文章/.test(textOf(after.html)), "作者の言葉を付けられた", after.path);
+
+    // 組んだ語が、そのまま画面に出ていること
+    const shown = textOf(after.html);
+    must(chosen.every((c) => shown.includes(c.label)),
+      "組んだ語が画面に出ている", chosen.map((c) => c.label).join("・"));
+
+    // 文の切れ目が保存されている（組み直しの初期値として返ってくる）
+    const reopened = await author.get(`/works/${workId}`);
+    const marks = [...clean(reopened.html).matchAll(/data-break="1"/g)].length;
+    must(chosen.length >= 2 ? marks >= 1 : true,
+      "文の切れ目が保存されている", `切れ目 ${marks} 個`);
+
+    const order = [...clean(reopened.html).matchAll(/data-token-label="([^"]*)"/g)]
+      .map((m) => m[1]);
+    must(order.join(",") === chosen.map((c) => c.label).join(","),
+      "語順が保存されている", order.join("・"));
+
+    record("flavorWords", chosen.map((c) => c.label));
   } else {
     must(false, "フレーバーテキストの入力欄が出ている");
   }

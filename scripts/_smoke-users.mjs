@@ -352,9 +352,29 @@ export function storeCookies(role, cookies) {
  * **`dpq-fixture-…@dpq-smoke.invalid` 以外は絶対に消さない。**
  * 判定は isFixtureEmail が持っていて、そこを通らないものは飛ばす。
  */
-export async function purgeFixtureUsers() {
+/** 検査用の利用者のIDだけを並べる。消さない */
+export async function fixtureUserIds() {
   const admin = adminClient();
-  let removed = 0;
+  const ids = [];
+  for (let page = 1; page <= 50; page += 1) {
+    const { data, error } = await admin.auth.admin.listUsers({ page, perPage: 200 });
+    if (error) throw new Error(`利用者を並べられません: ${error.message}`);
+    for (const u of data.users) if (isFixtureEmail(u.email)) ids.push(u.id);
+    if (data.users.length < 200) break;
+  }
+  return ids;
+}
+
+export async function purgeFixtureUsers({ dryRun = false } = {}) {
+  const admin = adminClient();
+
+  // 【先に全部並べてから消す】
+  //   以前は「1ページ読む → その場で消す → 次のページ」だった。
+  //   消すと後ろの人が前へ詰まるので、**ページの境目にいた人が飛ばされる。**
+  //   2026-09-10 の実測で、317 人が対象なのに 133 人しか消えなかった。
+  //   数え終わってから消せば、並びが動いても取りこぼさない。
+  const ids = [];
+  const byRole = new Map();
   let scanned = 0;
 
   for (let page = 1; page <= 50; page += 1) {
@@ -364,33 +384,85 @@ export async function purgeFixtureUsers() {
     for (const u of data.users) {
       scanned += 1;
       if (!isFixtureEmail(u.email)) continue; // ← ここが唯一の関門
-      const { error: delErr } = await admin.auth.admin.deleteUser(u.id);
-      if (!delErr) removed += 1;
+      ids.push(u.id);
+      // 役割ごとの数。**「何が残っているか」を、メールを出さずに言うため**
+      const role = u.email.slice(PREFIX.length).split("@")[0].replace(/-\d+-\d+$/, "");
+      byRole.set(role, (byRole.get(role) ?? 0) + 1);
     }
 
     if (data.users.length < 200) break;
   }
 
-  try {
-    unlinkSync(CACHE_FILE);
-  } catch {
-    // 控えが無くても構わない
+  const matched = ids.length;
+  let removed = 0;
+
+  const failures = [];
+
+  /**
+   * 1人消す。**500 は「無理」ではなく「いま混んでいる」。**
+   * 続けて叩くと認証側が 500 を返し始める（2026-09-10 の実測。
+   * 317人を続けて消そうとして、133人で返らなくなった）。
+   * 間を空けて数回やり直す。
+   */
+  const deleteOne = async (id) => {
+    let last = null;
+    for (let attempt = 0; attempt < 4; attempt += 1) {
+      const { error } = await admin.auth.admin.deleteUser(id);
+      if (!error) return null;
+      last = error;
+      await new Promise((r) => setTimeout(r, 500 * 2 ** attempt));
+    }
+    return last;
+  };
+
+  if (!dryRun) {
+    for (const id of ids) {
+      // 隣どうしの間も少し空ける。**まとめて叩かない**
+      await new Promise((r) => setTimeout(r, 120));
+      const delErr = await deleteOne(id);
+      if (delErr) {
+        // **握りつぶさない。**消えなかった理由が分からないと、
+        // 「対象317人・消えた133人」の差が説明できない
+        if (failures.length < 5) {
+          failures.push(
+            [delErr.name, delErr.status, delErr.code, delErr.message]
+              .filter((x) => x !== undefined && x !== null && x !== "")
+              .join(" / ") || JSON.stringify(delErr),
+          );
+        }
+      } else {
+        removed += 1;
+      }
+    }
+
+    try {
+      unlinkSync(CACHE_FILE);
+    } catch {
+      // 控えが無くても構わない
+    }
   }
 
-  return { scanned, removed };
+  return { scanned, matched, removed, kept: scanned - matched, failures, byRole };
 }
 
 // ── コマンドとして実行されたとき ──────────────────────
 
 if (process.argv[1] && process.argv[1].endsWith("_smoke-users.mjs")) {
-  if (process.argv.includes("--purge")) {
-    const { scanned, removed } = await purgeFixtureUsers();
-    console.log(`検査用の利用者を ${removed} 人消しました（${scanned} 人を確認）。`);
+  if (process.argv.includes("--dry-run")) {
+    // **消す前に数を言う。**消したあとでは「多すぎた」と気づけない
+    const r = await purgeFixtureUsers({ dryRun: true });
+    console.log(`［下見］検査用の利用者 ${r.matched} 人が対象です（${r.scanned} 人を確認）。`);
+    console.log(`        消さない利用者: ${r.kept} 人`);
+    console.log("        何も書き換えていません。実行するには --purge を付けてください。");
+  } else if (process.argv.includes("--purge")) {
+    const { scanned, removed, kept } = await purgeFixtureUsers();
+    console.log(`検査用の利用者を ${removed} 人消しました（${scanned} 人を確認／残した人 ${kept} 人）。`);
   } else {
     console.log(
       [
         "検査用の利用者を管理します。",
         "",
+        "  node scripts/_smoke-users.mjs --dry-run … 何人が対象かだけを見る",
         "  node scripts/_smoke-users.mjs --purge   … 検査用の利用者を全部消す",
         "",
         `対象は ${PREFIX}…@${DOMAIN} だけです。ほかの利用者には触れません。`,

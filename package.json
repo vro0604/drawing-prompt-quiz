@@ -41,6 +41,7 @@
     "typecheck": "node scripts/heavy.mjs 型検査 -- npx tsc --noEmit",
     "smoke:race": "node scripts/smoke-race.mjs",
     "smoke:anon": "node scripts/smoke-anon.mjs",
+    "smoke:fixtures:dry": "node scripts/_smoke-users.mjs --dry-run",
     "smoke:fixtures:purge": "node scripts/_smoke-users.mjs --purge",
     "test:db": "node scripts/heavy.mjs 縦断試験（test:db） -- node test/db/run.mjs",
     "db:verify:local": "node scripts/heavy.mjs DB構造の検査（db:verify:local） -- node scripts/db-verify-local.mjs",
@@ -57,7 +58,9 @@
     "test:all": "node scripts/run-all-checks.mjs",
     "smoke:shape-assist": "node scripts/smoke-shape-assist.mjs",
     "smoke:notice": "node scripts/smoke-notice.mjs",
-    "smoke:sub-directive": "node scripts/smoke-sub-directive.mjs"
+    "smoke:sub-directive": "node scripts/smoke-sub-directive.mjs",
+    "smoke:consent": "node scripts/smoke-consent.mjs",
+    "smoke:push": "node scripts/smoke-push.mjs"
   },
   "dependencies": {
     "@supabase/ssr": "^0.12.4",

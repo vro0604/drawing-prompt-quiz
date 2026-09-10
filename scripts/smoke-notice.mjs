@@ -37,8 +37,10 @@ import {
   accountUserId,
   finish,
   fixtureSession,
+  forms,
   makePng,
   must,
+  parseQuiz,
   section,
   submitWork,
   targetEnv,
@@ -120,26 +122,38 @@ async function noticeList() {
   return { ids, text };
 }
 
-/** その作品のクイズに、いまのブラウザの人として答える */
+/**
+ * その作品のクイズに、いまの人として答える。
+ *
+ * 【なぜ通信で答えるのか】
+ *   P1 で回答の画面が「1セクションずつ・長押しで確定」に変わった
+ *   （_answer.tsx）。JavaScript が動くブラウザに見えているのは、いま開いて
+ *   いる1セクションだけで、全部を並べる古い形（QuizForm）は noscript の
+ *   中にある。ブラウザはその中身を要素として読まないので、
+ *   `fieldset[data-question]` を数えると 0 問になり、押す相手も見つからない。
+ *
+ *   **この検査の本題は答え方ではなく、答えたあとに知らせが動くこと。**
+ *   だから答えるのは通信で1回行い、画面はそのあと開き直して見る。
+ *   長押しの操作そのものは手元のブラウザ試験が見ている。
+ */
 async function answerAs(who, workId) {
+  const raw = await who.s.get(`/works/${workId}`);
+  const quiz = parseQuiz(raw.html);
+  const form = forms(raw.html).find((f) => /回答する/.test(f.text));
+  if (!form?.actionId) throw new Error(`/works/${workId} に回答の口がありません`);
+
+  const fields = { [form.actionId]: "", workId };
+  for (const q of quiz) fields[q.name] = q.choices[0].tagId;
+  await who.s.post(`/works/${workId}`, fields);
+
+  // 画面のほうも、答えたあとの姿にしておく
   await who.page.goto(`${BASE}/works/${workId}`, { waitUntil: "domcontentloaded" });
-  const groups = who.page.locator("fieldset[data-question]");
-  await groups.first().waitFor({ state: "attached", timeout: 30000 });
-  const n = await groups.count();
-  for (let i = 0; i < n; i += 1) {
-    await groups.nth(i).locator("input[type=checkbox]").first().check();
-  }
-  const waiting = who.page
-    .waitForResponse((r) => r.request().method() === "POST", { timeout: 30000 })
-    .catch(() => null);
-  await who.page.getByRole("button", { name: "回答する" }).click();
-  await waiting;
   await who.page
     .waitForFunction(() => document.querySelectorAll('[aria-busy="true"]').length === 0, {
       timeout: 40000,
     })
     .catch(() => {});
-  return n;
+  return quiz.length;
 }
 
 // 検査用に投稿した作品。終わったら消す
