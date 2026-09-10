@@ -24,6 +24,7 @@ import { installLocalOnlyGuard, ALLOWED_HOSTS } from "../guard/no-production.mjs
 import { startApp, warmupRoutes } from "./server.mjs";
 import { acquireHeavyLock } from "./exclusive.mjs";
 import { createRecorder } from "./record.mjs";
+import { readMachine } from "./machine.mjs";
 import { recordCount } from "../counts.mjs";
 import {
   answerWork,
@@ -6135,6 +6136,11 @@ const { payload, jsonFile, textFile, failed } = recorder.finish({
   serverRestarted: (app?.logs ?? []).join("").includes(
     "approaching the used memory threshold",
   ),
+  // **端末の混み具合を、始める前と終わった後の2点で残す。**
+  // 1点だけだと、詰まっていたのが最初からなのか、
+  // この試験自身が押し出したのかを後から見分けられない。
+  machineAtStart: app?.machineAtStart ?? null,
+  machineAtEnd: readMachine(),
 });
 
 console.log(`\n記録: ${textFile}`);

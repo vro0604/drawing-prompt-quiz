@@ -29,6 +29,7 @@
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { describeMachine } from "./machine.mjs";
 
 const ROOT = fileURLToPath(new URL("../..", import.meta.url));
 export const LOG_DIR = join(ROOT, ".test-logs");
@@ -264,6 +265,29 @@ export function createRecorder({ runName, serverLogs = null, probe = null, colle
     const stamp = startedAt.toISOString().replace(/[:.]/g, "-");
     const failed = records.filter((r) => !r.ok);
 
+    /* --- 1件あたりの所要時間 -----------------------------------------------
+     *
+     * 出所: ユーザー指示（2026-09-10）「browser失敗が広範囲に発生した場合、
+     * コード回帰と断定する前に……4. 1件あたり中央値 を記録してから
+     * 原因判定する。」
+     *
+     * **合格した試験も混ぜて数える。**混ぜるからこそ意味がある。
+     * 端末が詰まっている回は、落ちた試験だけでなく通った試験まで一様に
+     * 伸びる。落ちた試験だけを見ると、その差が見えない。
+     */
+    const durations = (() => {
+      const ms = records.map((r) => r.ms ?? 0).sort((a, b) => a - b);
+      if (ms.length === 0) return null;
+      const at = (ratio) => ms[Math.min(ms.length - 1, Math.floor(ms.length * ratio))];
+      return {
+        medianMs: at(0.5),
+        p90Ms: at(0.9),
+        maxMs: ms[ms.length - 1],
+        totalMin:
+          Math.round(((Date.now() - startedAt.getTime()) / 60_000) * 10) / 10,
+      };
+    })();
+
     const payload = {
       run: runName,
       startedAt: startedAt.toISOString(),
@@ -273,6 +297,7 @@ export function createRecorder({ runName, serverLogs = null, probe = null, colle
       total: records.length,
       passed: records.length - failed.length,
       failed: failed.length,
+      durations,
       ...extra,
       tests: records,
     };
@@ -285,6 +310,20 @@ export function createRecorder({ runName, serverLogs = null, probe = null, colle
     const lines = [
       `# ${runName} ${startedAt.toISOString()} 〜 ${payload.endedAt}`,
       `# ${payload.passed}/${payload.total} 合格 ／ 不合格 ${payload.failed}`,
+      ...(durations
+        ? [
+            `# 1件あたり 中央値 ${(durations.medianMs / 1000).toFixed(1)}秒 ／ ` +
+              `90%点 ${(durations.p90Ms / 1000).toFixed(1)}秒 ／ ` +
+              `最長 ${(durations.maxMs / 1000).toFixed(1)}秒 ／ ` +
+              `全体 ${durations.totalMin}分`,
+          ]
+        : []),
+      ...(extra.machineAtStart
+        ? [`# ${describeMachine(extra.machineAtStart, "開始前の端末")}`]
+        : []),
+      ...(extra.machineAtEnd
+        ? [`# ${describeMachine(extra.machineAtEnd, "終了後の端末")}`]
+        : []),
       "",
       ...records.map(
         (r) =>
