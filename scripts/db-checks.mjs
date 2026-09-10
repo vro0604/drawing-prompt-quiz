@@ -605,13 +605,15 @@ export const checks = [
     //   ・push_subscriptions        … ブラウザのプッシュの宛先
     // 2026-09-08 にさらに1表増えた（管理 v0 / D177）。
     //   ・admin_audit_log … 運営が誰の作品に何をしたかの記録
-    // 合わせて 63。数が合わないときは、どの migration が入っていないかを先に見る。
+    // 2026-09-10 に1表増えた。system_answer_queue（システム回答の待ち行列 / D195）。
+    // 合わせて 64。数が合わないときは、どの migration が入っていないかを先に見る。
     //
     // **この作業木（p0-p5-production-integration）は
     // origin/main の全機能と P0〜P5 の両方を持つ。**課金 v0 の5表は入っていない。
+    // この上に D194 / D195 を載せた作業線（onboarding-phase12-integration）では 64。
     // 出所: 2026-09-10 の実測（npm run db:verify:local）。
-    name: "public スキーマの表が63個",
-    expected: 63,
+    name: "public スキーマの表が64個",
+    expected: 64,
     sql: `select count(*)::int from pg_tables where schemaname = 'public'`,
     detailSql: `select tablename from pg_tables
                  where schemaname = 'public' order by tablename`,
@@ -626,8 +628,8 @@ export const checks = [
   },
   {
     group: "構造",
-    name: "63表すべてで RLS が有効",
-    expected: 63,
+    name: "64表すべてで RLS が有効",
+    expected: 64,
     sql: `select count(*)::int from pg_class c
             join pg_namespace n on n.oid = c.relnamespace
            where n.nspname = 'public' and c.relkind = 'r' and c.relrowsecurity`,
@@ -3036,6 +3038,74 @@ export const diagnostics = [
              and p.proname in ('next_work_candidates', 'get_my_work_result',
                                'get_public_answers', 'get_my_answers', 'get_my_answer')
              and pg_get_functiondef(p.oid) not like '%answer_source%'`,
+  },
+  {
+    // システム回答の待ち行列（D195）。**1つの作品につき行は1つまで。**
+    // 同じ作品へ何度積んでも増えない形にしてある。増えていたら索引が外れている。
+    id: "A56",
+    label: "待ち行列の行が2件以上ある作品",
+    sql: `select q.work_id::text as id
+            from (select work_id, count(*) n from public.system_answer_queue
+                   group by work_id) q
+           where q.n > 1`,
+  },
+  {
+    // 決めた5つ以外の状態が入っていないこと（D195）。
+    id: "A57",
+    label: "決めた状態以外を持つ待ち行列の行",
+    sql: `select q.id::text from public.system_answer_queue q
+           where q.status not in
+             ('pending', 'processing', 'completed', 'failed', 'cancelled')`,
+  },
+  {
+    // 待ち行列の表は、利用者の役から1つも触れないこと（D195）。
+    // 1件でも配られていたら、画面を通さず仕事を積める。
+    id: "A58",
+    label: "待ち行列の表に配られた利用者の権限",
+    sql: `select grantee || ' → ' || privilege_type as id
+            from information_schema.role_table_grants
+           where table_schema = 'public'
+             and table_name = 'system_answer_queue'
+             and grantee in ('anon', 'authenticated', 'PUBLIC')`,
+  },
+  {
+    // 積む・取り出す・保存する窓口も同じ（D195）。
+    // ここが1本でも開くと、仕組みが答えたことにできてしまう。
+    id: "A59",
+    label: "システム回答の窓口に配られた利用者の権限",
+    sql: `select grantee || ' → ' || routine_name as id
+            from information_schema.routine_privileges
+           where routine_schema = 'public'
+             and routine_name in ('enqueue_system_answer',
+                                  'claim_system_answer_jobs',
+                                  'save_system_answer',
+                                  'mark_system_answer_failed',
+                                  'cancel_system_answer_job',
+                                  'retry_system_answer_job',
+                                  'get_system_answer_job')
+             and grantee in ('anon', 'authenticated', 'PUBLIC')`,
+  },
+  {
+    // 保存の窓口は、正解を受け取らない（D195）。
+    // 引数は作品と選択だけ。合否は中で quiz_choices を見て決める。
+    id: "A60",
+    label: "システム回答の保存窓口が正解を受け取っている",
+    sql: `select p.proname
+            from pg_proc p join pg_namespace n on n.oid = p.pronamespace
+           where n.nspname = 'public' and p.proname = 'save_system_answer'
+             and pg_get_function_identity_arguments(p.oid)
+                 <> 'p_work_id uuid, p_selections jsonb'`,
+  },
+  {
+    // 保存の窓口は、人間が先に答えていたら作らない（D195）。
+    // その判断が関数から消えていないことを、定義の中身で数える。
+    id: "A61",
+    label: "人間の先着を見ていないシステム回答の保存窓口",
+    sql: `select p.proname
+            from pg_proc p join pg_namespace n on n.oid = p.pronamespace
+           where n.nspname = 'public' and p.proname = 'save_system_answer'
+             and (pg_get_functiondef(p.oid) not like '%HUMAN_ANSWERED_FIRST%'
+                  or pg_get_functiondef(p.oid) not like '%art_first%')`,
   },
   {
     // 回答を出す窓口は、出所を引数に取らない（D194）。
