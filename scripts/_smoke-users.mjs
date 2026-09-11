@@ -365,8 +365,37 @@ export async function fixtureUserIds() {
   return ids;
 }
 
-export async function purgeFixtureUsers({ dryRun = false } = {}) {
-  const admin = adminClient();
+/**
+ * 消せなかった理由を、同じものどうしまとめて数える。
+ *
+ * **先頭の数件だけを見せると、全体像を取り違える。**
+ * 2026-09-10 は119人ぶんの理由がすべて同じだったが、
+ * 5件しか出していなかったので「たまたま5件失敗した」ようにも読めた。
+ * 理由ごとの件数で出せば、1種類なのか混ざっているのかがすぐ分かる。
+ *
+ * @param reasons 失敗1回につき1つの文字列
+ * @returns 「◯人: 理由」の並び。多い順
+ */
+export function summarizeFailures(reasons) {
+  const byReason = new Map();
+  for (const r of reasons ?? []) {
+    const key = String(r ?? "").trim() || "理由が返らなかった";
+    byReason.set(key, (byReason.get(key) ?? 0) + 1);
+  }
+  return [...byReason]
+    .sort((a, b) => b[1] - a[1])
+    .map(([reason, n]) => `${n} 人: ${reason}`);
+}
+
+export async function purgeFixtureUsers({
+  dryRun = false,
+  client = null,
+  remove = null,
+  pauseMs = 120,
+} = {}) {
+  // client と remove は試験から差し替えるための口。
+  // 何も渡さなければ本物（本番の Admin API）を使う。
+  const admin = client ?? adminClient();
 
   // 【先に全部並べてから消す】
   //   以前は「1ページ読む → その場で消す → 次のページ」だった。
@@ -396,53 +425,92 @@ export async function purgeFixtureUsers({ dryRun = false } = {}) {
   const matched = ids.length;
   let removed = 0;
 
-  const failures = [];
+  const reasons = [];
 
   /**
-   * 1人消す。**500 は「無理」ではなく「いま混んでいる」。**
-   * 続けて叩くと認証側が 500 を返し始める（2026-09-10 の実測。
-   * 317人を続けて消そうとして、133人で返らなくなった）。
-   * 間を空けて数回やり直す。
+   * 1人消す。**supabase-js を通さず、生のまま叩く。**
+   *
+   * 【なぜ生で叩くか】
+   *   supabase-js の deleteUser は応答の本文を捨ててしまい、
+   *   `AuthRetryableFetchError / 500 / {}` としか返らない。
+   *   2026-09-10 に119人が消せなかったとき、この形では
+   *   「500だった」以上のことが何も分からず、原因にたどり着けなかった。
+   *   本当の中身は本文のほうに入っている:
+   *     {"code":500,"error_code":"unexpected_failure",
+   *      "msg":"Database error deleting user","error_id":"…"}
+   *
+   * 【やり直しの回数】
+   *   混んでいて返らないだけなら、間を空ければ通る。
+   *   一方 4xx は何回やっても同じなので、その場で諦める。
    */
-  const deleteOne = async (id) => {
+  const deleteOne = remove ?? (async (id) => {
     let last = null;
     for (let attempt = 0; attempt < 4; attempt += 1) {
-      const { error } = await admin.auth.admin.deleteUser(id);
-      if (!error) return null;
-      last = error;
+      let res;
+      try {
+        res = await fetch(`${env.NEXT_PUBLIC_SUPABASE_URL}/auth/v1/admin/users/${id}`, {
+          method: "DELETE",
+          headers: {
+            apikey: env.SUPABASE_SECRET_KEY,
+            authorization: `Bearer ${env.SUPABASE_SECRET_KEY}`,
+          },
+        });
+      } catch (e) {
+        last = `つながらない: ${e instanceof Error ? e.message : String(e)}`;
+        await new Promise((r) => setTimeout(r, 500 * 2 ** attempt));
+        continue;
+      }
+
+      if (res.ok) return null;
+
+      const body = (await res.text()).slice(0, 300);
+      let msg = body;
+      try {
+        const j = JSON.parse(body);
+        msg = j.msg ?? j.message ?? j.error_description ?? body;
+      } catch {
+        // JSON でなければ本文をそのまま使う
+      }
+      last = `${res.status} ${msg}`;
+
+      // 「相手が悪い」以外（4xx）は、やり直しても答えは変わらない
+      if (res.status < 500) return last;
       await new Promise((r) => setTimeout(r, 500 * 2 ** attempt));
     }
     return last;
-  };
+  });
 
   if (!dryRun) {
     for (const id of ids) {
       // 隣どうしの間も少し空ける。**まとめて叩かない**
-      await new Promise((r) => setTimeout(r, 120));
+      if (pauseMs > 0) await new Promise((r) => setTimeout(r, pauseMs));
       const delErr = await deleteOne(id);
       if (delErr) {
         // **握りつぶさない。**消えなかった理由が分からないと、
         // 「対象317人・消えた133人」の差が説明できない
-        if (failures.length < 5) {
-          failures.push(
-            [delErr.name, delErr.status, delErr.code, delErr.message]
-              .filter((x) => x !== undefined && x !== null && x !== "")
-              .join(" / ") || JSON.stringify(delErr),
-          );
-        }
+        reasons.push(delErr);
       } else {
         removed += 1;
       }
     }
 
+    // 控えを捨てるのは、本物を相手にしたときだけ。
+    // **試験から呼ばれたときに本番の控えを消してはいけない。**
     try {
-      unlinkSync(CACHE_FILE);
+      if (client === null && remove === null) unlinkSync(CACHE_FILE);
     } catch {
       // 控えが無くても構わない
     }
   }
 
-  return { scanned, matched, removed, kept: scanned - matched, failures, byRole };
+  return {
+    scanned,
+    matched,
+    removed,
+    kept: scanned - matched,
+    failures: summarizeFailures(reasons),
+    byRole,
+  };
 }
 
 // ── コマンドとして実行されたとき ──────────────────────

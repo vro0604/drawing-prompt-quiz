@@ -107,7 +107,7 @@ PGlite は PostgreSQL 本体そのものなので、SQL の構文・制約・ト
 
 いま `npm run test:db` が 343項目<!--count:縦断試験-->、
 `npm run test:db:upgrade` が 31項目<!--count:アップグレード試験-->、
-`npm run db:verify:local` が 197項目<!--count:DB構造の検査-->。
+`npm run db:verify:local` が 198項目<!--count:DB構造の検査-->。
 
 **違うところ**は2つ。
 - Supabase が用意する `auth` / `storage` スキーマは、こちらで最小限を作っている

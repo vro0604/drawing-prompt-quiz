@@ -5,6 +5,60 @@
 日時は JST。全体が400行を超えたら、一番下（最も古いもの）から削ります。
 
 ---
+## 2026-09-10 利用者を正規の経路で消せなかった原因を突き止めた
+
+### 何ができるようになったか
+
+本番の検査用利用者119人が、Supabase の管理API（正規の削除経路）で
+必ず 500 になっていた。その原因が分かり、直し方も手元の PostgreSQL 17 で
+実際に確かめた。**まだ本番へは当てていない（承認待ち）。**
+
+原因は、引きかけのお題の「最後にさわった時刻」を書き直す引き金1つ。
+利用者を消すと外部キーの後始末が
+auth.users → profiles → draft_sessions → draft_candidates と連鎖する。
+Postgres はこの後始末を「消される表の持ち主」の資格で走らせるが、
+AFTER 行トリガーだけは文の終わりにまとめて実行されるため、そのときには
+資格が呼び出し元（認証サービス）に戻っている。認証サービスは public の表に
+権限を1つも持たないので、そこで draft_sessions を書こうとして断られる。
+
+本番ログの実測（2026-09-10T14:36:46Z）:
+`permission denied for table draft_sessions (SQLSTATE 42501)`。
+消せた198人は draft_candidates を持っていなかった。残る119人は全員持っている。
+
+### 何を引き換えにしたか
+
+引き換えは無し。関数の中身は1行も変えず、実行資格だけを持ち主のものにする。
+アプリの通常の経路は SECURITY DEFINER の RPC か service_role で動いていて、
+anon と authenticated はこの2表に権限を1つも持たない（実測）ので、
+見え方も動きも変わらない。
+
+同じ形の見落としを二度としないために、DB構造の検査へ1項目足した。
+「削除・更新で走る AFTER トリガーに、資格を切り替えないものが0本」。
+いまの本番に当てると、この1本だけが引っかかる。
+
+### どこまでで、どこからが未着手か
+
+済み: 原因特定、migration の作成、PostgreSQL 17.5 での再現と検証、
+DB構造の検査への項目追加、片づけ道具の失敗理由の出し方の作り直しと自己試験6件。
+未着手: 本番への適用（承認待ち）と、そのあとの119人の片づけ。
+
+### 次の一手
+
+1. `20260910210000_touch_session_as_owner.sql` を本番へ当てる（`npm run db:deploy`。
+   本番の最後より新しい版番号なので、履歴も自動で入る。repair は要らない）
+2. `npm run db:verify:keychain` で新項目を含めて確認
+3. `npm run smoke:prod -- fixtures`（下見）→ `--apply`（実行）→ 下見で0を確認
+
+### 触ったファイル
+
+- supabase/migrations/20260910210000_touch_session_as_owner.sql（新規）
+- scripts/db-checks.mjs（AFTER トリガーの資格を見る項目を追加）
+- scripts/_smoke-users.mjs（生のまま叩いて理由を読む／理由を種類ごとに数える／試験から差し替えられる口）
+- scripts/smoke-fixtures.mjs（理由の出し方）
+- test/tools/run.mjs（片づけ道具の自己試験6件）
+- README.md / docs/test-layers.md / docs/launch-checklist.md（件数と、手順 -1 の現状）
+
+---
 ## 2026-09-10 本番向けの検査を、新しい画面に追いつかせた
 
 ### 何ができるようになったか
@@ -308,56 +362,3 @@ D191 / D193（もう片方、**本番へ適用済み**）は形状アシスト�
 - `docs/decisions.md`（2026-09-10 の節を追記）
 - `docs/launch-checklist.md`（未適用7本の一覧と、版番号の衝突の訂正）
 - `README.md`（migration の本数）
-
-
----
-
-## 2026-09-10 掃除は日次のまま。毎時にできない理由を記録した
-
-### 直前に終えたこと
-
-放置の予告（24時間）と自動破棄（48時間）を早く届けるため、
-Vercel Cron を毎時（`17 * * * *`）へ変える案を検討し、**変えないことにした。**
-
-理由は料金プランの制限。Vercel の無料プラン（Hobby）は Cron を
-1日1回までしか許さず、それより短い間隔を書くと deploy が失敗する。
-
-  > Hobby accounts are limited to daily cron jobs.
-  > 出所: https://vercel.com/docs/cron-jobs/usage-and-pricing （2026-09-10 参照）
-
-出所: ユーザー判断（2026-09-10）「日次のまま据え置き」。
-Pro（$20/月）へ上げれば `vercel.json` の1行を変えるだけで毎時になる。
-
-### 毎時にしても壊れないことは実測済み
-
-掃除の3本を1日ぶん（24回）続けて回した。すべて期待どおり。
-
-  予定超過の知らせ … 24回まわして1件
-  放置の予告       … 24回まわして1件
-  48時間の破棄     … 1回目だけ実行。2回目以降0件。破棄時刻も書き換わらない
-  破棄の知らせ     … 1件
-  dedupe_key の重複 … 0件
-  上限2で回すと 2→2→1→0 と減り、持ち越したぶんも片づく
-
-二重実行を止めているのは行ロックではなく、条件付きの UPDATE
-（`where status = 'active'`）と `dedupe_key` の一意制約の2つ。
-`for update skip locked` は使っていない。
-
-### VAPID（プッシュ通知の鍵）
-
-本番用の鍵を1組つくった。**リポジトリの外に 600 で置いてある。**
-場所はこのファイルには書かない（このファイルは共有されるため）。
-Vercel へはまだ設定していない。この環境に Vercel CLI も資格情報も無いので、
-設定は画面から人が行う。
-
-### 次の一手
-
-本番の環境変数4つ（VAPID）を Vercel の Production へ貼る。
-そのあと migration 6本を `db:apply:one` で順に当て、`migration repair` で
-履歴へ記録してから app を deploy する。
-
-### 触ったファイルのパス
-
-  docs/decisions.md（D184 の「掃除の頻度」）
-  docs/launch-checklist.md（Cron の確認項目）
-  docs/web-push-setup.md（VAPID_SUBJECT の説明）

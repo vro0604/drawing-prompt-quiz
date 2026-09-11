@@ -8684,6 +8684,62 @@ SQL で消すという抜け道は取らず、残数を記録して止める。
 本物の利用者は1人も対象に入っていない（判定は `dpq-fixture-…@dpq-smoke.invalid`
 という、実在しないドメイン）。
 
+### 続き（同じ日の追跡）原因は認証サービスの中ではなく、こちらの引き金だった
+
+上の節の「こちらの表の作りではない」「こちらから直せる場所ではない」は**誤り。**
+本番の Postgres ログを読んだら、原因はこちらの側にあった。
+
+実測（2026-09-10T14:36:46Z、Management API の logs.all より）:
+
+```
+user_name : supabase_auth_admin
+query     : DELETE FROM "users" AS users WHERE users.id = $1
+sqlstate  : 42501
+message   : permission denied for table draft_sessions
+context   : SQL statement "update public.draft_sessions ds
+               set last_activity_at = clock_timestamp()
+             where ds.id = v_id and ds.status = 'in_progress'"
+            PL/pgSQL function public.draft_candidates_touch_session()
+            line 5 at SQL statement
+```
+
+なぜ SQL で消すと通り、管理APIだと落ちるのか。値の流れはこうなる。
+
+利用者を1人消すと、外部キーの後始末が
+auth.users → profiles → draft_sessions → draft_candidates と連鎖する。
+Postgres はこの後始末そのものを**消される側の表の持ち主の資格**で走らせるので、
+BEFORE トリガーも持ち主の資格で動き、権限で断られることはない。
+
+AFTER 行トリガーだけが違う。**文が終わったあとにまとめて実行される**ため、
+そのときには持ち主への切り替えが解けていて、資格は呼び出し元に戻っている。
+呼び出し元が認証サービス（supabase_auth_admin）だと、public スキーマの表に
+権限を1つも持たないので、そこで別の表を書こうとして断られる。
+SQL で直に消したときは呼び出し元が postgres なので、この差が出なかった。
+
+同じ形の AFTER トリガーは他に2つある（likes と saves の数え直し）。
+どちらも SECURITY DEFINER なので断られない。
+`draft_candidates_touch_session` だけが、そう書かれていなかった。
+
+消えた198人と消えなかった119人の差も、これで説明が付く。
+残った119人は全員 draft_candidates の行を持っている（実測）。
+
+なぜ手元で出なかったか。手元の検査用DB（PGlite 0.5）は PostgreSQL 18 で、
+18 では AFTER トリガーの資格の扱いが変わっていて落ちない。本番は 17.6。
+PostgreSQL 17.5 を用意して同じ構造を作ったところ、
+本番と同じ 42501・同じ context で再現し、直したあとは通った。
+
+直し方は `20260910210000_touch_session_as_owner.sql`。
+関数の中身は1行も変えず、実行資格だけを持ち主のものにする。
+
+同じ見落としを二度としないため、DB構造の検査へ1項目足した。
+「削除・更新で走る AFTER トリガーに、資格を切り替えないものが0本」。
+
+この不具合は検査用の利用者だけの話ではない。下ごしらえ無しに管理APIで
+利用者を消す経路がもう1つある（使われていないゲストの日次掃除）。
+いまは対象が0人なので表に出ていないが、匿名の利用者24人のうち16人が
+draft_candidates を持っている（実測）。退会（`start_account_deletion`）は
+auth.users を消す前に自分で draft_sessions を消しているので、この経路には当たらない。
+
 ### 検査用の利用者を消す道具が、本番へ届いていなかった
 
 `npm run smoke:fixtures:purge` は接続先を読めない入口から起動していた。

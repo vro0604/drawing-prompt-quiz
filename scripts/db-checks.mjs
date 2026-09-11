@@ -465,6 +465,44 @@ export const checks = [
   },
   {
     group: "整合",
+    // 【なぜ AFTER だけを見るか】
+    //   外部キーの後始末（CASCADE / SET NULL）そのものは、Postgres が
+    //   「消される側の表の持ち主」の資格で走らせる。だから BEFORE トリガーは
+    //   持ち主の資格で動き、権限で断られることはない。
+    //
+    //   AFTER 行トリガーは違う。**文が終わったあとにまとめて実行される**ので、
+    //   そのときには持ち主への切り替えが解けていて、資格は呼び出し元に戻っている。
+    //   呼び出し元が認証サービス（supabase_auth_admin）だと、public スキーマの
+    //   表に権限が1つも無いため、そこで他の表を書こうとすると断られる。
+    //
+    // 【実際に起きたこと（2026-09-10 実測）】
+    //   draft_candidates の AFTER トリガーだけが SECURITY DEFINER でなく、
+    //   引きかけのお題を持つ利用者を管理APIで消すと必ず 500 になっていた。
+    //   本番ログ: permission denied for table draft_sessions (SQLSTATE 42501)
+    //   検査用317人のうち119人が、これで消せないまま残った。
+    name: "削除・更新で走る AFTER トリガーに、資格を切り替えないものが0本",
+    expected: 0,
+    sql: `select count(*)::int
+            from pg_trigger t
+            join pg_proc p on p.oid = t.tgfoid
+           where not t.tgisinternal
+             and t.tgrelid::regclass::text not like '%.%'
+             and (t.tgtype::int & 2) = 0            -- BEFORE でない
+             and (t.tgtype::int & 64) = 0           -- INSTEAD OF でない
+             and (t.tgtype::int & 24) <> 0          -- DELETE か UPDATE で走る
+             and not p.prosecdef`,
+    detailSql: `select t.tgrelid::regclass::text as tbl, t.tgname, p.proname
+                  from pg_trigger t
+                  join pg_proc p on p.oid = t.tgfoid
+                 where not t.tgisinternal
+                   and t.tgrelid::regclass::text not like '%.%'
+                   and (t.tgtype::int & 2) = 0
+                   and (t.tgtype::int & 64) = 0
+                   and (t.tgtype::int & 24) <> 0
+                   and not p.prosecdef`,
+  },
+  {
+    group: "整合",
     // お題の掃除（cleanup_orphan_prompts）が作品を巻き添えにしないための最後の砦。
     // 掃除は status を見て submitted を避けているが、
     // **仮にそこを間違えても RESTRICT が止める。**

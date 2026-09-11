@@ -22,6 +22,11 @@ import { execFileSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { PGlite } from "@electric-sql/pglite";
 import { buildPlan, applyPlan, linkedProjectRef } from "../../scripts/db-apply-many.mjs";
+import {
+  isFixtureEmail,
+  purgeFixtureUsers,
+  summarizeFailures,
+} from "../../scripts/_smoke-users.mjs";
 import { recordCount } from "../counts.mjs";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
@@ -300,6 +305,134 @@ await test("道具", "SQL のなかみを、そのまま流している（読み
   const p = buildPlan(["20260101000000_a.sql", "20260102000000_b.sql"], { migrationsDir: dir });
   assert(p.items[0].sql === OK2["20260101000000_a.sql"], "1本目が書き換わっている");
   assert(p.items[1].sql === OK2["20260102000000_b.sql"], "2本目が書き換わっている");
+});
+
+// ============================================================================
+// 検査用の利用者を片づける道具
+// ============================================================================
+//
+// 2026-09-10 に、本番で317人を消そうとして133人しか消えなかった。
+// 原因は「1ページ読む → その場で消す → 次のページ」という順で、
+// 消すと後ろの人が前へ詰まり、ページの境目にいた人が飛ばされていたこと。
+// ここでは本番へつながず、同じ形の名簿を手元で作って確かめる。
+
+console.log("\n検査用の利用者を片づける道具");
+
+/** 名簿を持った偽の Admin API。消すと本当に減る（本番と同じ詰まり方をする） */
+function fakeDirectory(users) {
+  const store = [...users];
+  return {
+    store,
+    client: {
+      auth: {
+        admin: {
+          listUsers: async ({ page, perPage }) => ({
+            data: { users: store.slice((page - 1) * perPage, page * perPage) },
+            error: null,
+          }),
+        },
+      },
+    },
+    remove: async (id) => {
+      const i = store.findIndex((u) => u.id === id);
+      if (i < 0) return "居ません";
+      store.splice(i, 1);
+      return null;
+    },
+  };
+}
+
+await test("片づけ", "ページの境目にいる人を飛ばさない", async () => {
+  // 検査用と本物を混ぜて、境目（200人ごと）をまたぐ人数にする
+  const users = [];
+  for (let i = 0; i < 450; i += 1) {
+    users.push(
+      i % 3 === 0
+        ? { id: `f${i}`, email: `dpq-fixture-role-${i}-1@dpq-smoke.invalid` }
+        : { id: `r${i}`, email: `person${i}@example.org` },
+    );
+  }
+  const d = fakeDirectory(users);
+  const r = await purgeFixtureUsers({ client: d.client, remove: d.remove, pauseMs: 0 });
+
+  assert(r.matched === 150, `対象の数が違う: ${r.matched}`);
+  assert(r.removed === 150, `消えた数が違う: ${r.removed}（飛ばしている）`);
+  assert(d.store.length === 300, `名簿に ${d.store.length} 人残っている（300人のはず）`);
+  assert(
+    d.store.every((u) => !isFixtureEmail(u.email)),
+    "検査用の人が残っている",
+  );
+});
+
+await test("片づけ", "本物の利用者には触れない", async () => {
+  const d = fakeDirectory([
+    { id: "a", email: "songcunyizhi@gmail.com" },
+    { id: "b", email: "vro.artcode@gmail.com" },
+    { id: "c", email: null },
+    { id: "d", email: "dpq-smoke-artist-1-2@example.com" },
+    { id: "e", email: "dpq-fixture-artist@dpq-smoke.invalid" },
+  ]);
+  const r = await purgeFixtureUsers({ client: d.client, remove: d.remove, pauseMs: 0 });
+  assert(r.matched === 1, `対象の数が違う: ${r.matched}`);
+  assert(d.store.length === 4, `名簿に ${d.store.length} 人残っている（4人のはず）`);
+  assert(d.store.some((u) => u.email === "songcunyizhi@gmail.com"), "本物を消してしまった");
+});
+
+await test("片づけ", "下見では1人も消さない", async () => {
+  const d = fakeDirectory([
+    { id: "e", email: "dpq-fixture-artist@dpq-smoke.invalid" },
+    { id: "a", email: "songcunyizhi@gmail.com" },
+  ]);
+  const r = await purgeFixtureUsers({ dryRun: true, client: d.client, remove: d.remove, pauseMs: 0 });
+  assert(r.matched === 1, `対象の数が違う: ${r.matched}`);
+  assert(r.removed === 0, "下見なのに消している");
+  assert(d.store.length === 2, "下見なのに名簿が減っている");
+});
+
+await test("片づけ", "消せなかった理由を握りつぶさない", async () => {
+  const d = fakeDirectory([
+    { id: "x1", email: "dpq-fixture-a-1-1@dpq-smoke.invalid" },
+    { id: "x2", email: "dpq-fixture-b-1-1@dpq-smoke.invalid" },
+    { id: "x3", email: "dpq-fixture-c-1-1@dpq-smoke.invalid" },
+  ]);
+  const r = await purgeFixtureUsers({
+    client: d.client,
+    pauseMs: 0,
+    remove: async (id) => (id === "x3" ? null : "500 Database error deleting user"),
+  });
+  assert(r.matched === 3, `対象の数が違う: ${r.matched}`);
+  assert(r.removed === 1, `消えた数が違う: ${r.removed}`);
+  assert(r.failures.length === 1, `理由の並びが違う: ${JSON.stringify(r.failures)}`);
+  assert(
+    /^2 人: 500 Database error deleting user$/.test(r.failures[0]),
+    `理由の書き方が違う: ${r.failures[0]}`,
+  );
+});
+
+await test("片づけ", "理由が何種類あるかが分かる", () => {
+  const out = summarizeFailures(["A", "B", "A", "A", ""]);
+  assert(out.length === 3, `種類の数が違う: ${JSON.stringify(out)}`);
+  assert(out[0] === "3 人: A", `いちばん多い理由が違う: ${out[0]}`);
+  assert(
+    out.some((line) => /理由が返らなかった/.test(line)),
+    `空の理由が落ちている: ${JSON.stringify(out)}`,
+  );
+});
+
+await test("片づけ", "消す相手の見分けかたは1か所だけ", () => {
+  const yes = ["dpq-fixture-artist@dpq-smoke.invalid", "dpq-fixture-a-1-2@dpq-smoke.invalid"];
+  const no = [
+    "songcunyizhi@gmail.com",
+    "dpq-smoke-artist-1-2@example.com",
+    "dpq-fixture-artist@example.com",
+    "artist@dpq-smoke.invalid",
+    "dpq-fixture-artist@dpq-smoke.invalid.example.com",
+    "",
+    null,
+    undefined,
+  ];
+  for (const e of yes) assert(isFixtureEmail(e), `検査用と見なされない: ${e}`);
+  for (const e of no) assert(!isFixtureEmail(e), `本物を検査用と見なした: ${e}`);
 });
 
 const passed = results.filter((r) => r.ok).length;

@@ -30,10 +30,11 @@
  *   npm run smoke:prod -- fixtures --why      … 消せないときに理由を見る
  *
  * 【--why について】
- *   これは下見ではない。**1人だけ本当に消しにいって、返ってきた答えをそのまま出す。**
- *   supabase-js は応答の本文を捨ててしまい、「500」としか分からないので、
- *   生のまま叩く道を用意した。--apply がすでに全員に対して同じことを
- *   試したあとに使うので、ここで1人増えて消えても新しい害は無い。
+ *   これは下見ではない。**1人だけ本当に消しにいって、返ってきた答えを
+ *   HTTP の番号ごとそのまま出す。**--apply の側も本文を読むようになったが
+ *   （2026-09-10）、こちらは1人だけを狙って、加工せずに見るためのもの。
+ *   --apply がすでに全員に対して同じことを試したあとに使うので、
+ *   ここで1人増えて消えても新しい害は無い。
  */
 
 import { purgeFixtureUsers, fixtureUserIds } from "./_smoke-users.mjs";
@@ -105,7 +106,7 @@ const after = await purgeFixtureUsers();
 console.log(`  消しました            ${after.removed} 人`);
 if (after.removed < after.matched) {
   console.log(`  消せなかった          ${after.matched - after.removed} 人`);
-  for (const m of after.failures) console.log(`      理由: ${m}`);
+  for (const m of after.failures) console.log(`      ${m}`);
 }
 console.log("");
 console.log("  作品には触れていません（片づけるなら npm run cleanup:testdata）。");
