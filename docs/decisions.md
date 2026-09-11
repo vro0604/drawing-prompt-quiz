@@ -8830,3 +8830,16 @@ auth.users を消す前に自分で draft_sessions を消しているので、�
 `draft_sessions.shape_assist_key` は存在した。
 2026-09-09 の記録にあった「課金 v0 は本番へ適用済み」は誤りだった。
 版番号が一致していることだけで同じものと決めつけ、中身を確かめていなかった。
+
+**追記（2026-09-12 の実測）。履歴表の中身が、実際に入った SQL と食い違っている。**
+本番の `supabase_migrations.schema_migrations` を読むと、
+`20260909180000` の行は name が `billing_founding_creator_v0`、statements が106文だった。
+一方、本番に課金の表・関数は今も0件（`billing_offers` / `billing_purchases` が無い）。
+つまり、この版番号で実際に入ったのは `profile_rpc_revoke_anon` なのに、
+履歴表には課金側の名前と文が記録されている。`20260909200000` の行は
+name が `shape_assist` で、こちらは実態と合っている。
+課金の2本の番号を振り直すだけでは、`20260909180000` の履歴の食い違いは直らない。
+履歴の書き換え（`migration repair`）は本番の履歴そのものに触れるので、
+2026-09-12 の作業では行っていない（ユーザー指示「既に本番履歴に関係しているなら、
+migration repairを勝手に行わず停止して報告」）。課金の2本は手元の main（6d24ec1、未 push）
+にだけあり、番号の振り直しもしていない。

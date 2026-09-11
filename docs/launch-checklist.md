@@ -657,6 +657,17 @@ curl -o /dev/null -w "%{http_code}\n" https://<本番>/api/cron/cleanup
 **手動実行は Vercel の画面から押す。**
 自分で `curl` すると `CRON_SECRET` を端末の履歴に残すことになる。
 
+**手元の端末からは手動発火できない（2026-09-12 に確認。運用の仕様として扱う）。**
+手元の `.env.local` にある `CRON_SECRET` は本番の値と違い、`/api/cron/cleanup` は 401 を返す
+（何も動かない）。本番の値を手元へ持ってこないのが正しい形なので、直さない。
+定期実行が動いているかは、次の2つで確かめる。
+
+- Supabase の API 記録（edge_logs）に、発火時刻の `/rest/v1/rpc/cleanup_status` から
+  `list_stale_guests` までが並び、どれも 200 であること。
+  2026-09-11 は 03:39:45〜03:39:56 UTC に掃除の RPC 14本がすべて 200 だった
+  （予定の 03:17 から22分後。無料プランの幅の中）
+- Vercel → Settings → Cron Jobs の Last Run（Vercel の CLI がサインインしていないと、手元からは見られない）
+
 #### 「押せば動く」と「動いている」は別（D154）
 
 **この項目は最初、手動実行しか見ていなかった。**
