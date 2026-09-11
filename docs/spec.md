@@ -2485,3 +2485,25 @@ prompt_cards へ直接入れるため、列は必ず空になる。
 - 知らせと結果画面での見せ方
 
 でたらめな回答も決め打ちの回答も、本番の機能としては作っていない。
+
+## 21. システム回答と、作者向けの分析・取り込み枠（D196）
+
+システム回答（`answers.answer_source = 'system'`）は、作者向けの分析にも、
+取り込み枠にも入らない。初回に結果を見せるための補助の回答であって、
+人間の回答の代わりになる統計ではないため。
+
+answers / answer_items を読む・書く関数と引き金は40本ある（2026-09-11、
+本番相当59本＋D194・D195 を当てた検査用DBで機械的に数えた）。
+
+| 分類 | 本数 | 関数 |
+|---|---|---|
+| 除外する（D194 で済み） | 9 | 回答の集計の引き金4本、next_work_candidates、get_my_work_result、get_public_answers、get_my_answers、get_my_answer |
+| 除外する（D196 で直した） | 8 | answers_after_insert_auto_import、consume_import_capacity、analysis_all_answers、analysis_advanced_answers、get_work_answer_list、set_answer_excluded、get_work_import_state、get_my_answer_analysis |
+| 除外する（上流で絞られるので触らない） | 3 | get_work_answer_analysis、get_work_drilldown、answer_word_stats |
+| 除外すべきだが未対応 | 1 | get_usage_summary（運営の利用状況。D196 の範囲外） |
+| 含めてよい（本人の回答を user_id で探すので、user_id が空のシステム回答は当たらない） | 11 | get_answered_prompt、get_flavor_replies、get_my_reaction、get_public_works、get_saved_works、get_work_detail、get_work_flavor、get_work_quiz、open_flavor_hint、post_flavor_reply、save_prompt_elements |
+| 含めてよい（その他） | 4 | submit_answer（人間の回答を作る窓口）、start_account_deletion（本人の行だけを空にする）、has_unseen_results・list_unseen_result_works（回答の知らせ。D192 のまま） |
+| システム回答を作るのに要る | 4 | save_system_answer、enqueue_system_answer、answers_guard_source_immutable、app_guard_account_active |
+
+回答一覧と「分析から外す」は、人間の回答だけに通し番号を振る。
+システム回答は番号を持たず、外す操作では指定できない（存在しない番号は `ANSWER_NOT_FOUND`）。

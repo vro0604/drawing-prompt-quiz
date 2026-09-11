@@ -35,7 +35,7 @@
  */
 
 import { installLocalOnlyGuard } from "../guard/no-production.mjs";
-import { asRole, createTestDb, expectFailure } from "./harness.mjs";
+import { applyMigrations, asRole, createTestDb, expectFailure } from "./harness.mjs";
 import { recordCount } from "../counts.mjs";
 
 // **最初のネットワーク要求より前に柵を立てる。**
@@ -9207,7 +9207,391 @@ async function main() {
     assert(n.rows[0].n === 0, `待ち行列の行が ${n.rows[0].n} 件残っている`);
   });
 
+  // =========================================================================
+  // SC. システム回答を、作者向けの分析と取り込み枠から外す（D196）
+  //
+  //   Phase 1 で「人間の回答だけが数字を動かす」ようにしたあとで入った
+  //   分析（P2〜P3）と取り込み枠（P4）は、回答の出所を知らなかった。
+  //   20260912100000 がそこへ絞り込みを足した。ここではそれを確かめる。
+  //   出所: ユーザー指示（2026-09-11）「システム回答は：作者向け分析に含めない／
+  //   取り込み枠を消費しない」
+  // =========================================================================
 
+  /** 取り込みまわりの副作用を、作品ごとに数える */
+  async function importSideEffects(workId) {
+    const r = await db.query(
+      `select (select count(*)::int from public.analysis_imports where work_id = $1) as imports,
+              (select count(*)::int from public.capacity_notifications where work_id = $1) as notices,
+              (select count(*)::int from public.work_capacity_grants where work_id = $1) as grants,
+              public.work_remaining_capacity($1) as remaining`,
+      [workId],
+    );
+    return r.rows[0];
+  }
+
+  /** 全体の数字（回答者の成績と順位）を読む */
+  async function globalNumbers() {
+    const us = await db.query(
+      `select coalesce(jsonb_agg(to_jsonb(t) - 'updated_at' order by to_jsonb(t)::text),
+                       '[]'::jsonb) as j
+         from public.user_stats t`);
+    const uss = await db.query(
+      `select coalesce(jsonb_agg(to_jsonb(t) - 'updated_at' order by to_jsonb(t)::text),
+                       '[]'::jsonb) as j
+         from public.user_slot_stats t`);
+    const rk = await value(db, ANON,
+      `select coalesce(jsonb_agg(r), '[]'::jsonb)
+         from public.get_rankings('accuracy', 'normal', null, 50, 0) r`);
+    const pop = await value(db, ANON,
+      `select coalesce(jsonb_agg(r), '[]'::jsonb)
+         from public.get_rankings('popular', 'normal', null, 50, 0) r`);
+    return { user_stats: us.rows[0].j, user_slot_stats: uss.rows[0].j, accuracy: rk, popular: pop };
+  }
+
+  /** 作品の枠ごとの集計を、行ごとそのまま読む（ビタ当て・2択当ての内訳を含む） */
+  async function slotRows(workId) {
+    const r = await db.query(
+      `select coalesce(jsonb_agg(to_jsonb(t) - 'updated_at' order by t.card_slot_key),
+                       '[]'::jsonb) as j
+         from public.work_slot_stats t where t.work_id = $1`, [workId]);
+    return r.rows[0].j;
+  }
+
+  /** 別の人から見た、その作品の配給の band */
+  async function bandFor(workId, handle) {
+    const picker = await makeMember(db, handle);
+    return value(db, asMember(picker),
+      `select (select band from public.next_work_candidates(null) where work_id = $1)`,
+      [workId]);
+  }
+
+  /** 回答の行を出所ごとに数える */
+  async function answerRows(workId) {
+    const r = await db.query(
+      `select answer_source, count(*)::int n from public.answers
+        where work_id = $1 group by answer_source`, [workId]);
+    return Object.fromEntries(r.rows.map((x) => [x.answer_source, x.n]));
+  }
+
+  /** 枠を10足し、自動取り込みを入れた作品を用意する */
+  async function workWithAutoImport(handle, title) {
+    const w = await normalWork(handle, title);
+    await grant(db, w.workId, 10);
+    await value(db, asMember(w.userId), `select public.set_auto_import($1, true)`, [w.workId]);
+    return w;
+  }
+
+  const saveSystem = async (workId) =>
+    svc(`select public.save_system_answer($1::uuid, $2::jsonb)`,
+      [workId, JSON.stringify(await aiSelections(workId, { correct: true }))]);
+
+  const same = (a, b) => JSON.stringify(a) === JSON.stringify(b);
+
+  await test("SC", "A. 人間0・システム1: 数字・順位・配給・取り込み枠・分析のどれも動かない", async () => {
+    const { userId: author, workId } = await workWithAutoImport("sc-a", "互換の検査A");
+    const numbers0 = await humanNumbers(workId);
+    const slots0 = await slotRows(workId);
+    const global0 = await globalNumbers();
+    const side0 = await importSideEffects(workId);
+
+    assert(await saveSystem(workId) === true, "システム回答が保存できていない");
+    const rows = await answerRows(workId);
+    assert(rows.system === 1 && !rows.human, `回答の行が ${JSON.stringify(rows)}`);
+
+    // 回答数・枠ごとの集計（ビタ当て・2択当ての内訳）・ヒント別の集計
+    const numbers1 = await humanNumbers(workId);
+    assert(same(numbers0, numbers1),
+      `作品の数字が動いた: ${JSON.stringify(numbers0)} → ${JSON.stringify(numbers1)}`);
+    assert(numbers1.answers_count === 0, `回答数が ${numbers1.answers_count}`);
+    assert(numbers1.hint_answers === 0, `ヒント別の集計が ${numbers1.hint_answers}`);
+    assert(same(slots0, await slotRows(workId)), "枠ごとの集計が動いた");
+
+    // 回答者の成績と順位
+    assert(same(global0, await globalNumbers()), "回答者の成績か順位が動いた");
+
+    // 配給（D169）
+    const band = await bandFor(workId, "sc-a-picker");
+    assert(band === 1, `配給の band が ${band}（1のはず）`);
+
+    // 取り込み枠: 減らない・取り込まれない・残量の知らせも増えない
+    const side1 = await importSideEffects(workId);
+    assert(same(side0, side1),
+      `取り込みの副作用が出た: ${JSON.stringify(side0)} → ${JSON.stringify(side1)}`);
+    assert(side1.imports === 0 && side1.remaining === 10, `枠が ${JSON.stringify(side1)}`);
+
+    const st = await importState(db, author, workId);
+    assert(st.answers_total === 0, `枠の画面の回答数が ${st.answers_total}`);
+    assert(st.unimported === 0, `未取り込みが ${st.unimported}`);
+    assert(st.oldest_unimported_at === null, "未取り込みの最古が入っている");
+
+    // 作者向けの分析・掘り下げ・回答一覧
+    const an = await authorView(db, author, workId);
+    assert(an.answers_count === 0, `分析の母数が ${an.answers_count}`);
+    assert(an.advanced_count === 0, `高度分析の対象が ${an.advanced_count}`);
+    const dr = await drill(db, author, workId, null, []);
+    assert(dr.not_imported === true, "掘り下げの母集団にシステム回答が入っている");
+    const list = await value(db, asMember(author),
+      `select public.get_work_answer_list($1)`, [workId]);
+    assert(list.total === 0 && list.answers.length === 0, `回答一覧が ${list.total}件`);
+
+    // 作者へ返る結果
+    const res = await value(db, asMember(author),
+      `select public.get_my_work_result($1::uuid)`, [workId]);
+    assert(res.answers_count === 0, `作者へ返る回答数が ${res.answers_count}`);
+  });
+
+  await test("SC", "B. 人間1が先: システムは作られず、取り込みと分析は人間の1件だけ", async () => {
+    const { userId: author, workId } = await workWithAutoImport("sc-b", "互換の検査B");
+    const viewer = await makeMember(db, "sc-b-viewer");
+    await answerWork(db, viewer, workId, { correct: true });
+    const side0 = await importSideEffects(workId);
+    assert(side0.imports === 1 && side0.remaining === 9,
+      `人間の回答が今までどおり自動で取り込まれていない: ${JSON.stringify(side0)}`);
+
+    await svc(`select public.enqueue_system_answer($1::uuid)`, [workId]);
+    assert(await saveSystem(workId) === false, "人間が先なのに保存された");
+
+    const rows = await answerRows(workId);
+    assert(rows.human === 1 && !rows.system, `回答の行が ${JSON.stringify(rows)}`);
+    assert(same(side0, await importSideEffects(workId)), "システムを試しただけで枠が動いた");
+
+    const band = await bandFor(workId, "sc-b-picker");
+    assert(band === 2, `配給の band が ${band}（2のはず）`);
+    const an = await authorView(db, author, workId);
+    assert(an.answers_count === 1 && an.advanced_count === 1,
+      `分析が ${an.answers_count} / ${an.advanced_count}（1 / 1 のはず）`);
+    const list = await value(db, asMember(author),
+      `select public.get_work_answer_list($1)`, [workId]);
+    assert(list.total === 1, `回答一覧が ${list.total}件`);
+  });
+
+  await test("SC", "C. システム1のあとに人間1: 表には2行、数字・分析・枠は人間の1件だけ", async () => {
+    const { userId: author, workId } = await workWithAutoImport("sc-c", "互換の検査C");
+    assert(await saveSystem(workId) === true, "システム回答が保存できていない");
+    const side0 = await importSideEffects(workId);
+    assert(side0.imports === 0 && side0.remaining === 10, `枠が ${JSON.stringify(side0)}`);
+    const band0 = await bandFor(workId, "sc-c-picker-1");
+    assert(band0 === 1, `人間が答える前の band が ${band0}（1のはず）`);
+
+    // 後から人間が答えられる（人間の1人1回と、システムの1作品1回は別の制約）
+    const viewer = await makeMember(db, "sc-c-viewer");
+    await answerWork(db, viewer, workId, { correct: true });
+    const rows = await answerRows(workId);
+    assert(rows.system === 1 && rows.human === 1, `回答の行が ${JSON.stringify(rows)}`);
+
+    const n = await humanNumbers(workId);
+    assert(n.answers_count === 1 && n.band === 2, `数字が ${JSON.stringify(n)}`);
+    const band1 = await bandFor(workId, "sc-c-picker-2");
+    assert(band1 === 2, `人間が答えたあとの band が ${band1}（2のはず）`);
+
+    // 枠を使ったのは人間の1件だけ。取り込まれたのも人間の回答
+    const side1 = await importSideEffects(workId);
+    assert(side1.imports === 1 && side1.remaining === 9, `枠が ${JSON.stringify(side1)}`);
+    const imported = await db.query(
+      `select a.answer_source from public.analysis_imports i
+         join public.answers a on a.id = i.answer_id where i.work_id = $1`, [workId]);
+    assert(imported.rows.length === 1 && imported.rows[0].answer_source === "human",
+      `取り込まれたのが ${JSON.stringify(imported.rows)}`);
+
+    const st = await importState(db, author, workId);
+    assert(st.answers_total === 1 && st.unimported === 0 && st.imported === 1,
+      `枠の画面が ${st.answers_total} / ${st.unimported} / ${st.imported}`);
+    const an = await authorView(db, author, workId);
+    assert(an.answers_count === 1 && an.advanced_count === 1,
+      `分析が ${an.answers_count} / ${an.advanced_count}（1 / 1 のはず）`);
+    const dr = await drill(db, author, workId, null, []);
+    assert(dr.not_imported === false, "人間の回答を取り込んだのに掘り下げが始まらない");
+    const list = await value(db, asMember(author),
+      `select public.get_work_answer_list($1)`, [workId]);
+    assert(list.total === 1 && list.answers[0].no === 1 && list.answers[0].is_imported === true,
+      `回答一覧が ${JSON.stringify(list.answers)}`);
+
+    // 答えた本人に返る集計も、自分以外の「人」にシステムを数えない
+    const mine = await answererView(db, viewer, workId);
+    assert(mine.answers_count === 1 && mine.others_count === 0,
+      `本人の集計が ${mine.answers_count} / ${mine.others_count}（1 / 0 のはず）`);
+    const res = await value(db, asMember(author),
+      `select public.get_my_work_result($1::uuid)`, [workId]);
+    assert(res.answers_count === 1, `作者へ返る回答数が ${res.answers_count}`);
+  });
+
+  await test("SC", "D. システム回答には番号が無く、分析から外す操作では指定できない", async () => {
+    const { userId: author, workId } = await normalWork("sc-d", "互換の検査D");
+    assert(await saveSystem(workId) === true, "システム回答が保存できていない");
+    const viewer = await makeMember(db, "sc-d-viewer");
+    await answerWork(db, viewer, workId, { correct: true });
+
+    // 人間は1人なので番号は1だけ。2を指すと、今までどおり「見つからない」で断る
+    await expectFailure(
+      () => value(db, asMember(author),
+        `select public.set_answer_excluded($1, $2::int[], true)`, [workId, "{2}"]),
+      "ANSWER_NOT_FOUND",
+    );
+    const done = await value(db, asMember(author),
+      `select public.set_answer_excluded($1, $2::int[], true)`, [workId, "{1}"]);
+    assert(done.changed === 1, `外した数が ${done.changed}`);
+    const ex = await db.query(
+      `select a.answer_source from public.analysis_exclusions x
+         join public.answers a on a.id = x.answer_id where x.work_id = $1`, [workId]);
+    assert(ex.rows.length === 1 && ex.rows[0].answer_source === "human",
+      `外した印が ${JSON.stringify(ex.rows)}`);
+  });
+
+  await test("SC", "E. 手で取り込んでも、システム回答は取り込まれず枠も使わない", async () => {
+    const { userId: author, workId } = await normalWork("sc-e", "互換の検査E");
+    await grant(db, workId, 10);
+    assert(await saveSystem(workId) === true, "システム回答が保存できていない");
+
+    let r = await importAll(db, author, workId);
+    assert(r.imported_now === 0 && r.remaining === 10, `取り込みが ${JSON.stringify(r)}`);
+
+    const viewer = await makeMember(db, "sc-e-viewer");
+    await answerWork(db, viewer, workId, { correct: true });
+    r = await importAll(db, author, workId);
+    assert(r.imported_now === 1 && r.remaining === 9, `人間の取り込みが ${JSON.stringify(r)}`);
+    r = await importAll(db, author, workId);
+    assert(r.imported_now === 0 && r.remaining === 9, `2回目の取り込みが ${JSON.stringify(r)}`);
+  });
+
+  // ── 人間だけの作品は、互換 migration の前と後で何も変わらない ──────────
+  //
+  //   互換 migration の直前までを当てたDBと、全部を当てたDBを作り、
+  //   同じ乱数の種で同じ手順を踏む。F は同じ中身のDBへ後から当てたときの比較、
+  //   G は「当てたあとで同じ操作をしたとき」の比較。
+  const COMPAT_FROM = "20260912100000";
+
+  /** 人間だけの作品を1つ育てる（枠3で自動取り込みが止まり、1件は手で取り込む） */
+  async function humanOnlyScenario(d) {
+    await d.query(`select setseed(0.42)`);
+    const author = await makeMember(d, "ho-author");
+    const { prompt_id: promptId } = await drawPrompt(d, author, { timeLimit: 3600 });
+    const workId = await postWork(d, author, promptId, "人間だけの作品");
+    await grant(d, workId, 3);
+    await value(d, asMember(author), `select public.set_auto_import($1, true)`, [workId]);
+    const viewers = [];
+    for (const [i, style] of [{ correct: true }, { wrong: true }, {}, { correct: true }].entries()) {
+      const v = await makeMember(d, `ho-viewer-${i}`);
+      viewers.push(v);
+      await answerWork(d, v, workId, style);
+    }
+    await value(d, asMember(author),
+      `select public.set_answer_excluded($1, $2::int[], true)`, [workId, "{2}"]);
+    await grant(d, workId, 5);
+    await importAll(d, author, workId);
+    const picker = await makeMember(d, "ho-picker");
+    return { author, workId, viewers, picker };
+  }
+
+  /** 人間の回答を母集団にする読み取りを、全部まとめて読む */
+  async function humanOnlySnapshot(d, s) {
+    const j = async (sql, params) => (await d.query(sql, params)).rows[0].j;
+    const author = asMember(s.author);
+    const viewer = asMember(s.viewers[0]);
+    return {
+      answers_count: await j(
+        `select w.answers_count as j from public.works w where w.id = $1`, [s.workId]),
+      slot_stats: await j(
+        `select coalesce(jsonb_agg(to_jsonb(t) - 'work_id' - 'updated_at'
+                  order by (to_jsonb(t) - 'work_id' - 'user_id' - 'updated_at')::text),
+                  '[]'::jsonb) as j
+           from public.work_slot_stats t where t.work_id = $1`, [s.workId]),
+      hint_stats: await j(
+        `select coalesce(jsonb_agg(to_jsonb(t) - 'work_id' - 'updated_at'
+                  order by (to_jsonb(t) - 'work_id' - 'user_id' - 'updated_at')::text),
+                  '[]'::jsonb) as j
+           from public.work_hint_stats t where t.work_id = $1`, [s.workId]),
+      user_stats: await j(
+        `select coalesce(jsonb_agg(to_jsonb(t) - 'user_id' - 'updated_at'
+                  order by (to_jsonb(t) - 'work_id' - 'user_id' - 'updated_at')::text),
+                  '[]'::jsonb) as j
+           from public.user_stats t where t.user_id = any ($1::uuid[])`, [s.viewers]),
+      user_slot_stats: await j(
+        `select coalesce(jsonb_agg(to_jsonb(t) - 'user_id' - 'updated_at'
+                  order by (to_jsonb(t) - 'work_id' - 'user_id' - 'updated_at')::text),
+                  '[]'::jsonb) as j
+           from public.user_slot_stats t where t.user_id = any ($1::uuid[])`, [s.viewers]),
+      imports: await j(
+        `select count(*)::int as j from public.analysis_imports where work_id = $1`, [s.workId]),
+      exclusions: await j(
+        `select count(*)::int as j from public.analysis_exclusions where work_id = $1`,
+        [s.workId]),
+      author_analysis: await value(d, author,
+        `select public.get_work_answer_analysis($1)`, [s.workId]),
+      drilldown: await value(d, author,
+        `select public.get_work_drilldown($1, null, '[]'::jsonb)`, [s.workId]),
+      answer_list: await value(d, author,
+        `select public.get_work_answer_list($1)`, [s.workId]),
+      import_state: await value(d, author,
+        `select public.get_work_import_state($1)`, [s.workId]),
+      work_result: await value(d, author,
+        `select public.get_my_work_result($1::uuid)`, [s.workId]),
+      answerer_analysis: await value(d, viewer,
+        `select public.get_my_answer_analysis($1)`, [s.workId]),
+      my_answers: await value(d, viewer,
+        `select coalesce(jsonb_agg(r), '[]'::jsonb) from public.get_my_answers(50, 0) r`),
+      public_answers: await value(d, ANON,
+        `select coalesce(jsonb_agg(r), '[]'::jsonb)
+           from public.get_public_answers($1::uuid, 50, 0) r`, [s.viewers[0]]),
+      band: await value(d, asMember(s.picker),
+        `select (select band from public.next_work_candidates(null) where work_id = $1)`,
+        [s.workId]),
+      ranking_accuracy: await value(d, ANON,
+        `select coalesce(jsonb_agg(r), '[]'::jsonb)
+           from public.get_rankings('accuracy', 'normal', null, 50, 0) r`),
+      ranking_popular: await value(d, ANON,
+        `select coalesce(jsonb_agg(r), '[]'::jsonb)
+           from public.get_rankings('popular', 'normal', null, 50, 0) r`),
+    };
+  }
+
+  /** 別のDBどうしで比べるため、そのDBでしか意味を持たない値だけを伏せる */
+  //   uuid は文字列の途中にも入る（画像のパスは「作者の id / 作品の id.png」）
+  const UUID_RE = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/gi;
+  const TIME_RE = /^\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}/;
+  const blindIds = (x) => JSON.parse(JSON.stringify(x, (k, v) => {
+    if (typeof v !== "string") return v;
+    if (TIME_RE.test(v)) return "<time>";
+    return v.replace(UUID_RE, "<uuid>");
+  }));
+
+  let beforeSnapshot = null;
+
+  await test("SC", "F. 人間だけの作品: 互換 migration を後から当てても、読める数字が1つも変わらない", async () => {
+    const d = await createTestDb({ before: COMPAT_FROM });
+    try {
+      const s = await humanOnlyScenario(d);
+      beforeSnapshot = await humanOnlySnapshot(d, s);
+      assert(beforeSnapshot.imports === 4, `取り込みが ${beforeSnapshot.imports}件（4件のはず）`);
+      assert(beforeSnapshot.exclusions === 1, `外した回答が ${beforeSnapshot.exclusions}件`);
+
+      const applied = await applyMigrations(d, { from: COMPAT_FROM });
+      assert(applied.length === 1, `後から当てた migration が ${applied.length}本（1本のはず）`);
+
+      const after = await humanOnlySnapshot(d, s);
+      for (const k of Object.keys(beforeSnapshot)) {
+        assert(same(beforeSnapshot[k], after[k]),
+          `${k} が変わった: ${JSON.stringify(beforeSnapshot[k])} → ${JSON.stringify(after[k])}`);
+      }
+    } finally {
+      await d.close();
+    }
+  });
+
+  await test("SC", "G. 人間だけの作品: 同じ操作を互換の前と後で踏むと、取り込み・除外・集計・順位・履歴・配給が一致する", async () => {
+    assert(beforeSnapshot !== null, "F が前の状態を読めていない");
+    const d = await createTestDb();
+    try {
+      const s = await humanOnlyScenario(d);
+      const after = blindIds(await humanOnlySnapshot(d, s));
+      const before = blindIds(beforeSnapshot);
+      for (const k of Object.keys(before)) {
+        assert(same(before[k], after[k]),
+          `${k} が違う: ${JSON.stringify(before[k])} → ${JSON.stringify(after[k])}`);
+      }
+    } finally {
+      await d.close();
+    }
+  });
 }
 
 // ===========================================================================

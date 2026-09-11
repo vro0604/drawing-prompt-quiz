@@ -3108,6 +3108,20 @@ export const diagnostics = [
                   or pg_get_functiondef(p.oid) not like '%art_first%')`,
   },
   {
+    // 作者向けの分析と取り込み枠は、人間の回答だけを数える（D196）。
+    // 8本のどれかから answer_source の絞り込みが消えたら、ここで落ちる。
+    id: "A62",
+    label: "人間の回答に絞っていない、分析・取り込み枠の関数",
+    sql: `select p.proname
+            from pg_proc p join pg_namespace n on n.oid = p.pronamespace
+           where n.nspname = 'public'
+             and p.proname in ('answers_after_insert_auto_import', 'consume_import_capacity',
+                               'analysis_all_answers', 'analysis_advanced_answers',
+                               'get_work_answer_list', 'set_answer_excluded',
+                               'get_work_import_state', 'get_my_answer_analysis')
+             and p.prosrc not like '%answer_source%'`,
+  },
+  {
     // 回答を出す窓口は、出所を引数に取らない（D194）。
     // 取ると、そこが「システムを名乗る口」になる。
     id: "A55",
