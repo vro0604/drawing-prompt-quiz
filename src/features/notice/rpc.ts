@@ -4,13 +4,15 @@ import {
   UNSEEN_LIST_LIMIT,
   type UnseenResultWork,
 } from "@/features/notice/types";
+import { hasUnseenResults } from "@/features/notice/unseen";
 
 /**
  * 回答の知らせの DB 呼び出し。サーバー専用。
  *
- * 3本とも authenticated だけが呼べる（migration 側で配り直している）。
- * 未サインインで呼んでも DB が null / 空を返すので、
- * 画面側で「誰か」を判定してから呼ぶ必要はない。
+ * 3本とも authenticated だけが呼べる（migration 側で配り直している。DB 検査 A44）。
+ * 未サインインで呼ぶと、DB は null も false も返さず、権限なしで断る。
+ * 全ページで呼ぶ has_unseen_results だけは、ここで未サインインを見分けて
+ * DB に聞かずに false を返す（unseen.ts）。
  */
 
 /**
@@ -18,17 +20,15 @@ import {
  *
  * ヘッダーは全ページに出るので、ここが重いと全体が重くなる。
  * だから**真偽値だけ**を聞く。件数も一覧も取らない。
- *
- * 失敗しても投げない。知らせが出ないだけで、
- * 作品を見ることも描くこともできる。
- * **枠の付随機能のために、全ページが落ちる形にしない。**
+ * 未サインインなら DB に聞かない。失敗しても投げない（どちらも unseen.ts）。
  */
 export async function fetchHasUnseenResults(): Promise<boolean> {
   try {
     const supabase = await createSupabaseServerClient();
-    const { data, error } = await supabase.rpc("has_unseen_results");
-    if (error) return false;
-    return data === true;
+    return await hasUnseenResults({
+      getSession: () => supabase.auth.getSession(),
+      rpc: (fn) => supabase.rpc(fn),
+    });
   } catch {
     return false;
   }

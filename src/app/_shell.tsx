@@ -53,7 +53,8 @@ const NAV = [
 
 export async function SiteHeader() {
   // 未確認の回答があるか。**件数は聞いていない。**
-  // 未サインインなら DB 側が false を返すので、ここで場合分けはしない。
+  // 未サインインなら、fetchHasUnseenResults が DB に聞かずに false を返す
+  // （DB は未サインインには実行させない。聞くと断られる）。ここで場合分けはしない。
   const hasUnseen = await fetchHasUnseenResults();
 
   return (

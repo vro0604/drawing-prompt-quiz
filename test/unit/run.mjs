@@ -92,6 +92,7 @@ import {
   warnLabel,
   warnLevel,
 } from "../../src/features/challenge/warning.ts";
+import { hasUnseenResults } from "../../src/features/notice/unseen.ts";
 import { recordCount } from "../counts.mjs";
 
 const results = [];
@@ -868,6 +869,102 @@ test("プッシュ", "封は毎回違う（同じ文でも同じ形にならな�
   const a = encryptPayload("同じ文", pub, auth);
   const b = encryptPayload("同じ文", pub, auth);
   assert(!a.equals(b), "毎回同じ形になっている（塩か使い捨ての鍵が固定）");
+});
+
+// ============================================================================
+// 回答の知らせ：未サインインなら DB に聞かない（2026-09-11）
+// ============================================================================
+//
+// has_unseen_results は authenticated にだけ配ってある（DB 検査 A44）。
+// 以前は未サインインでも呼んでいて、本番でページを開くたびに 401 が出ていた。
+
+console.log("\n回答の知らせ（has_unseen_results を呼ぶかどうか）");
+
+/** 待つ試験用。test() と同じ記録の仕方 */
+async function testAsync(group, name, fn) {
+  try {
+    await fn();
+    results.push({ group, name, ok: true });
+    console.log(`  ○ [${group}] ${name}`);
+  } catch (e) {
+    results.push({ group, name, ok: false, why: e.message });
+    console.log(`  ✗ [${group}] ${name}\n      ${e.message}`);
+  }
+}
+
+/** 偽の相手。セッションの読み取りと DB の呼び出しを数える */
+function fakeUnseen({ session = null, rpcResult = { data: false, error: null }, sessionThrows = false, rpcThrows = false } = {}) {
+  const calls = { session: 0, rpc: [] };
+  return {
+    calls,
+    client: {
+      getSession: async () => {
+        calls.session += 1;
+        if (sessionThrows) throw new Error("Cookie を読めない");
+        return { data: { session } };
+      },
+      rpc: async (fn) => {
+        calls.rpc.push(fn);
+        if (rpcThrows) throw new Error("回線が切れた");
+        return rpcResult;
+      },
+    },
+  };
+}
+
+const MEMBER_SESSION = { access_token: "t", user: { id: "u1", is_anonymous: false } };
+const GUEST_SESSION = { access_token: "t", user: { id: "g1", is_anonymous: true } };
+
+await testAsync("知らせ", "未サインインなら DB を1回も呼ばず、false", async () => {
+  const f = fakeUnseen({ session: null, rpcResult: { data: true, error: null } });
+  const got = await hasUnseenResults(f.client);
+  assert(got === false, `結果が ${got}`);
+  assert(f.calls.rpc.length === 0, `DB を ${f.calls.rpc.length} 回呼んだ`);
+  assert(f.calls.session === 1, `セッションを ${f.calls.session} 回読んだ`);
+});
+
+await testAsync("知らせ", "セッションを読めなければ DB を呼ばず、false（投げない）", async () => {
+  const f = fakeUnseen({ sessionThrows: true, rpcResult: { data: true, error: null } });
+  const got = await hasUnseenResults(f.client);
+  assert(got === false, `結果が ${got}`);
+  assert(f.calls.rpc.length === 0, `DB を ${f.calls.rpc.length} 回呼んだ`);
+});
+
+await testAsync("知らせ", "サインイン済みなら従来どおり has_unseen_results を1回呼ぶ", async () => {
+  const yes = fakeUnseen({ session: MEMBER_SESSION, rpcResult: { data: true, error: null } });
+  assert((await hasUnseenResults(yes.client)) === true, "未確認ありが true にならない");
+  assert(yes.calls.rpc.join() === "has_unseen_results", `呼んだもの: ${yes.calls.rpc.join()}`);
+
+  const no = fakeUnseen({ session: MEMBER_SESSION, rpcResult: { data: false, error: null } });
+  assert((await hasUnseenResults(no.client)) === false, "未確認なしが false にならない");
+  assert(no.calls.rpc.length === 1, `DB を ${no.calls.rpc.length} 回呼んだ`);
+});
+
+await testAsync("知らせ", "匿名のゲストもセッションがあるので従来どおり呼ぶ", async () => {
+  const f = fakeUnseen({ session: GUEST_SESSION, rpcResult: { data: true, error: null } });
+  assert((await hasUnseenResults(f.client)) === true, "ゲストの未確認ありが true にならない");
+  assert(f.calls.rpc.length === 1, `DB を ${f.calls.rpc.length} 回呼んだ`);
+});
+
+await testAsync("知らせ", "サインイン済みで DB がエラーを返したら false（従来どおり）", async () => {
+  const f = fakeUnseen({
+    session: MEMBER_SESSION,
+    rpcResult: { data: null, error: { code: "42501", message: "permission denied" } },
+  });
+  assert((await hasUnseenResults(f.client)) === false, "エラーなのに true");
+  assert(f.calls.rpc.length === 1, `DB を ${f.calls.rpc.length} 回呼んだ`);
+});
+
+await testAsync("知らせ", "サインイン済みで DB の呼び出しが投げても false（全ページを落とさない）", async () => {
+  const f = fakeUnseen({ session: MEMBER_SESSION, rpcThrows: true });
+  assert((await hasUnseenResults(f.client)) === false, "投げたのに true");
+});
+
+await testAsync("知らせ", "true 以外の値は true と見なさない", async () => {
+  for (const data of [null, "true", 1, {}]) {
+    const f = fakeUnseen({ session: MEMBER_SESSION, rpcResult: { data, error: null } });
+    assert((await hasUnseenResults(f.client)) === false, `${JSON.stringify(data)} を true と見なした`);
+  }
 });
 
 
