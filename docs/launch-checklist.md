@@ -59,8 +59,10 @@ CAPTCHA の検証は、Cloudflare が返してきた hostname を
 **この手順は 2026-09-10 に実行済み。**下の7本は1つのトランザクションで本番へ入り、
 履歴表にも記録された。以下は、そのとき何をどの順で当てたかの記録として残す。
 
-いまの本数は 59本<!--count:migration-->。**59本すべて本番へ入っている**
-（最後の1本 `20260910210000_touch_session_as_owner` は 2026-09-11T07:59Z に
+いまの本数は 60本<!--count:migration-->。**本番へ入っているのは59本。**
+60本目の `20260911120000_cleanup_failed_orphan_prompts`（持ち主のいない時間切れ（failed）と
+自動破棄（discarded）のお題を、掃除の対象と残り件数に含める）は、2026-09-11 時点で未適用。
+（本番へ最後に当てた1本 `20260910210000_touch_session_as_owner` は 2026-09-11T07:59Z に
 `npm run db:deploy` で適用。引きかけのお題を持つ利用者を管理APIで消せない不具合の修正）。
 出所: **2026-09-10 の実測**（本番の Postgres ログに
 `permission denied for table draft_sessions (SQLSTATE 42501)` が出ていること、

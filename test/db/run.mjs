@@ -8320,6 +8320,84 @@ async function main() {
     assert(typeof workId === "string" && workId.length > 0, "投稿できていない");
   });
 
+  /* ---------------------------------------------------------------------
+   * Q. 持ち主のいない時間切れ（failed）のお題も、掃除で消える（2026-09-11）
+   *
+   * failed は掃除より後から入った状態で、掃除の条件にも残り件数にも
+   * 入っていなかった。本番で13件、誰にも見えず数えられもせずに残っていた。
+   * ------------------------------------------------------------------- */
+
+  await test("Q", "持ち主のいない failed / discarded は消え、submitted と持ち主のいる行は残る", async () => {
+    const gone = await makeMember(db, "q-gone");
+    const kept = await makeMember(db, "q-kept");
+    const draw = async (u) => (await drawPrompt(db, u)).prompt_id;
+
+    // 持ち主がいなくなる側（従来の対象 active / abandoned と、今回足す failed / discarded、
+    // 対象外の submitted）と、持ち主が残る側（failed / discarded）
+    const orphan = {
+      active: await draw(gone),
+      abandoned: await draw(gone),
+      failed: await draw(gone),
+      discarded: await draw(gone),
+      submitted: await draw(gone),
+    };
+    const owned = { failed: await draw(kept), discarded: await draw(kept) };
+
+    // 終わった状態へ直接移す。failed はいまはどの関数も作らない（2026-09-09 に撤去）ので、
+    // 過去の行と同じ形をここで作る。時刻の列は prompts_status_timestamps が求めるもの
+    const finish = (ids, status, column) =>
+      db.query(
+        `update public.prompts set status = $2, ${column} = clock_timestamp()
+          where id = any($1::uuid[])`,
+        [ids, status],
+      );
+    await finish([orphan.abandoned], "abandoned", "abandoned_at");
+    await finish([orphan.failed, owned.failed], "failed", "failed_at");
+    await finish([orphan.discarded, owned.discarded], "discarded", "discarded_at");
+    // 確定済みなのに作品が無いお題（2026-09-10 の本番の6件と同じ形）
+    const w = await postWork(db, gone, orphan.submitted, "あとで消える作品");
+    await db.query(`delete from public.works where id = $1`, [w]);
+    // 持ち主がいなくなる（prompts.created_by は set null）
+    await db.query(`delete from auth.users where id = $1`, [gone]);
+
+    // 準備が狙いどおりの形になっているか（ここが崩れると、下の判定が何も言わなくなる）
+    const all = [...Object.values(orphan), ...Object.values(owned)];
+    const made = await db.query(
+      `select id, status, created_by from public.prompts where id = any($1::uuid[])`,
+      [all],
+    );
+    const shape = Object.fromEntries(
+      made.rows.map((r) => [r.id, `${r.status}/${r.created_by === null ? "持ち主なし" : "持ち主あり"}`]),
+    );
+    for (const [s, id] of Object.entries(orphan)) {
+      assert(shape[id] === `${s}/持ち主なし`, `準備が違う: ${s} → ${shape[id]}`);
+    }
+    for (const [s, id] of Object.entries(owned)) {
+      assert(shape[id] === `${s}/持ち主あり`, `準備が違う: ${s} → ${shape[id]}`);
+    }
+
+    // 残り件数と、掃除が実際に消した数が一致すること
+    const counted = async () =>
+      Number((await db.query(`select public.cleanup_status() ->> 'orphan_prompts' as n`)).rows[0].n);
+    const before = await counted();
+    const deleted = await asRole(db, { role: "service_role", uid: null }, async (c) =>
+      Number((await c.query(`select public.cleanup_orphan_prompts(100000) as n`)).rows[0].n),
+    );
+    assert(deleted === before, `掃除が消した数 ${deleted} と、残り件数 ${before} が合わない`);
+
+    const left = await db.query(`select id from public.prompts where id = any($1::uuid[])`, [all]);
+    const has = (id) => left.rows.some((r) => r.id === id);
+    assert(!has(orphan.failed), "持ち主のいない failed が残った");
+    assert(!has(orphan.discarded), "持ち主のいない discarded が残った");
+    assert(!has(orphan.active), "持ち主のいない active が残った（従来の対象）");
+    assert(!has(orphan.abandoned), "持ち主のいない abandoned が残った（従来の対象）");
+    assert(has(orphan.submitted), "持ち主のいない submitted を消した（作品が失われた手がかりが消える）");
+    assert(has(owned.failed), "持ち主のいる failed を消した（本人の記録）");
+    assert(has(owned.discarded), "持ち主のいる discarded を消した（本人の記録）");
+    const after = await counted();
+    assert(after === 0, `掃除のあとも残り件数が ${after}`);
+  });
+
 
 
 
