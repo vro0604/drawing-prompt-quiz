@@ -74,6 +74,11 @@
 import { readFileSync, writeFileSync, unlinkSync } from "node:fs";
 import { readTargetEnv } from "./_env-target.mjs";
 import { createClient } from "@supabase/supabase-js";
+import {
+  isFixtureAccountEmail,
+  isTestAccountEmail,
+  testAccountLabel,
+} from "./_test-accounts.mjs";
 
 /** 実在しないことが規格で保証されているドメイン（RFC 2606） */
 const DOMAIN = "dpq-smoke.invalid";
@@ -162,9 +167,12 @@ export function fixtureEmail(role) {
   return `${PREFIX}${role}@${DOMAIN}`;
 }
 
-/** 検査用のメールアドレスかどうか。**消す前に必ず通す** */
+/**
+ * 固定の検査用利用者（dpq-fixture-…@dpq-smoke.invalid）かどうか。
+ * 判定そのものは _test-accounts.mjs の1か所にある。ここは使い回す人を探すための入口
+ */
 export function isFixtureEmail(email) {
-  return typeof email === "string" && email.startsWith(PREFIX) && email.endsWith(`@${DOMAIN}`);
+  return isFixtureAccountEmail(email);
 }
 
 function newPassword() {
@@ -346,13 +354,7 @@ export function storeCookies(role, cookies) {
 
 // ── 後片づけ ──────────────────────────────────────────
 
-/**
- * 検査用の利用者を全部消す。
- *
- * **`dpq-fixture-…@dpq-smoke.invalid` 以外は絶対に消さない。**
- * 判定は isFixtureEmail が持っていて、そこを通らないものは飛ばす。
- */
-/** 検査用の利用者のIDだけを並べる。消さない */
+/** 固定の検査用利用者（dpq-fixture）のIDだけを並べる。消さない */
 export async function fixtureUserIds() {
   const admin = adminClient();
   const ids = [];
@@ -387,14 +389,30 @@ export function summarizeFailures(reasons) {
     .map(([reason, n]) => `${n} 人: ${reason}`);
 }
 
+/**
+ * 検査用の利用者を全部消す。
+ *
+ * **検査用の3つの形（_test-accounts.mjs の isTestAccountEmail）以外は絶対に消さない。**
+ * 2026-09-11 までは dpq-fixture しか見ておらず、dpq-smoke / dpq-probe の330人が
+ * どの道具にも拾われないまま本番に残っていた。
+ *
+ * 【止める・失敗にする条件】
+ *   - expected を渡したとき、対象がその人数でなければ、1人も消さずに例外を投げる
+ *   - 消し終わったあと名簿を読み直し、1人でも残っていれば ok = false
+ *   - 1人でも消せなければ ok = false（理由は failures に、種類ごとの人数で出す）
+ *
+ * @param client / remove / fetchImpl  試験から差し替える口。何も渡さなければ本番の Admin API
+ * @param retryDelayMs  5xx のやり直しの間隔の基準（試験では 0）
+ */
 export async function purgeFixtureUsers({
   dryRun = false,
   client = null,
   remove = null,
   pauseMs = 120,
+  expected = null,
+  fetchImpl = globalThis.fetch,
+  retryDelayMs = 500,
 } = {}) {
-  // client と remove は試験から差し替えるための口。
-  // 何も渡さなければ本物（本番の Admin API）を使う。
   const admin = client ?? adminClient();
 
   // 【先に全部並べてから消す】
@@ -412,10 +430,10 @@ export async function purgeFixtureUsers({
 
     for (const u of data.users) {
       scanned += 1;
-      if (!isFixtureEmail(u.email)) continue; // ← ここが唯一の関門
+      if (!isTestAccountEmail(u.email)) continue; // ← ここが唯一の関門
       ids.push(u.id);
-      // 役割ごとの数。**「何が残っているか」を、メールを出さずに言うため**
-      const role = u.email.slice(PREFIX.length).split("@")[0].replace(/-\d+-\d+$/, "");
+      // 種類と役割ごとの数。**「何が残っているか」を、メールを出さずに言うため**
+      const role = testAccountLabel(u.email);
       byRole.set(role, (byRole.get(role) ?? 0) + 1);
     }
 
@@ -424,6 +442,11 @@ export async function purgeFixtureUsers({
 
   const matched = ids.length;
   let removed = 0;
+
+  // 人数が決まっているときは、違えば1人も消さずに止める
+  if (expected !== null && matched !== expected) {
+    throw new Error(`検査用の利用者が ${matched} 人で、期待の ${expected} 人と違うので止めました（1人も消していません）`);
+  }
 
   const reasons = [];
 
@@ -448,7 +471,7 @@ export async function purgeFixtureUsers({
     for (let attempt = 0; attempt < 4; attempt += 1) {
       let res;
       try {
-        res = await fetch(`${env.NEXT_PUBLIC_SUPABASE_URL}/auth/v1/admin/users/${id}`, {
+        res = await fetchImpl(`${env.NEXT_PUBLIC_SUPABASE_URL}/auth/v1/admin/users/${id}`, {
           method: "DELETE",
           headers: {
             apikey: env.SUPABASE_SECRET_KEY,
@@ -457,7 +480,7 @@ export async function purgeFixtureUsers({
         });
       } catch (e) {
         last = `つながらない: ${e instanceof Error ? e.message : String(e)}`;
-        await new Promise((r) => setTimeout(r, 500 * 2 ** attempt));
+        await new Promise((r) => setTimeout(r, retryDelayMs * 2 ** attempt));
         continue;
       }
 
@@ -475,7 +498,7 @@ export async function purgeFixtureUsers({
 
       // 「相手が悪い」以外（4xx）は、やり直しても答えは変わらない
       if (res.status < 500) return last;
-      await new Promise((r) => setTimeout(r, 500 * 2 ** attempt));
+      await new Promise((r) => setTimeout(r, retryDelayMs * 2 ** attempt));
     }
     return last;
   });
@@ -503,10 +526,27 @@ export async function purgeFixtureUsers({
     }
   }
 
+  // 【消えたかどうかを、名簿を読み直して確かめる】
+  //   「消した」と返ってきた数だけでは、本当に消えたかは分からない。
+  //   対象にした ID が名簿に1人でも残っていれば、成功にしない。
+  let remaining = null;
+  if (!dryRun) {
+    const target = new Set(ids);
+    remaining = 0;
+    for (let page = 1; page <= 50; page += 1) {
+      const { data, error } = await admin.auth.admin.listUsers({ page, perPage: 200 });
+      if (error) throw new Error(`消したあとの名簿を読めません: ${error.message}`);
+      for (const u of data.users) if (target.has(u.id)) remaining += 1;
+      if (data.users.length < 200) break;
+    }
+  }
+
   return {
     scanned,
     matched,
     removed,
+    remaining,
+    ok: dryRun ? true : removed === matched && remaining === 0 && reasons.length === 0,
     kept: scanned - matched,
     failures: summarizeFailures(reasons),
     byRole,
@@ -523,8 +563,11 @@ if (process.argv[1] && process.argv[1].endsWith("_smoke-users.mjs")) {
     console.log(`        消さない利用者: ${r.kept} 人`);
     console.log("        何も書き換えていません。実行するには --purge を付けてください。");
   } else if (process.argv.includes("--purge")) {
-    const { scanned, removed, kept } = await purgeFixtureUsers();
+    const { scanned, removed, kept, remaining, ok, failures } = await purgeFixtureUsers();
     console.log(`検査用の利用者を ${removed} 人消しました（${scanned} 人を確認／残した人 ${kept} 人）。`);
+    console.log(`消したあとも名簿に残っている対象: ${remaining} 人`);
+    for (const m of failures) console.log(`  ${m}`);
+    if (!ok) process.exit(1);
   } else {
     console.log(
       [

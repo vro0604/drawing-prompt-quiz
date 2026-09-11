@@ -27,6 +27,7 @@ import {
   purgeFixtureUsers,
   summarizeFailures,
 } from "../../scripts/_smoke-users.mjs";
+import { isTestAccountEmail, testAccountKind } from "../../scripts/_test-accounts.mjs";
 import {
   OWN_ROW_TABLES,
   cleanupRunRows,
@@ -375,24 +376,99 @@ await test("片づけ", "ページの境目にいる人を飛ばさない", asyn
   assert(r.matched === 150, `対象の数が違う: ${r.matched}`);
   assert(r.removed === 150, `消えた数が違う: ${r.removed}（飛ばしている）`);
   assert(d.store.length === 300, `名簿に ${d.store.length} 人残っている（300人のはず）`);
+  assert(r.ok && r.remaining === 0, `消し終わったのに ok になっていない: ${JSON.stringify({ ok: r.ok, remaining: r.remaining })}`);
   assert(
     d.store.every((u) => !isFixtureEmail(u.email)),
     "検査用の人が残っている",
   );
 });
 
-await test("片づけ", "本物の利用者には触れない", async () => {
+await test("片づけ", "本物の利用者には触れない（3つの形の検査用だけを消す）", async () => {
   const d = fakeDirectory([
     { id: "a", email: "songcunyizhi@gmail.com" },
     { id: "b", email: "vro.artcode@gmail.com" },
     { id: "c", email: null },
     { id: "d", email: "dpq-smoke-artist-1-2@example.com" },
     { id: "e", email: "dpq-fixture-artist@dpq-smoke.invalid" },
+    { id: "p", email: "dpq-probe-1785793736280@example.com" },
   ]);
   const r = await purgeFixtureUsers({ client: d.client, remove: d.remove, pauseMs: 0 });
-  assert(r.matched === 1, `対象の数が違う: ${r.matched}`);
-  assert(d.store.length === 4, `名簿に ${d.store.length} 人残っている（4人のはず）`);
-  assert(d.store.some((u) => u.email === "songcunyizhi@gmail.com"), "本物を消してしまった");
+  assert(r.matched === 3, `対象の数が違う: ${r.matched}`);
+  assert(r.ok, "消し終わったのに ok になっていない");
+  assert(d.store.map((u) => u.id).join() === "a,b,c", `残った人が違う: ${d.store.map((u) => u.id).join()}`);
+});
+
+await test("片づけ", "ゲスト（メールなし）と、無関係な example.com は消さない", async () => {
+  const d = fakeDirectory([
+    { id: "g1", email: null },
+    { id: "g2", email: "" },
+    { id: "x1", email: "someone@example.com" },
+    { id: "x2", email: "dpq-smoke@example.com" },
+    { id: "s1", email: "dpq-smoke-fan-1-2@example.com" },
+  ]);
+  const r = await purgeFixtureUsers({ client: d.client, remove: d.remove, pauseMs: 0 });
+  assert(r.matched === 1 && r.removed === 1 && r.ok, `結果が違う: ${JSON.stringify({ m: r.matched, r: r.removed, ok: r.ok })}`);
+  assert(d.store.map((u) => u.id).join() === "g1,g2,x1,x2", `残った人が違う: ${d.store.map((u) => u.id).join()}`);
+});
+
+await test("片づけ", "対象の数が期待と違えば、1人も消さずに止める", async () => {
+  const d = fakeDirectory([
+    { id: "f", email: "dpq-fixture-a@dpq-smoke.invalid" },
+    { id: "s", email: "dpq-smoke-a-1-2@example.com" },
+    { id: "p", email: "dpq-probe-1@example.com" },
+    { id: "r", email: "songcunyizhi@gmail.com" },
+  ]);
+  let stopped = null;
+  try {
+    await purgeFixtureUsers({ client: d.client, remove: d.remove, pauseMs: 0, expected: 2 });
+  } catch (e) {
+    stopped = e;
+  }
+  assert(stopped && /3 人/.test(stopped.message), `止まらなかった、または理由が違う: ${stopped?.message}`);
+  assert(d.store.length === 4, `止めたはずなのに ${4 - d.store.length} 人消した`);
+
+  const r = await purgeFixtureUsers({ client: d.client, remove: d.remove, pauseMs: 0, expected: 3 });
+  assert(r.removed === 3 && r.ok, `期待どおりの数なのに消し切れない: ${JSON.stringify({ r: r.removed, ok: r.ok })}`);
+});
+
+/** 認証の管理 API の代わり。返す番号と本文を決め、叩かれた回数を数える */
+function fakeFetch(status, body) {
+  const calls = [];
+  const fn = async (url, init) => {
+    calls.push({ url, method: init?.method });
+    return new Response(JSON.stringify(body), { status });
+  };
+  return { fn, calls };
+}
+
+await test("片づけ", "4xx はやり直さず、理由をそのまま返す（握りつぶさない）", async () => {
+  const d = fakeDirectory([{ id: "f1", email: "dpq-fixture-a@dpq-smoke.invalid" }]);
+  const f = fakeFetch(403, { msg: "User not allowed" });
+  const r = await purgeFixtureUsers({ client: d.client, pauseMs: 0, retryDelayMs: 0, fetchImpl: f.fn });
+  assert(f.calls.length === 1, `4xx なのに ${f.calls.length} 回叩いた`);
+  assert(f.calls[0].method === "DELETE" && /\/auth\/v1\/admin\/users\/f1$/.test(f.calls[0].url), `叩いた先が違う: ${JSON.stringify(f.calls[0])}`);
+  assert(r.removed === 0 && !r.ok, "消せていないのに成功になった");
+  assert(/^1 人: 403 User not allowed$/.test(r.failures[0] ?? ""), `理由が違う: ${JSON.stringify(r.failures)}`);
+});
+
+await test("片づけ", "5xx は4回までやり直し、それでも駄目なら理由を返す", async () => {
+  const d = fakeDirectory([{ id: "f1", email: "dpq-fixture-a@dpq-smoke.invalid" }]);
+  const f = fakeFetch(500, { code: 500, msg: "Database error deleting user" });
+  const r = await purgeFixtureUsers({ client: d.client, pauseMs: 0, retryDelayMs: 0, fetchImpl: f.fn });
+  assert(f.calls.length === 4, `5xx のやり直しが ${f.calls.length} 回`);
+  assert(r.removed === 0 && !r.ok, "消せていないのに成功になった");
+  assert(/^1 人: 500 Database error deleting user$/.test(r.failures[0] ?? ""), `理由が違う: ${JSON.stringify(r.failures)}`);
+});
+
+await test("片づけ", "消えたと返ったのに名簿に残っていれば、不合格にする", async () => {
+  const d = fakeDirectory([
+    { id: "f1", email: "dpq-fixture-a@dpq-smoke.invalid" },
+    { id: "s1", email: "dpq-smoke-a-1-2@example.com" },
+  ]);
+  const r = await purgeFixtureUsers({ client: d.client, pauseMs: 0, remove: async () => null });
+  assert(r.removed === 2, `消えたと数えた数が違う: ${r.removed}`);
+  assert(r.remaining === 2, `名簿に残った数が違う: ${r.remaining}`);
+  assert(r.ok === false, "名簿に残っているのに成功になった");
 });
 
 await test("片づけ", "下見では1人も消さない", async () => {
@@ -436,11 +512,28 @@ await test("片づけ", "理由が何種類あるかが分かる", () => {
   );
 });
 
-await test("片づけ", "消す相手の見分けかたは1か所だけ", () => {
-  const yes = ["dpq-fixture-artist@dpq-smoke.invalid", "dpq-fixture-a-1-2@dpq-smoke.invalid"];
+await test("片づけ", "検査用の3つの形を見分け、ほかは見分けない（判定は1か所）", () => {
+  const yes = {
+    "dpq-fixture-artist@dpq-smoke.invalid": "fixture",
+    "dpq-fixture-subdir-author@dpq-smoke.invalid": "fixture",
+    "dpq-smoke-artist-81234-567890@example.com": "smoke",
+    "dpq-smoke-anon1786-4242-12@example.com": "smoke",
+    "dpq-smoke-report-fan-1-2@example.com": "smoke",
+    "DPQ-Smoke-FanA-1-2@Example.com": "smoke",
+    "dpq-probe-1785793736280@example.com": "probe",
+  };
   const no = [
     "songcunyizhi@gmail.com",
-    "dpq-smoke-artist-1-2@example.com",
+    "vro.artcode+smtp1@gmail.com",
+    // example.com は例示用に予約された実在のドメイン。接頭辞と形が揃わなければ検査用ではない
+    "someone@example.com",
+    "dpq-smoke@example.com",
+    "dpq-smoke-artist@example.com",
+    "dpq-smoke-artist-1-2@example.org",
+    "dpq-smoke-artist-1-2@example.com.evil.test",
+    "dpq-probe-abc@example.com",
+    "dpq-probe-1@example.org",
+    // .invalid は決して実在しないドメイン。ただし dpq-fixture- の形でなければ当てない
     "dpq-fixture-artist@example.com",
     "artist@dpq-smoke.invalid",
     "dpq-fixture-artist@dpq-smoke.invalid.example.com",
@@ -448,8 +541,14 @@ await test("片づけ", "消す相手の見分けかたは1か所だけ", () => 
     null,
     undefined,
   ];
-  for (const e of yes) assert(isFixtureEmail(e), `検査用と見なされない: ${e}`);
-  for (const e of no) assert(!isFixtureEmail(e), `本物を検査用と見なした: ${e}`);
+  for (const [e, kind] of Object.entries(yes)) {
+    assert(testAccountKind(e) === kind, `${e} を ${kind} と見なさない: ${testAccountKind(e)}`);
+    assert(isTestAccountEmail(e), `検査用と見なされない: ${e}`);
+  }
+  for (const e of no) assert(!isTestAccountEmail(e), `検査用でないものを検査用と見なした: ${e}`);
+  // 固定の利用者を探す関数も、同じ判定を通っている
+  assert(isFixtureEmail("dpq-fixture-artist@dpq-smoke.invalid"), "固定の利用者を見分けない");
+  assert(!isFixtureEmail("dpq-smoke-artist-1-2@example.com"), "使い捨てを固定の利用者と見なした");
 });
 
 // ============================================================================

@@ -18,10 +18,11 @@
  *   最初に題名の目印を6語ならべたが、それでは109件を取りこぼした。
  *   目で選んだ目印は必ず漏れる。
  *
- *   持ち主のメールアドレスで判定する。検査が作る利用者は3種類しかない。
- *     dpq-smoke-…@example.com     使い捨て（各実行で作られる）
- *     …@dpq-smoke.invalid         固定（.smoke-fixtures.json）
- *     dpq-fixture-…               同上
+ *   持ち主のメールアドレスで判定する。検査が作る利用者は3種類しかなく、
+ *   見分けかたは scripts/_test-accounts.mjs の1か所にまとめてある。
+ *     dpq-fixture-…@dpq-smoke.invalid         固定（.smoke-fixtures.json）
+ *     dpq-smoke-…-数字-数字@example.com       使い捨て（各実行で作られる）
+ *     dpq-probe-数字@example.com              2026-08-03 に手で作った確認用
  *   **この3つに当たらない持ち主の作品には、絶対に触らない。**
  *
  * 【どう消すか】
@@ -49,6 +50,7 @@
  */
 
 import { DRY_RUN, BOLD, CYAN, DIM, GREEN, RED, RESET, YELLOW, need } from "./_setup-common.mjs";
+import { isTestAccountEmail } from "./_test-accounts.mjs";
 
 const URL_BASE = need("NEXT_PUBLIC_SUPABASE_URL", "Supabase の接続先");
 const SECRET = need("SUPABASE_SECRET_KEY", "RLS を迂回する鍵（この作業でだけ使う）");
@@ -59,14 +61,15 @@ const headers = {
   "content-type": "application/json",
 };
 
-/** 検査が作る利用者の見分けかた。**ここに当たらないものには触らない** */
+/**
+ * 検査が作る利用者の見分けかた。**ここに当たらないものには触らない**
+ *
+ * 以前はここに独自の条件（dpq-smoke- で始まる／dpq-fixture- で始まる／
+ * @dpq-smoke.invalid で終わる）があり、ドメインを見ていなかった。
+ * いまは _test-accounts.mjs の判定をそのまま使う。
+ */
 function isTestUser(user) {
-  const email = user?.email ?? "";
-  return (
-    email.startsWith("dpq-smoke-") ||
-    email.startsWith("dpq-fixture-") ||
-    email.endsWith("@dpq-smoke.invalid")
-  );
+  return isTestAccountEmail(user?.email);
 }
 
 console.log("");

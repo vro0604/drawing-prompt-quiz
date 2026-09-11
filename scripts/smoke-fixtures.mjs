@@ -13,21 +13,27 @@
  *   **本番へ向かう道は run-production-smoke.mjs のままで、増えていない。**
  *
  * 【何を消すか】
- *   `dpq-fixture-…@dpq-smoke.invalid` の利用者だけ。
- *   この形に当たらない人には触れない（判定は isFixtureEmail の1か所）。
- *   利用者を消すと、その人のプロフィール・ドラフト・お題も一緒に消える。
+ *   検査用の利用者だけ。見分けかたは scripts/_test-accounts.mjs の1か所
+ *   （dpq-fixture-…@dpq-smoke.invalid ／ dpq-smoke-…-数字-数字@example.com ／
+ *   dpq-probe-数字@example.com）。この形に当たらない人には触れない。
+ *   利用者を消すと、その人のプロフィール・ドラフト・集計も一緒に消える。
  *   同意の記録は**残るが、誰のものか分からなくなる**
  *   （terms_agreements.user_id は ON DELETE SET NULL）。
  *   これは規約11条・ポリシー5条に書いてある扱いそのもの。
  *
  * 【何を消さないか】
- *   本物の利用者。作品。回答。
+ *   本物の利用者。作品・お題・回答は、持ち主が空になるだけで残る
+ *   （works.user_id / prompts.created_by / answers.user_id は ON DELETE SET NULL）。
  *   作品を片づけるのは `npm run cleanup:testdata`（別の道具）。
+ *   **作品を持つ使い捨て利用者を消すときは、先に作品を片づけること。**
+ *   2026-09-11 の dpq-smoke 330人は、作品・お題・回答を ID を固定したトランザクションで
+ *   先に消し、そのあとでこの道具で利用者を消した。
  *
  * 【使い方】
- *   npm run smoke:prod -- fixtures            … 下見（何も消さない）
- *   npm run smoke:prod -- fixtures --apply    … 実行
- *   npm run smoke:prod -- fixtures --why      … 消せないときに理由を見る
+ *   npm run smoke:prod -- fixtures                    … 下見（何も消さない）
+ *   npm run smoke:prod -- fixtures --apply            … 実行
+ *   npm run smoke:prod -- fixtures --apply --expect N … 対象がちょうど N 人のときだけ実行
+ *   npm run smoke:prod -- fixtures --why              … 消せないときに理由を見る
  *
  * 【--why について】
  *   これは下見ではない。**1人だけ本当に消しにいって、返ってきた答えを
@@ -42,6 +48,13 @@ import { targetEnv } from "./_smoke-http.mjs";
 
 const APPLY = process.argv.includes("--apply");
 const WHY = process.argv.includes("--why");
+/** --expect N。対象が N 人でなければ、1人も消さずに止める */
+const EXPECT_AT = process.argv.indexOf("--expect");
+const EXPECTED = EXPECT_AT >= 0 ? Number(process.argv[EXPECT_AT + 1]) : null;
+if (EXPECTED !== null && !Number.isInteger(EXPECTED)) {
+  console.log("  --expect のあとに人数（整数）を書いてください。");
+  process.exit(1);
+}
 
 /**
  * 消せなかったときに、認証側が何を返しているのかを、そのまま見る。
@@ -71,7 +84,7 @@ console.log("");
 console.log("[検査用の利用者の片づけ]");
 console.log("");
 
-const before = await purgeFixtureUsers({ dryRun: true });
+const before = await purgeFixtureUsers({ dryRun: true, expected: EXPECTED });
 
 console.log(`  ぜんぶの利用者        ${before.scanned} 人`);
 console.log(`  消す（検査用）        ${before.matched} 人`);
@@ -101,15 +114,17 @@ if (before.matched === 0) {
 console.log("");
 console.log("  消します…");
 
-const after = await purgeFixtureUsers();
+const after = await purgeFixtureUsers({ expected: before.matched });
 
 console.log(`  消しました            ${after.removed} 人`);
 if (after.removed < after.matched) {
   console.log(`  消せなかった          ${after.matched - after.removed} 人`);
   for (const m of after.failures) console.log(`      ${m}`);
 }
+console.log(`  消したあとも名簿に残る ${after.remaining} 人`);
 console.log("");
 console.log("  作品には触れていません（片づけるなら npm run cleanup:testdata）。");
 console.log("  同意の記録は残りますが、誰のものかは分からなくなっています。");
 
-process.exit(after.removed === before.matched ? 0 : 1);
+// 消えた数が対象と合い、名簿にも1人も残っていないときだけ成功
+process.exit(after.ok ? 0 : 1);
