@@ -20,9 +20,11 @@ D194〜D196（システム回答の3本。2026-09-12 に作成、どこにも流
 
 | ファイル | 戻す先 | 流す順 |
 |---|---|---|
-| 20260912100000_system_answer_out_of_analysis_and_import_rollback.sql | D196 を当てる前 | 1番目 |
-| 20260912090000_system_answer_queue_rollback.sql | D195 を当てる前 | 2番目 |
-| 20260911090000_answer_source_rollback.sql | D194 を当てる前 | 3番目 |
+| 20260912130000_system_answer_out_of_analysis_and_import_rollback.sql | D196 を当てる前 | 1番目 |
+| 20260912120000_system_answer_queue_rollback.sql | D195 を当てる前 | 2番目 |
+| 20260912110000_answer_source_rollback.sql | D194 を当てる前 | 3番目 |
+
+（2026-09-12 に版を振り直した。旧 20260912100000 / 20260912090000 / 20260911090000。D198）
 
 この3本は、システム回答が0件・待ち行列が0行のときだけ動く（どちらかが1でもあれば、
 何も変えずに止まる）。順番を飛ばすと止まる。流し方・履歴の外し方・確かめ方は

@@ -1,5 +1,5 @@
 -- ============================================================================
--- 20260912100000_system_answer_out_of_analysis_and_import.sql を取り消す（20260912100000 を当てる前の状態へ戻す）
+-- 20260912130000_system_answer_out_of_analysis_and_import.sql を取り消す（20260912130000 を当てる前の状態へ戻す）
 -- ============================================================================
 --
 -- 【この SQL は、まだどこにも流していない（使い捨ての DB を除く）】
@@ -14,7 +14,7 @@
 --   - システム回答が0件（answers.answer_source が human 以外の行が無い）
 --   - 待ち行列が0行（system_answer_queue に行が無い）
 --
--- 【流したあと】履歴から外す: npx supabase migration repair 20260912100000 --status reverted --linked
+-- 【流したあと】履歴から外す: npx supabase migration repair 20260912130000 --status reverted --linked
 --   （着地後の main の clean checkout から打つ。docs/landing-d194-d196.md）
 -- ============================================================================
 

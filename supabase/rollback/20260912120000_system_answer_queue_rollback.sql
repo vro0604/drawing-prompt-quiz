@@ -1,5 +1,5 @@
 -- ============================================================================
--- 20260912090000_system_answer_queue.sql を取り消す（20260912090000 を当てる前の状態へ戻す）
+-- 20260912120000_system_answer_queue.sql を取り消す（20260912120000 を当てる前の状態へ戻す）
 -- ============================================================================
 --
 -- 【この SQL は、まだどこにも流していない（使い捨ての DB を除く）】
@@ -13,9 +13,9 @@
 -- 【安全条件】どれか1つでも満たさなければ、何も変えずに止まる
 --   - システム回答が0件（answers.answer_source が human 以外の行が無い）
 --   - 待ち行列が0行（system_answer_queue に行が無い）
---   - D196（20260912100000）を先に取り消してある
+--   - D196（20260912130000）を先に取り消してある
 --
--- 【流したあと】履歴から外す: npx supabase migration repair 20260912090000 --status reverted --linked
+-- 【流したあと】履歴から外す: npx supabase migration repair 20260912120000 --status reverted --linked
 --   （着地後の main の clean checkout から打つ。docs/landing-d194-d196.md）
 -- ============================================================================
 
@@ -50,7 +50,7 @@ begin
               where n.nspname = 'public'
                 and p.proname in ('answers_after_insert_auto_import', 'consume_import_capacity', 'analysis_all_answers', 'analysis_advanced_answers', 'get_work_answer_list', 'set_answer_excluded', 'get_work_import_state', 'get_my_answer_analysis')
                 and pg_get_functiondef(p.oid) ~ 'answer_source') then
-    raise exception '取り消しを止めました: 先に 20260912100000（D196）を取り消してください';
+    raise exception '取り消しを止めました: 先に 20260912130000（D196）を取り消してください';
   end if;
 end $$;
 
