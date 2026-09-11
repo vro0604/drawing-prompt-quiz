@@ -152,9 +152,9 @@ src/app/          画面（Server Components が既定）
 src/features/     機能ごとの RPC 呼び出しと型
 src/lib/supabase/ クライアント4種（ブラウザ／サーバー／ルート／管理）
 supabase/migrations/  60本<!--count:migration-->。スキーマと関数の全部
-                      （本番へ未適用は1本、20260911120000_cleanup_failed_orphan_prompts。
-                      **この作業木は origin/main の全機能と P0〜P5 の両方を持つ。**
-                      課金 v0 は入っていない。2026-09-11 の実測で、本番の履歴は59本）
+                      （本番へ未適用は0本。**この作業木は origin/main の全機能と
+                      P0〜P5 の両方を持つ。**課金 v0 は入っていない。
+                      2026-09-11 の実測で、本番の履歴は60本）
 test/db/             本番に触れずに DB を丸ごと動かす縦断試験
 ```
 
