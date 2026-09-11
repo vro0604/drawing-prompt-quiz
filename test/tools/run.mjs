@@ -27,6 +27,23 @@ import {
   purgeFixtureUsers,
   summarizeFailures,
 } from "../../scripts/_smoke-users.mjs";
+import {
+  OWN_ROW_TABLES,
+  cleanupRunRows,
+  createRunLedger,
+  describeCleanup,
+} from "../../scripts/_smoke-own-rows.mjs";
+import { asRole, createTestDb } from "../db/harness.mjs";
+import {
+  answerWork,
+  asMember,
+  drawPrompt,
+  makeMember,
+  pickTags,
+  postArtFirstWork,
+  postWork,
+  value,
+} from "../db/helpers.mjs";
 import { recordCount } from "../counts.mjs";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
@@ -434,6 +451,181 @@ await test("片づけ", "消す相手の見分けかたは1か所だけ", () => 
   for (const e of yes) assert(isFixtureEmail(e), `検査用と見なされない: ${e}`);
   for (const e of no) assert(!isFixtureEmail(e), `本物を検査用と見なした: ${e}`);
 });
+
+// ============================================================================
+// 検査がこの実行で作った行だけを消す道具
+// ============================================================================
+//
+// 2026-09-10 に、smoke-sub-directive の後片づけが本番で3回とも失敗していた。
+// お題を「この作者のもの全部」で消そうとして、同じ作者の古いお題に
+// 非公開にしただけの作品が残っていたため、外部キーで1文まるごと断られた。
+// ここでは本物と同じ migration を当てた手元のDB（PGlite）で、その形を作って確かめる。
+
+console.log("\n検査がこの実行で作った行だけを消す道具");
+
+const ownDb = await createTestDb();
+// 本物の Supabase では service_role が public の表をすべて読み書きできる（検査の admin() がそれ）。
+// 手元の下地（harness の SUPABASE_STUB）はそこまで作らないので、ここで同じ権限を渡す
+await ownDb.exec(`grant all on all tables in schema public to service_role`);
+
+/** service_role として、ID の一覧で消す（本番の supabaseRemover と同じ1文） */
+function sqlRemover(db) {
+  return async (table, ids) => {
+    if (!OWN_ROW_TABLES.includes(table)) throw new Error(`知らない表: ${table}`);
+    try {
+      const r = await asRole(db, { role: "service_role" }, (c) =>
+        c.query(`delete from public.${table} where id = any($1::uuid[]) returning id`, [ids]),
+      );
+      return { ids: r.rows.map((x) => x.id), error: null };
+    } catch (e) {
+      return { ids: [], error: [e.code, e.message].filter(Boolean).join(" ") };
+    }
+  };
+}
+
+async function countWhere(sql, params) {
+  const r = await ownDb.query(sql, params);
+  return Number(Object.values(r.rows[0])[0]);
+}
+
+/**
+ * 9/10 の本番と同じ形を作る。
+ *   古いお題 … 同じ作者が前に出し、作品は画面から削除した（行は残る）
+ *   今回     … 確定だけのお題 / 投稿して回答されたお題 / 持ち込みのお題
+ */
+async function sceneOf(tag) {
+  const author = await makeMember(ownDb, `own-a-${tag}`);
+  const guesser = await makeMember(ownDb, `own-g-${tag}`);
+
+  const old = await drawPrompt(ownDb, author);
+  const oldWork = await postWork(ownDb, author, old.prompt_id, "古い作品");
+  await value(ownDb, asMember(author), `select public.delete_work($1::uuid)`, [oldWork]);
+
+  const plain = await drawPrompt(ownDb, author);
+  const main = await drawPrompt(ownDb, author);
+  const work = await postWork(ownDb, author, main.prompt_id, "今回の作品");
+  await answerWork(ownDb, guesser, work);
+  const tagIds = [];
+  for (const category of ["morph", "emotion", "color"]) {
+    for (const t of await pickTags(ownDb, category, 1)) tagIds.push(t.id);
+  }
+  const art = await postArtFirstWork(ownDb, author, tagIds);
+  // 持ち込みの戻り値にお題の ID は無い。検査と同じく、作品の行から引く
+  art.prompt_id = (await ownDb.query(`select prompt_id from public.works where id = $1`,
+    [art.workId])).rows[0]?.prompt_id;
+  assert(art.prompt_id, "持ち込みのお題を特定できない");
+
+  const ledger = createRunLedger();
+  ledger.add("draft_sessions", plain.state.session_id);
+  ledger.add("draft_sessions", main.state.session_id);
+  ledger.add("prompts", plain.prompt_id);
+  ledger.add("prompts", main.prompt_id);
+  ledger.add("prompts", art.prompt_id);
+  ledger.add("works", work);
+  ledger.add("works", art.workId);
+
+  return {
+    author, ledger, work, artWork: art.workId, oldPrompt: old.prompt_id, oldWork,
+    runPrompts: [plain.prompt_id, main.prompt_id, art.prompt_id],
+  };
+}
+
+await test("この実行の分", "作者名でまとめて消すと、古いお題1件のせいで今回のお題も残る（9/10 の再現）", async () => {
+  const s = await sceneOf("repro");
+  await ownDb.exec("begin");
+  let caught = null;
+  try {
+    await ownDb.query(`delete from public.works where id = any($1::uuid[])`, [[s.work, s.artWork]]);
+    await ownDb.query(`delete from public.prompts where created_by = $1`, [s.author]);
+  } catch (e) {
+    caught = e;
+  } finally {
+    await ownDb.exec("rollback");
+  }
+  assert(caught, "作者名で消せてしまった（古いお題の作品が効いていない）");
+  // 本番（PostgreSQL 17）は 23503、手元の PGlite（18）は 23001 で断る。
+  // 18 から on delete restrict の違反に専用の番号が付いた。どちらも同じ外部キーで止まる
+  assert(
+    ["23503", "23001"].includes(caught.code) && /works_prompt_id_fkey/.test(caught.message),
+    `断られ方が違う: ${caught.code} ${caught.message}`,
+  );
+  const left = await countWhere(
+    `select count(*) from public.prompts where id = any($1::uuid[])`,
+    [s.runPrompts],
+  );
+  assert(left === 3, `今回のお題が ${left} 件（1文まるごと断られるなら3件残る）`);
+});
+
+await test("この実行の分", "帳面の ID だけを消し、同じ作者の古いお題と作品には触れない", async () => {
+  const s = await sceneOf("own");
+  const report = await cleanupRunRows(s.ledger, sqlRemover(ownDb));
+  for (const r of report) assert(r.ok, `${r.table}: ${describeCleanup(r)}`);
+
+  const byTable = Object.fromEntries(report.map((r) => [r.table, r.removed]));
+  assert(byTable.works === 2 && byTable.prompts === 3 && byTable.draft_sessions === 2,
+    `消えた数が違う: ${JSON.stringify(byTable)}`);
+
+  assert(await countWhere(`select count(*) from public.prompts where id = any($1::uuid[])`,
+    [s.runPrompts]) === 0, "今回のお題が残っている");
+  assert(await countWhere(`select count(*) from public.quiz_questions where prompt_id = any($1::uuid[])`,
+    [s.runPrompts]) === 0, "今回のお題の問いが残っている");
+  assert(await countWhere(`select count(*) from public.answers where work_id = $1`,
+    [s.work]) === 0, "回答が作品と一緒に消えていない");
+  assert(await countWhere(`select count(*) from public.prompts where id = $1`,
+    [s.oldPrompt]) === 1, "古いお題まで消した");
+  assert(await countWhere(`select count(*) from public.works where id = $1 and deleted_at is not null`,
+    [s.oldWork]) === 1, "古い作品の行まで消した");
+});
+
+await test("この実行の分", "作品を積み忘れたお題は消えず、理由つきで不合格になる", async () => {
+  const s = await sceneOf("forgot");
+  const ledger = createRunLedger();
+  for (const id of s.runPrompts) ledger.add("prompts", id);
+  const report = await cleanupRunRows(ledger, sqlRemover(ownDb));
+  const p = report.find((r) => r.table === "prompts");
+  assert(!p.ok, "消せていないのに合格になった");
+  assert(/23503|23001/.test(p.error ?? ""), `理由が出ていない: ${describeCleanup(p)}`);
+  assert(p.missing.length === 3, `消えなかった ID の数が違う: ${p.missing.length}`);
+  assert(/消えなかった: /.test(describeCleanup(p)), `ID が出ていない: ${describeCleanup(p)}`);
+});
+
+await test("この実行の分", "一部だけ消えた・頼んでいない行が消えた・例外、を合格にしない", async () => {
+  const ledger = createRunLedger();
+  ledger.add("works", "w1");
+  ledger.add("prompts", "p1");
+  ledger.add("prompts", "p2");
+  ledger.add("draft_sessions", "d1");
+  const report = await cleanupRunRows(ledger, async (table) => {
+    if (table === "works") return { ids: ["w1", "w9"], error: null };
+    if (table === "prompts") return { ids: ["p1"], error: null };
+    throw new Error("接続が切れた");
+  });
+  const [w, p, d] = report;
+  assert(!w.ok && w.extra.join() === "w9", `頼んでいない行を見逃した: ${describeCleanup(w)}`);
+  assert(!p.ok && p.missing.join() === "p2", `残った行を見逃した: ${describeCleanup(p)}`);
+  assert(!d.ok && /接続が切れた/.test(d.error ?? ""), `例外を握りつぶした: ${describeCleanup(d)}`);
+  assert(report.length === 3, "途中の失敗で残りの表を飛ばした");
+});
+
+await test("この実行の分", "帳面に無い表は積めない。空の帳面では何も呼ばない", async () => {
+  const ledger = createRunLedger();
+  let threw = false;
+  try {
+    ledger.add("profiles", "x");
+  } catch {
+    threw = true;
+  }
+  assert(threw, "帳面に無い表を受けた");
+  let called = 0;
+  const report = await cleanupRunRows(ledger, async () => {
+    called += 1;
+    return { ids: [], error: null };
+  });
+  assert(called === 0, `空なのに ${called} 回呼んだ`);
+  assert(report.every((r) => r.ok), "空の帳面が不合格になった");
+});
+
+await ownDb.close();
 
 const passed = results.filter((r) => r.ok).length;
 const failed = results.filter((r) => !r.ok);

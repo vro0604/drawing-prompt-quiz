@@ -24,7 +24,8 @@
  *
  * 【この検査が触るもの】
  *   検査用の固定利用者が出す作品とお題、そのドラフト、その作品への回答だけ。
- *   終わったら作品を消し、この人のドラフトも片づける。
+ *   終わったら、この実行が作った作品・お題・ドラフトを ID で名指しして消す
+ *   （回答は作品と一緒に消える）。作者名でまとめて消すことはしない。
  *   他人の作品・プロフィール・回答には触れない。
  *
  * 【割合は数えない】
@@ -52,6 +53,12 @@ import {
   submitWork,
   targetEnv,
 } from "./_smoke-http.mjs";
+import {
+  cleanupRunRows,
+  createRunLedger,
+  describeCleanup,
+  supabaseRemover,
+} from "./_smoke-own-rows.mjs";
 
 import { SUB_DIRECTIVES, subDirectiveLabel } from "../src/features/modifier/types.ts";
 
@@ -66,6 +73,9 @@ function admin() {
   }
   return createClient(url, secret, { auth: { autoRefreshToken: false, persistSession: false } });
 }
+
+/** この実行が作った作品・お題・ドラフトの ID。後片づけはここに積んだものだけを消す */
+const run = createRunLedger();
 
 /** 対応表にある正式な語（24語）。**ここで書き写さない。**表そのものから作る */
 const COVERED = new Set(SUB_DIRECTIVES.flatMap((d) => d.forTagLabels));
@@ -148,6 +158,10 @@ async function startFreshDraft() {
   await author.page.selectOption("select[name=timeLimitSeconds]", "3600");
   await author.page.getByRole("button", { name: "ドラフトを始める" }).click();
   await author.page.waitForSelector("button[data-card=hidden]", { timeout: 40000 });
+
+  // いま始めたドラフトを帳面に積む（直前に進行中のものは全部止めてあるので、これ1つ）
+  const started = await currentSession();
+  if (started) run.add("draft_sessions", started.id);
 }
 
 /**
@@ -232,7 +246,6 @@ async function currentSession() {
   return data?.[0] ?? null;
 }
 
-const created = [];
 const stamp = Date.now().toString().slice(-6);
 
 // ── A / F. 通常のお題 ───────────────────────────────────
@@ -250,6 +263,7 @@ await author.page.waitForURL("**/prompt/**", { timeout: 40000 });
 
 const plainPromptId = /\/prompt\/([0-9a-f-]{36})/.exec(author.page.url())?.[1] ?? null;
 must(Boolean(plainPromptId), "お題を確定できた", author.page.url());
+run.add("prompts", plainPromptId);
 
 const plainCards = await author.page.locator("[data-prompt-card]").count();
 must(plainCards >= 3, "正式な語がそろって出ている", `${plainCards} 語`);
@@ -370,6 +384,7 @@ await press(confirm2);
 await author.page.waitForURL("**/prompt/**", { timeout: 40000 });
 const promptId = /\/prompt\/([0-9a-f-]{36})/.exec(author.page.url())?.[1] ?? null;
 must(Boolean(promptId), "お題を確定できた", author.page.url());
+run.add("prompts", promptId);
 
 const onPrompt = await promptDirectives();
 for (const [slot, text] of Object.entries(onBoard)) {
@@ -402,7 +417,10 @@ const posted = await submitWork(
 );
 const workId = /\/works\/([0-9a-f-]{36})/.exec(posted.path ?? "")?.[1] ?? null;
 must(Boolean(workId), "作品を投稿できた", String(workId));
-if (workId) created.push(workId);
+run.add("works", workId);
+
+/** 回答者が出した回答。作品と一緒に消えたことを、後片づけで ID で確かめる */
+let answerId = null;
 
 let seenKeys = [];
 if (workId) {
@@ -509,6 +527,7 @@ if (workId) {
     .select("id,correct_count", { count: "exact" })
     .eq("work_id", workId);
   must((answered.count ?? 0) === 1, "回答がDBに1件入った", `${answered.count} 件`);
+  answerId = answered.data?.[0]?.id ?? null;
   must(
     answered.data?.[0]?.correct_count !== null && answered.data?.[0]?.correct_count !== undefined,
     "正解数が付いている（採点が動いた）",
@@ -568,8 +587,11 @@ if (importForm?.actionId && artIds.length === 3) {
 }
 
 if (artWorkId) {
-  created.push(artWorkId);
+  run.add("works", artWorkId);
   const w = await admin().from("works").select("prompt_id").eq("id", artWorkId).single();
+  // 持ち込みは、作品と同時にお題が1件できる。そのお題も帳面に積む
+  run.add("prompts", w.data?.prompt_id);
+  must(Boolean(w.data?.prompt_id), "持ち込みのお題を特定できた", w.error?.message ?? "");
   const artCards = await admin()
     .from("prompt_cards")
     .select("card_slot_key,sub_directive_key")
@@ -703,25 +725,32 @@ if (chooseTimes.length > 0) {
 
 section("後片づけ");
 
-for (const id of created) {
-  await admin().from("works").delete().eq("id", id);
+// 【この実行が作った行だけを、ID で名指しして消す】
+//   以前はお題を「この作者のもの全部」で消していた。同じ作者の古いお題に
+//   作品の行が残っていると外部キーに断られ、1文まるごと失敗して今回のお題も
+//   残った。しかも結果を見ずに合格と数えていた（2026-09-10 の本番で6件残った）。
+//   いまは帳面の ID だけを消し、1件でも消えなければ理由と ID を出して不合格にする。
+const CLEANUP_LABEL = {
+  works: "検査で出した作品を消した",
+  prompts: "検査で確定したお題を消した",
+  draft_sessions: "検査で作ったドラフトを消した",
+};
+for (const r of await cleanupRunRows(run, supabaseRemover(admin()))) {
+  must(r.ok, CLEANUP_LABEL[r.table], describeCleanup(r));
 }
-must(true, "検査で出した作品を消した", `${created.length} 件`);
 
-const cleaned = await admin()
-  .from("draft_sessions")
-  .delete()
-  .eq("user_id", author.userId)
-  .select("id");
-must(true, "検査で作ったドラフトを消した", `${cleaned.data?.length ?? 0} 件`);
-
-// 確定したお題は、作品を消しても残る。この人のぶんだけ片づける
-const prompts = await admin()
-  .from("prompts")
-  .delete()
-  .eq("created_by", author.userId)
-  .select("id");
-must(true, "検査で確定したお題を消した", `${prompts.data?.length ?? 0} 件`);
+// 回答は作品と一緒に消える（answers.work_id は on delete cascade）。消えたことを ID で見る
+if (answerId) {
+  const left = await admin()
+    .from("answers")
+    .select("id", { count: "exact", head: true })
+    .eq("id", answerId);
+  must(
+    !left.error && left.count === 0,
+    "検査の回答が作品と一緒に消えた",
+    left.error ? left.error.message : `${left.count} 件残り`,
+  );
+}
 
 // 回答の集計は、作品を消しても減らない（作品の削除は集計を触らない）。
 // **残すと DB verify の A20・A22 が落ちる。**答えた人のぶんだけ戻す。
