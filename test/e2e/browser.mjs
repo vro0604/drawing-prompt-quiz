@@ -24,6 +24,7 @@ import { installLocalOnlyGuard, ALLOWED_HOSTS } from "../guard/no-production.mjs
 import { startApp, warmupRoutes } from "./server.mjs";
 import { acquireHeavyLock } from "./exclusive.mjs";
 import { createRecorder } from "./record.mjs";
+import { readMachine } from "./machine.mjs";
 import { recordCount } from "../counts.mjs";
 import {
   answerWork,
@@ -5072,11 +5073,57 @@ async function main() {
       }
       await drawAllSlots(page);
 
+      // **決め残しがあるまま先へ進まない。**
+      // 負荷が高いと押した結果の描画が追いつかず、盤面が途中のまま
+      // 次の操作へ進んでしまう（実測 2026-09-10。押したはずの
+      // 「引き直す」で revealCardAction が走っていた）。
+      // 決まった枠の数が、この人のいまの世代の枠数と一致するまで待つ。
+      const decided = await waitForAllSlotsDecided(page);
+      if (!decided) continue;
+
       if ((await page.locator('[data-testid="board-sub-directive"]').count()) > 0) {
         return true;
       }
     }
     return false;
+  }
+
+  /** いまの世代の枠が全部決まるまで待つ。決まったら true */
+  async function waitForAllSlotsDecided(page, timeoutMs = 20000) {
+    const until = Date.now() + timeoutMs;
+    while (Date.now() < until) {
+      const r = await db.query(
+        `select count(*)::int total,
+                count(*) filter (where exists (
+                  select 1 from public.draft_candidates dc
+                   where dc.session_id = s.session_id
+                     and dc.generation = s.generation
+                     and dc.card_slot_key = s.card_slot_key
+                     and dc.is_chosen))::int done
+           from public.draft_session_slots s
+           join public.draft_sessions ds on ds.id = s.session_id
+          where ds.user_id = $1 and ds.status = 'in_progress'
+            and s.generation = ds.current_generation`,
+        [seeded.viewer],
+      );
+      const { total, done } = r.rows[0];
+      if (total > 0 && total === done) {
+        await settledBody(page);
+        return true;
+      }
+      await new Promise((ok) => setTimeout(ok, 250));
+    }
+    return false;
+  }
+
+  /** いまのドラフトの世代を読む */
+  async function currentGeneration() {
+    const r = await db.query(
+      `select current_generation from public.draft_sessions
+        where user_id = $1 and status = 'in_progress' limit 1`,
+      [seeded.viewer],
+    );
+    return r.rows[0]?.current_generation ?? null;
   }
 
   await test("S2", "対応表にある語を引くと、盤面にサブ指令が出る", async (t) => {
@@ -5186,7 +5233,53 @@ async function main() {
       assert(before >= 1, "準備で出ていない");
 
       t.stage("引き直す");
-      await clickSafely(m.getByRole("button", { name: "引き直す" }));
+
+      /* --- 断られる回があることを、試験の側で受け止める -------------------
+       *
+       * この群は語彙を対応表の24語へ絞ってから引く。絞ったぶん、
+       * **引き直しがアプリに断られることがある。**
+       *   実測 2026-09-10: `/play?error=候補が 8件しか作れませんでした
+       *   （必要 9件）。使うカテゴリの語彙が不足しています。`
+       *
+       * 断る側は正しい。新しい世代は、持ち出した語を候補から外してから
+       * 配り直す（`two_stage_draft` の③）。絞った語彙から持ち出した数を
+       * 引くと、枠の数に足りない回が出る。**アプリの不具合ではない。**
+       *
+       * 持ち出す語は回ごとに変わるので、盤面を作り直せば次は通る。
+       * ドラフトを始める側は前から同じ形で受け止めていた
+       * （`drawUntilSubDirective` の「候補が足りず始められなかった回」）。
+       * **引き直す側だけが受け止めていなかった。**
+       */
+      let gen = null;
+      let now = null;
+      for (let attempt = 0; attempt < 3 && now === null; attempt += 1) {
+        if (attempt > 0) {
+          // 断られた。盤面を作り直してから、もう一度押す
+          assert(await drawUntilSubDirective(m), "作り直しで10回引いても出なかった");
+        }
+        gen = await currentGeneration();
+        await clickSafely(m.getByRole("button", { name: "引き直す" }));
+
+        // **画面の数を数える前に、引き直しが本当に済んだことを確かめる。**
+        // 押した直後に数えると、まだ古い盤面を見ていることがある。
+        // 世代が進んだかどうかは DB が持っているので、そちらで待つ。
+        const until = Date.now() + 20000;
+        let seen = gen;
+        while (Date.now() < until && seen === gen) {
+          await new Promise((ok) => setTimeout(ok, 250));
+          seen = await currentGeneration();
+        }
+        if (seen !== null && seen > gen) now = seen;
+        else assert(
+          /NOT_ENOUGH_TAGS|語彙が不足|%E8%AA%9E%E5%BD%99%E3%81%8C%E4%B8%8D%E8%B6%B3/.test(
+            m.url(),
+          ),
+          `世代が進まず、断られた印も無い（${gen} → ${seen} ／ ${m.url()}）`,
+        );
+      }
+      assert(now !== null, "3回とも語彙不足で引き直せなかった");
+
+      await m.goto(`${base}/play`);
       await settledBody(m);
 
       // 引き直すと世代が変わり、枠ごと作り直される。
@@ -6043,6 +6136,11 @@ const { payload, jsonFile, textFile, failed } = recorder.finish({
   serverRestarted: (app?.logs ?? []).join("").includes(
     "approaching the used memory threshold",
   ),
+  // **端末の混み具合を、始める前と終わった後の2点で残す。**
+  // 1点だけだと、詰まっていたのが最初からなのか、
+  // この試験自身が押し出したのかを後から見分けられない。
+  machineAtStart: app?.machineAtStart ?? null,
+  machineAtEnd: readMachine(),
 });
 
 console.log(`\n記録: ${textFile}`);
