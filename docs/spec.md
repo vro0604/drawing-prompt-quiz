@@ -2,8 +2,9 @@
 
 - 仮フォルダ名: `drawing-prompt-quiz`
 - 公開サービス名: **つたわるかな**（2026-08-08 確定・D114）
-- 本番URL: `https://tsutawarukana.com`（D114〜D116）
-- 最終更新: 2026-08-03
+- 現在の公開URL: `https://drawing-prompt-quiz.vercel.app/`
+- 独自ドメインの予定: `https://tsutawarukana.com`（D114〜D116。2026-09-15 時点で名前解決不可）
+- 最終更新: 2026-09-15
 - 版: v2（B1/B3/B6確定＋7点修正を反映）
 
 ---
