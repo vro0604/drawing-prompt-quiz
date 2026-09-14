@@ -457,7 +457,7 @@ async function currentSessionId(db) {
 }
 
 
-/** /play からお題を確定するところまで進める */
+/** /play でドラフトを始め、盤面が出るところまで進める */
 async function drawThroughUi(page, base, { timeLimit = "1800" } = {}) {
   act("/play を開いてお題を引き始める");
   // **「load」まで待たない。**この画面は開いたあとも帯が定期的に問い合わせるので、
@@ -479,13 +479,6 @@ async function drawThroughUi(page, base, { timeLimit = "1800" } = {}) {
   act("盤面（伏せカード）が出るのを待つ");
   await page.waitForSelector("button[data-card=hidden]", { timeout: 20000 });
 
-  try {
-    await page.waitForSelector("[data-challenge-bar]", { timeout: 15000 });
-  } catch (e) {
-    // **なぜ出なかったかを言えるようにする。**画面の文言をそのまま添える
-    const body = (await page.innerText("body")).replace(/\s+/g, " ").slice(0, 400);
-    throw new Error(`${e.message}\n      画面: ${body}`);
-  }
 }
 
 /**
@@ -670,6 +663,7 @@ async function main() {
   browser.newContext = async (...args) => watchContext(await openContext(...args));
 
   const { base, db, seeded } = app;
+  let guestPromptId = null;
 
   /* =====================================================================
    * A. ゲストの流れ（共有URL → 回答 → 次の作品 → 制作開始）
@@ -707,11 +701,20 @@ async function main() {
     assert(/\/works\//.test(g.url()), `作品ページ以外へ移った（${g.url()}）`);
   });
 
-  await test("A", "ゲストがそのまま制作を始められ、帯が出る", async () => {
+  await test("A", "ゲストがドラフトを始めても、制作時間はまだ数えない", async () => {
     await drawThroughUi(g, base, { timeLimit: "1800" });
-    const bar = await readBar(g);
-    assert(bar !== null, "制作を始めても帯が出ない");
-    assert(bar.kind === "draft", `帯の区分が ${bar.kind}（draft のはず）`);
+    assert((await readBar(g)) === null, "ドラフト中に時計の帯が出ている");
+    await assertBody(g, /確定するとカウントダウンが始まります/, "開始タイミングの案内が無い");
+  });
+
+  await test("A", "お題の確定後に制作時間の帯が出る", async () => {
+    await drawAllSlots(g);
+    await clickSafely(g.getByRole("button", { name: "このお題で確定する" }));
+    await g.waitForURL("**/prompt/**");
+    guestPromptId = /\/prompt\/([0-9a-fA-F-]{36})/.exec(g.url())?.[1] ?? null;
+    assert(guestPromptId !== null, "確定したお題のIDが読めない");
+    const bar = await waitForBar(g);
+    assert(bar.kind === "prompt", `帯の区分が ${bar.kind}（prompt のはず）`);
     assert(/30分枠/.test(bar.text), `枠が出ていない: ${bar.text}`);
     assert(/経過 \d\d:\d\d:\d\d/.test(bar.text), `経過が出ていない: ${bar.text}`);
     assert(/残り \d\d:\d\d:\d\d/.test(bar.text), `残りが出ていない: ${bar.text}`);
@@ -783,8 +786,7 @@ async function main() {
     const before = await readBar(g);
 
     // 背面にいる間に、サーバー側で5分進んだことにする
-    const sessionId = await currentSessionId(db);
-    await rewindChallenge(db, { sessionId }, 300);
+    await rewindChallenge(db, { promptId: guestPromptId }, 300);
 
     // タブが前面に戻ったときと同じ知らせを出す
     await g.evaluate(() => document.dispatchEvent(new Event("visibilitychange")));
@@ -842,8 +844,8 @@ async function main() {
    * ===================================================================== */
 
   await test("C", "始めた直後から延ばせる（押せる時刻の窓が無い）", async () => {
-    await g.goto(`${base}/play`);
-    await waitForBar(g);
+    await g.goto(`${base}/prompt/${guestPromptId}`);
+    await g.waitForSelector('[data-challenge-bar][data-form="large"]', { timeout: 15000 });
     const count = await g.locator("[data-action=renew]").count();
     assert(count === 1, "始めた直後は延ばせない（旧実装の窓が残っている）");
   });
@@ -888,11 +890,11 @@ async function main() {
   });
 
   await test("C", "予定終了時刻を過ぎると、超過した量が出る（失敗にしない）", async () => {
-    const sessionId = await currentSessionId(db);
     // 延長後の終了予定は「残り1800 + 1350 ＝ 約3150秒後」。8分32秒だけ過ぎさせる
-    await rewindChallenge(db, { sessionId }, 3150 + 512);
+    await rewindChallenge(db, { promptId: guestPromptId }, 3150 + 512);
     await g.reload();
-    const bar = await waitForBar(g);
+    await g.waitForSelector('[data-challenge-bar][data-form="large"]', { timeout: 15000 });
+    const bar = await readBar(g);
 
     assert(bar.overrun === true, `超過として出ていない: ${bar.text}`);
     assert(bar.phase === "overrun", `段階が ${bar.phase}（overrun のはず）`);
@@ -914,9 +916,8 @@ async function main() {
   });
 
   await test("C", "超過中でも延ばせる（何時間過ぎていても）", async () => {
-    const sessionId = await currentSessionId(db);
     // さらに6時間過ぎさせる。旧実装ではここで二度と押せなくなっていた
-    await rewindChallenge(db, { sessionId }, 6 * 3600);
+    await rewindChallenge(db, { promptId: guestPromptId }, 6 * 3600);
     await g.reload();
     await waitForBar(g);
 
@@ -935,8 +936,7 @@ async function main() {
   });
 
   await test("C", "超過中でも、他のページの細い帯に出続ける", async () => {
-    const sessionId = await currentSessionId(db);
-    await rewindChallenge(db, { sessionId }, 1350 + 300);
+    await rewindChallenge(db, { promptId: guestPromptId }, 1350 + 300);
 
     await g.goto(`${base}/works`);
     const bar = await waitForBar(g);
@@ -957,9 +957,8 @@ async function main() {
   });
 
   await test("C", "通信できないときは「未同期」と出て、延ばせたことにしない", async () => {
-    const sessionId = await currentSessionId(db);
     const before = (
-      await db.query(`select renew_count from public.draft_sessions where id = $1`, [sessionId])
+      await db.query(`select renew_count from public.prompts where id = $1`, [guestPromptId])
     ).rows[0].renew_count;
 
     await guest.setOffline(true);
@@ -986,7 +985,7 @@ async function main() {
     }
 
     const after = (
-      await db.query(`select renew_count from public.draft_sessions where id = $1`, [sessionId])
+      await db.query(`select renew_count from public.prompts where id = $1`, [guestPromptId])
     ).rows[0].renew_count;
     assert(
       after === before,
@@ -1003,8 +1002,6 @@ async function main() {
   });
 
   await test("C", "48時間の放置で破棄されると、帯も「制作へ戻る」も消える", async () => {
-    const sessionId = await currentSessionId(db);
-
     // 【超過ではなく放置で消す】
     //   予定終了時刻はすでに何時間も過ぎているが、それでは消えない。
     //   最終操作を48時間前にして初めて消える
@@ -1012,10 +1009,10 @@ async function main() {
       `update public.draft_lifecycle_policy set updated_at = clock_timestamp() - interval '30 days'`,
     );
     await db.query(
-      `update public.draft_sessions
+      `update public.prompts
           set last_activity_at = clock_timestamp() - interval '49 hours'
         where id = $1`,
-      [sessionId],
+      [guestPromptId],
     );
     await db.query(`select public.discard_inactive_challenges(500)`);
 
@@ -1064,13 +1061,13 @@ async function main() {
   });
 
   await test("C", "超過しても、勝手に別のページへ飛ばされない", async () => {
-    await db.query(
-      `update public.draft_sessions set status = 'abandoned', abandoned_at = now()
-        where status = 'in_progress'`,
-    );
     await drawThroughUi(g, base, { timeLimit: "1800" });
-    const sessionId = await currentSessionId(db);
-    await rewindChallenge(db, { sessionId }, 1800 + 600);
+    await drawAllSlots(g);
+    await clickSafely(g.getByRole("button", { name: "このお題で確定する" }));
+    await g.waitForURL("**/prompt/**");
+    guestPromptId = /\/prompt\/([0-9a-fA-F-]{36})/.exec(g.url())?.[1] ?? null;
+    assert(guestPromptId !== null, "確定したお題のIDが読めない");
+    await rewindChallenge(db, { promptId: guestPromptId }, 1800 + 600);
 
     await g.goto(`${base}/account`);
     await settledBody(g);
@@ -1090,12 +1087,17 @@ async function main() {
   });
 
   await test("C", "無制限は、経過だけが出て終了予定も延長も無い", async () => {
-    await db.query(
-      `update public.draft_sessions set status = 'abandoned', abandoned_at = now()
-        where status = 'in_progress'`,
-    );
     await drawThroughUi(g, base, { timeLimit: "" });
+    await drawAllSlots(g);
+    await clickSafely(g.getByRole("button", { name: "このお題で確定する" }));
+    await g.waitForURL("**/prompt/**");
+    guestPromptId = /\/prompt\/([0-9a-fA-F-]{36})/.exec(g.url())?.[1] ?? null;
+    assert(guestPromptId !== null, "確定したお題のIDが読めない");
 
+    await g.waitForSelector(
+      `[data-challenge-bar][data-form="large"][data-challenge-id="${guestPromptId}"]`,
+      { timeout: 15000 },
+    );
     const bar = await readBar(g);
     assert(/無制限/.test(bar.text), `無制限と出ていない: ${bar.text}`);
     assert(/経過 \d\d:\d\d:\d\d/.test(bar.text), `経過が出ていない: ${bar.text}`);
@@ -1108,10 +1110,16 @@ async function main() {
   });
 
   /* =====================================================================
-   * D. ドラフト開始から確定までの引き継ぎ
+   * D. ドラフトを選んだ時間と、確定後の制作時間
    * ===================================================================== */
 
-  await test("D", "カードをめくっていた時間が、確定しても消えない", async () => {
+  await test("D", "カードをめくっていた時間は、確定後の制作時間に入らない", async () => {
+    await db.query(
+      `update public.prompts set status = 'abandoned', abandoned_at = now()
+        where status = 'active'
+          and created_by = (select created_by from public.prompts where id = $1)`,
+      [guestPromptId],
+    );
     await db.query(
       `update public.draft_sessions set status = 'abandoned', abandoned_at = now()
         where status = 'in_progress'`,
@@ -1122,8 +1130,7 @@ async function main() {
     // カードを20分眺めた
     await rewindChallenge(db, { sessionId }, 1200);
     await g.reload();
-    const inDraft = await waitForBar(g);
-    assert(inDraft.elapsed >= 1200, `ドラフト中の経過が ${inDraft.elapsed} 秒`);
+    assert((await readBar(g)) === null, "ドラフト中に制作時間が表示されている");
 
     await drawAllSlots(g);
     await clickSafely(g.getByRole("button", { name: "このお題で確定する" }));
@@ -1132,16 +1139,16 @@ async function main() {
 
     assert(afterFix.kind === "prompt", `確定後の区分が ${afterFix.kind}`);
     assert(
-      afterFix.elapsed >= inDraft.elapsed,
-      `確定で経過が ${inDraft.elapsed} → ${afterFix.elapsed} へ戻った`,
+      afterFix.elapsed < 60,
+      `カード選択の20分が制作時間に含まれている: ${afterFix.elapsed} 秒`,
     );
 
     const left = /残り (\d\d):(\d\d):(\d\d)/.exec(afterFix.text);
     assert(left, `確定後に残りが出ていない: ${afterFix.text}`);
     const seconds = Number(left[1]) * 3600 + Number(left[2]) * 60 + Number(left[3]);
     assert(
-      seconds <= 3600 - 1200 + 30,
-      `確定で残りが ${seconds} 秒へ増えた（時計が取り直されている）`,
+      seconds > 3500 && seconds <= 3600,
+      `確定直後の残りが ${seconds} 秒（3600秒に近いはず）`,
     );
   });
 
@@ -1639,6 +1646,9 @@ async function main() {
     await p.selectOption("select[name=timeLimitSeconds]", "1800");
     await p.getByRole("button", { name: "ドラフトを始める" }).click();
     await p.waitForSelector("button[data-card=hidden]", { timeout: 20000 });
+    await drawAllSlots(p);
+    await clickSafely(p.getByRole("button", { name: "このお題で確定する" }));
+    await p.waitForURL("**/prompt/**");
     await waitForBar(p);
 
     await p.evaluate(() => window.scrollTo(0, 0));
@@ -5592,6 +5602,9 @@ async function main() {
 
     t.stage("挑戦を始める");
     await drawThroughUi(page, base, { timeLimit: "1800" });
+    await drawAllSlots(page);
+    await clickSafely(page.getByRole("button", { name: "このお題で確定する" }));
+    await page.waitForURL("**/prompt/**");
 
     const bar = page.locator("[data-challenge-bar]");
     await bar.waitFor({ state: "visible", timeout: 20000 });

@@ -13,17 +13,17 @@
  *   ブラウザの時計が9時間ずれていても、表示はサーバーに合う。
  */
 
-export type ChallengeKind = "draft" | "prompt";
+export type ChallengeKind = "prompt";
 
 export type ActiveChallenge = {
-  /** draft＝カードをめくっている最中、prompt＝お題が決まって描いている最中 */
+  /** 制作時間を持つ確定済みのお題 */
   kind: ChallengeKind;
   id: string;
   /** 「いまの挑戦へ戻る」で開く先 */
   href: string;
   status: string;
 
-  /** 挑戦を始めた時刻。ここが総経過の起点で、途中で変わらない */
+  /** お題の確定時刻。ここが総経過の起点で、途中で変わらない */
   started_at: string;
   /** サーバーの現在時刻。ブラウザの時計とのずれを取るために使う */
   server_now: string;

@@ -31,7 +31,7 @@
  */
 
 import { installLocalOnlyGuard } from "../guard/no-production.mjs";
-import { asRole, createTestDb, expectFailure } from "./harness.mjs";
+import { applyMigrations, asRole, createTestDb, expectFailure } from "./harness.mjs";
 import { recordCount } from "../counts.mjs";
 
 // **最初のネットワーク要求より前に柵を立てる。**
@@ -1020,15 +1020,15 @@ async function main() {
   await test("D", "延長できないときは、理由が言葉で返る", async () => {
     const u = await makeMember(db, "renew-why");
 
-    // 無制限
-    const state = await startDraftOnly(db, u, { timeLimit: null });
+    // 無制限のお題
+    const unlimited = await drawPrompt(db, u, { timeLimit: null });
     await expectFailure(
       () => value(db, asMember(u), `select public.renew_current_challenge()`),
       "UNLIMITED_NO_RENEW",
     );
     await db.query(
-      `update public.draft_sessions set status='abandoned', abandoned_at=now() where id=$1`,
-      [state.session_id],
+      `update public.prompts set status='abandoned', abandoned_at=now() where id=$1`,
+      [unlimited.prompt_id],
     );
 
     // 進行中の挑戦が無い
@@ -1394,54 +1394,116 @@ async function main() {
   });
 
   /* ---------------------------------------------------------------------
-   * H. 挑戦の時計（2026-09-05。ドラフト開始から一本で通す）
+   * H. 挑戦の時計（お題を確定した時点から数える）
    * ------------------------------------------------------------------- */
 
-  await test("H", "時計はドラフトを始めた瞬間から動く", async () => {
+  await test("H", "ドラフト中は制作時間を数えない", async () => {
     const u = await makeMember(db, "clock-start");
     const state = await startDraftOnly(db, u, { timeLimit: 3600 });
 
     const ch = await value(db, asMember(u), `select public.get_active_challenge()`);
-    assert(ch !== null, "始めた直後に挑戦が読めない");
-    assert(ch.kind === "draft", `区分が ${ch.kind}（draft のはず）`);
-    assert(ch.href === "/play", "戻り先が /play になっていない");
-    assert(ch.has_deadline === true, "ドラフト中に期限が入っていない");
-    assert(ch.seconds_left > 3500, `ドラフト開始直後の残りが ${ch.seconds_left} 秒`);
-    assert(ch.elapsed_seconds >= 0 && ch.elapsed_seconds < 60, "経過時間が動いていない");
-    assert(ch.session_id === undefined, "セッションIDが帯へ漏れている");
-    assert(JSON.stringify(ch).includes("tag_label") === false, "お題の語が帯へ漏れている");
+    assert(ch === null, "ドラフト中に制作時間の帯が出ている");
+    const { rows } = await db.query(
+      `select deadline_at, time_limit_seconds from public.draft_sessions where id=$1`,
+      [state.session_id],
+    );
+    assert(rows[0].deadline_at === null, "ドラフト作成時に期限が設定された");
+    assert(rows[0].time_limit_seconds === 3600, "選んだ制作時間が失われた");
     assert(state.session_id, "ドラフトが始まっていない");
   });
 
-  await test("H", "カードをめくっていた時間は、確定しても消えない", async () => {
+  await test("H", "新しいドラフト中は直前に終えた時計も表示しない", async () => {
+    const u = await makeMember(db, "clock-new-draft");
+    const old = await drawPrompt(db, u, { timeLimit: 600 });
+    await postWork(db, u, old.prompt_id, "直前に完成した作品");
+    await startDraftOnly(db, u, { timeLimit: 600 });
+    const ch = await value(db, asMember(u), `select public.get_active_challenge()`);
+    assert(ch === null, "選択中に直前のお題の時計が残っている");
+  });
+
+  await test("H", "移行時は進行中ドラフトだけ期限を外し、放置時刻と確定済みお題を保つ", async () => {
+    const legacyDb = await createTestDb({ before: "20260914120000" });
+    try {
+      const u = await makeMember(legacyDb, "clock-upgrade");
+      const oldPrompt = await drawPrompt(legacyDb, u, { timeLimit: 600 });
+      const state = await startDraftOnly(legacyDb, u, { timeLimit: 3600 });
+      await legacyDb.query(
+        `update public.draft_sessions
+            set last_activity_at = clock_timestamp() - interval '1 hour'
+          where id = $1`,
+        [state.session_id],
+      );
+      const beforePrompt = (await legacyDb.query(
+        `select started_at, deadline_at from public.prompts where id = $1`,
+        [oldPrompt.prompt_id],
+      )).rows[0];
+      const beforeDraft = (await legacyDb.query(
+        `select deadline_at, last_activity_at from public.draft_sessions where id = $1`,
+        [state.session_id],
+      )).rows[0];
+      assert(beforeDraft.deadline_at !== null, "移行前ドラフトに期限が無い");
+
+      await applyMigrations(legacyDb, { from: "20260914120000" });
+
+      const afterDraft = (await legacyDb.query(
+        `select deadline_at, last_activity_at from public.draft_sessions where id = $1`,
+        [state.session_id],
+      )).rows[0];
+      const afterPrompt = (await legacyDb.query(
+        `select started_at, deadline_at from public.prompts where id = $1`,
+        [oldPrompt.prompt_id],
+      )).rows[0];
+      assert(afterDraft.deadline_at === null, "進行中ドラフトの旧期限が残った");
+      assert(String(afterDraft.last_activity_at) === String(beforeDraft.last_activity_at),
+        "移行だけで放置の起点が進んだ");
+      assert(String(afterPrompt.started_at) === String(beforePrompt.started_at),
+        "既存のお題の開始時刻が変わった");
+      assert(String(afterPrompt.deadline_at) === String(beforePrompt.deadline_at),
+        "既存のお題の期限が変わった");
+
+      const done = await finishDraft(legacyDb, u, state.session_id);
+      const timer = await value(legacyDb, asMember(u),
+        `select public.get_prompt_timer($1)`, [done.prompt_id]);
+      assert(timer.seconds_left > 3500, "移行前に作ったドラフトの制作時間が戻っていない");
+    } finally {
+      await legacyDb.close();
+    }
+  });
+
+  await test("H", "カードを選んだ時間は制作時間に含めない", async () => {
     const u = await makeMember(db, "clock-carry");
     const state = await startDraftOnly(db, u, { timeLimit: 3600 });
 
     // 20分ぶんカードを眺めた
     await rewindChallenge(db, { sessionId: state.session_id }, 1200);
-
-    const beforeDone = await value(db, asMember(u), `select public.get_active_challenge()`);
-    assert(beforeDone.elapsed_seconds >= 1200, "ドラフト中の経過が数えられていない");
+    assert(
+      await value(db, asMember(u), `select public.get_active_challenge()`) === null,
+      "選択中にカウントダウンが始まった",
+    );
 
     const done = await finishDraft(db, u, state.session_id);
     const t = await value(db, asMember(u), `select public.get_prompt_timer($1)`, [done.prompt_id]);
 
     assert(
-      t.elapsed_seconds >= 1200,
-      `確定したら経過が ${t.elapsed_seconds} 秒に戻った（1200秒以上のはず）`,
+      t.elapsed_seconds >= 0 && t.elapsed_seconds < 60,
+      `カード選択の時間が経過に含まれた: ${t.elapsed_seconds} 秒`,
     );
     assert(
-      t.seconds_left <= 3600 - 1200 + 5,
-      `確定で残り時間が ${t.seconds_left} 秒へ増えた（時計が取り直されている）`,
+      t.seconds_left > 3500 && t.seconds_left <= 3600,
+      `確定直後の残りが ${t.seconds_left} 秒（3600秒に近いはず）`,
     );
 
     const started = await db.query(
-      `select p.started_at = ds.started_at as same
+      `select p.started_at > ds.started_at as after_draft,
+              extract(epoch from (p.deadline_at - p.started_at)) as duration,
+              p.renew_count
          from public.prompts p join public.draft_sessions ds on ds.id = p.draft_session_id
         where p.id = $1`,
       [done.prompt_id],
     );
-    assert(started.rows[0].same === true, "開始時刻が引き継がれていない");
+    assert(started.rows[0].after_draft === true, "確定時刻より前から時計が動いている");
+    assert(Number(started.rows[0].duration) === 3600, "期限が確定時刻＋制作時間ではない");
+    assert(started.rows[0].renew_count === 0, "ドラフト中の延長回数を引き継いだ");
   });
 
   await test("H", "開始時刻は書き換えられない（時計のリセットができない）", async () => {
@@ -1464,50 +1526,39 @@ async function main() {
     );
   });
 
-  await test("H", "ドラフト中でも延長でき、総経過は減らない", async () => {
+  await test("H", "ドラフト中は延長できない", async () => {
     const u = await makeMember(db, "clock-renew");
     const state = await startDraftOnly(db, u, { timeLimit: 3600 });
 
-    // 残り10分まで進める
-    await rewindChallenge(db, { sessionId: state.session_id }, 3000);
-
-    const before = await value(db, asMember(u), `select public.get_active_challenge()`);
-    assert(before.can_renew === true, "ドラフト中に延長できない");
-
-    const after = await value(db, asMember(u), `select public.renew_current_challenge()`);
-    // 残っていた600秒に 0.75T = 2700秒 が足される
-    assert(
-      after.seconds_left > 3200 && after.seconds_left <= 3300,
-      `延長後の残りが ${after.seconds_left} 秒（600 + 2700 のはず）`,
+    await expectFailure(
+      () => value(db, asMember(u), `select public.renew_current_challenge()`),
+      "NO_ACTIVE_CHALLENGE",
     );
-    assert(after.granted_seconds === 2700, `足された秒が ${after.granted_seconds}`);
-    assert(
-      after.elapsed_seconds >= before.elapsed_seconds,
-      "延長で総経過時間が減った",
+    await expectFailure(
+      () => value(db, asMember(u), `select public.renew_draft_deadline($1)`, [state.session_id]),
+      "permission denied",
     );
-    assert(after.renew_count === 1, `延長回数が ${after.renew_count}（1のはず）`);
-    assert(state.session_id, "ドラフトが始まっていない");
+    const history = await value(db, asMember(u), `select public.get_my_renewals(50)`);
+    assert(history.length === 0, "ドラフト中に延長履歴ができた");
   });
 
-  await test("H", "ドラフトの予定終了時刻を過ぎても、めくれて確定もできる", async () => {
+  await test("H", "ドラフトを長く選んでも、確定した時点から全時間を使える", async () => {
     const u = await makeMember(db, "clock-overrun-draft");
     const state = await startDraftOnly(db, u, { timeLimit: 600 });
 
-    // 600秒の枠を、さらに1時間過ぎさせる
+    // 選択時間を制作枠より長い時間にする
     await rewindChallenge(db, { sessionId: state.session_id }, 600 + 3600);
 
     const ch = await value(db, asMember(u), `select public.get_active_challenge()`);
-    assert(ch !== null, "超過したドラフトが帯から消えた");
-    assert(ch.phase === "overrun", `段階が ${ch.phase}（overrun のはず）`);
-    assert(ch.is_discarded === false, "超過しただけで破棄扱いになった");
-    assert(ch.can_renew === true, "超過中のドラフトを延ばせない");
+    assert(ch === null, "ドラフト中なのに制作時間が表示された");
 
-    // **めくれる。確定もできる。**旧実装ではここで DRAFT_EXPIRED になっていた
     const done = await finishDraft(db, u, state.session_id);
-    assert(done.prompt_id, "超過中にお題を確定できなかった");
+    assert(done.prompt_id, "長く選んだドラフトを確定できなかった");
 
     const t = await value(db, asMember(u), `select public.get_prompt_timer($1)`, [done.prompt_id]);
     assert(t.status === "active", `確定後のお題が ${t.status}`);
+    assert(t.is_overrun === false, "確定直後に制作時間超過と表示された");
+    assert(t.seconds_left > 550, `確定直後の残りが ${t.seconds_left} 秒`);
   });
 
   await test("H", "投稿すると時計が止まり、かかった時間が残る", async () => {
@@ -1537,10 +1588,13 @@ async function main() {
     assert(first === second, "投稿後も経過時間が増え続けている（時計が止まっていない）");
   });
 
-  await test("H", "無制限は経過だけ数え、期限も更新も無い", async () => {
+  await test("H", "無制限も確定後から経過を数え、期限も更新も無い", async () => {
     const u = await makeMember(db, "clock-unlimited");
     const state = await startDraftOnly(db, u, { timeLimit: null });
 
+    assert(await value(db, asMember(u), `select public.get_active_challenge()`) === null,
+      "無制限のドラフト中に経過時間が表示された");
+    const done = await finishDraft(db, u, state.session_id);
     const ch = await value(db, asMember(u), `select public.get_active_challenge()`);
     assert(ch.is_unlimited === true, "無制限として返っていない");
     assert(ch.has_deadline === false, "無制限に期限が入っている");
@@ -1555,22 +1609,21 @@ async function main() {
       "UNLIMITED_NO_RENEW",
     );
 
-    const done = await finishDraft(db, u, state.session_id);
     const t = await value(db, asMember(u), `select public.get_prompt_timer($1)`, [done.prompt_id]);
     assert(t.is_unlimited === true, "確定したら無制限でなくなった");
   });
 
   await test("H", "延ばすたびに、そのときの経過と超過が履歴に残る", async () => {
     const u = await makeMember(db, "clock-history");
-    const state = await startDraftOnly(db, u, { timeLimit: 3600 });
+    const prompt = await drawPrompt(db, u, { timeLimit: 3600 });
 
     // 1回目。期限内（残り10分）に押す
-    await rewindChallenge(db, { sessionId: state.session_id }, 3000);
+    await rewindChallenge(db, { promptId: prompt.prompt_id }, 3000);
     await value(db, asMember(u), `select public.renew_current_challenge()`);
 
     // 2回目。予定終了時刻を5分過ぎてから押す。
     // 1回目で 600 + 2700 = 3300 秒後になっているので、3600 戻すと 300 秒の超過
-    await rewindChallenge(db, { sessionId: state.session_id }, 3600);
+    await rewindChallenge(db, { promptId: prompt.prompt_id }, 3600);
     await value(db, asMember(u), `select public.renew_current_challenge()`);
 
     const history = await value(db, asMember(u), `select public.get_my_renewals(50)`);

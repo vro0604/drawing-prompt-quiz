@@ -178,7 +178,7 @@ export type PromptTimer = {
   phase: "within" | "overrun" | "discarded" | "finished";
   is_unlimited: boolean;
   has_deadline: boolean;
-  /** 制作挑戦を始めた時刻（お題の確定時刻ではない） */
+  /** 制作時間を数え始めた時刻（ドラフト由来ならお題の確定時刻） */
   started_at: string;
   /** 開始からの総経過秒。延長しても超過しても減らない */
   elapsed_seconds: number;

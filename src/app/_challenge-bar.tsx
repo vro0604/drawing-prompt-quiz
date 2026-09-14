@@ -80,10 +80,8 @@ import {
  *   ・他のタブが延ばしたとき（BroadcastChannel）
  *   ・30秒に1回の保険
  *
- *   送信のたびに取り直すのは、**挑戦が始まる瞬間がまさに送信だから。**
- *   これが無いと、「ドラフトを始める」を押しても帯が出ず、
- *   次の保険の取り直しまで（最大30秒）何も出ないまま待つことになる
- *   （実測でそうなった）。送信先は同じ URL のことが多く、
+ *   お題を確定する送信のあとに時計が始まるので、すぐ取り直す。
+ *   送信先は同じ URL のこともあり、
  *   ページを移った合図だけでは拾えない。
  *
  *   **表示のために毎秒問い合わせない。**秒は手元で描く。
@@ -102,6 +100,10 @@ export function ChallengeBar() {
   const [stale, setStale] = useState(false);
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
+  const [announcement, setAnnouncement] = useState<string | null>(null);
+  /** 最後に知らせた段階。別のお題に変わったら calm に戻す。 */
+  const announced = useRef<WarnLevel>("calm");
+  const shownChallengeId = useRef<string | null>(null);
   /**
    * 帯の高さ。**下に置く空きの高さに使う。**
    *
@@ -147,6 +149,15 @@ export function ChallengeBar() {
       if (body.error) {
         setStale(true);
         return;
+      }
+
+      // 別のお題へ移ったら、前のお題の延長結果や危険度の読み上げを残さない。
+      const nextId = body.challenge?.id ?? null;
+      if (shownChallengeId.current !== nextId) {
+        shownChallengeId.current = nextId;
+        announced.current = "calm";
+        setAnnouncement(null);
+        setMessage(null);
       }
 
       offset.current = body.challenge
@@ -285,11 +296,6 @@ export function ChallengeBar() {
   //
   // 段階が変わった瞬間にだけ文を差し替える。**毎秒は読ませない。**
   // 前の段階を控えておき、危険側へ進んだときだけ知らせる。
-  const [announcement, setAnnouncement] = useState<string | null>(null);
-
-  /** 最後に知らせた段階。**描画では読まない**（読むと毎秒描き直すことになる） */
-  const announced = useRef<WarnLevel>("calm");
-
   // --- サーバー時刻に合わせて数を作る ---------------------------------------
   //
   // **早い return より前に置く。**下に useEffect があるので、
@@ -413,6 +419,7 @@ export function ChallengeBar() {
   const marks = {
     "data-challenge-bar": "",
     "data-kind": challenge.kind,
+    "data-challenge-id": challenge.id,
     "data-elapsed": elapsed,
     "data-phase": challenge.phase,
     "data-overrun": overrun ? "1" : "0",
