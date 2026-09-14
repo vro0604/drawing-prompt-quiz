@@ -636,11 +636,12 @@ async function main() {
     "/terms",
     "/privacy",
     // **画面だけでは足りない。**帯と知らせは、どの画面でもブラウザ側から
-    //   この2本を呼ぶ。ここで先に組み立てておかないと、画面の組み立てと
+    //   この3本を呼ぶ。ここで先に組み立てておかないと、画面の組み立てと
     //   同時に走って、どちらも十数秒かかる（2026-09-09 の実測。
     //   運営の画面の組み立て中に /api/notifications が 12.9秒）
     "/api/challenge",
     "/api/notifications",
+    "/api/notices/unseen",
   ]);
   const warmBad = warm.filter((w) => w.error || (w.status ?? 500) >= 500);
   console.log(
@@ -4852,6 +4853,7 @@ async function main() {
 
     await page.goto(`${base}/account`);
     const entry = page.locator('[data-testid="notice-entry"]');
+    await page.waitForSelector('[data-testid="notice-entry"][data-loaded="true"]');
     const state = await entry.getAttribute("data-unseen");
     assert(state === "yes", `入口の状態が ${state}（yes のはず）`);
 
@@ -4891,7 +4893,7 @@ async function main() {
     assert(await unseenInDb(seeded.author), "一覧を見ただけで確認済みになった");
 
     const state = await page
-      .locator('[data-testid="notice-entry"]')
+      .locator('[data-testid="notice-entry"][data-loaded="true"]')
       .getAttribute("data-unseen");
     assert(state === "yes", `入口の状態が ${state}（yes のはず）`);
 
@@ -4976,7 +4978,7 @@ async function main() {
 
     t.stage("入口の見た目も変わっていない");
     const state = await page
-      .locator('[data-testid="notice-entry"]')
+      .locator('[data-testid="notice-entry"][data-loaded="true"]')
       .getAttribute("data-unseen");
     assert(state === "no", `入口の状態が ${state}（no のはず）`);
 
@@ -4993,7 +4995,7 @@ async function main() {
 
     t.stage("入口に印が付いていない");
     const state = await g
-      .locator('[data-testid="notice-entry"]')
+      .locator('[data-testid="notice-entry"][data-loaded="true"]')
       .getAttribute("data-unseen");
     assert(state === "no", `ゲストの入口の状態が ${state}（no のはず）`);
   });

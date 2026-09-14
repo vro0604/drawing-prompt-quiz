@@ -1,6 +1,6 @@
 import Link from "next/link";
 
-import { fetchHasUnseenResults } from "@/features/notice/rpc";
+import { NoticeEntry } from "@/app/_notice-entry";
 
 /**
  * 全ページの上と下に付く枠（ヘッダーとフッター）。
@@ -29,9 +29,8 @@ import { fetchHasUnseenResults } from "@/features/notice/rpc";
  *   ただしD112を維持する。絶対に表示しない：回答件数 / 通知件数 /
  *   数字badge / 未読を示す丸badge / いいね型カウンター」。
  *
- *   このために、この枠は**状態を持つものになった。**全ページで
- *   「未確認があるか」を1回聞く。聞くのは真偽値1つで、
- *   失敗しても知らせが出ないだけ（fetchHasUnseenResults が握りつぶす）。
+ *   NoticeEntry がブラウザから真偽値だけを聞く。ヘッダー本体は Cookie を
+ *   読まないので、公開ページを静的に配信できる。失敗しても入口は残る。
  *   サインインしているかどうかは、これまでどおり出していない。
  *
  * 【並び順】
@@ -40,7 +39,8 @@ import { fetchHasUnseenResults } from "@/features/notice/rpc";
  *   いちばん人数の多い「とりあえず来た人」が引き返す。
  *
  * 【変えるとき】
- *   中身と並びはこのファイルだけを直せば全ページに効く。
+ *   行き先と並びはこのファイルを直せば全ページに効く。
+ *   知らせの読み込み方は _notice-entry.tsx に置いている。
  *   枠ごとやめるなら layout.tsx から2行消す。
  */
 
@@ -51,12 +51,7 @@ const NAV = [
   { href: "/rankings", label: "ランキング" },
 ];
 
-export async function SiteHeader() {
-  // 未確認の回答があるか。**件数は聞いていない。**
-  // 未サインインなら、fetchHasUnseenResults が DB に聞かずに false を返す
-  // （DB は未サインインには実行させない。聞くと断られる）。ここで場合分けはしない。
-  const hasUnseen = await fetchHasUnseenResults();
-
+export function SiteHeader() {
   return (
     <header data-site-nav="" className="border-b border-line">
       {/*
@@ -91,19 +86,7 @@ export async function SiteHeader() {
           変わるのは太さだけ。丸も数字も付けない。
           読み上げには「未確認の回答があります」と伝わるようにしてある。
         */}
-        <Link
-          href="/notices"
-          data-testid="notice-entry"
-          data-unseen={hasUnseen ? "yes" : "no"}
-          aria-label={
-            hasUnseen ? "知らせ。未確認の回答があります" : "知らせ。未確認の回答はありません"
-          }
-          className={`ml-auto inline-flex min-h-11 items-center text-sm hover:underline ${
-            hasUnseen ? "font-bold text-ink" : "text-muted"
-          }`}
-        >
-          知らせ
-        </Link>
+        <NoticeEntry />
 
         {/* アカウントは右端へ。ゲストのままでも押せるが、主動線ではない */}
         <Link
