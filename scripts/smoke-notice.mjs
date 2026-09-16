@@ -105,6 +105,10 @@ async function entryState() {
   await author.page.goto(`${BASE}/account`, { waitUntil: "domcontentloaded" });
   const entry = author.page.locator('[data-testid="notice-entry"]');
   await entry.waitFor({ state: "visible", timeout: 30000 });
+  // 2026-09-15（fab73e3）から、未確認の有無は描画のあとにブラウザが読み込む。
+  // 読み込みが済む前の data-unseen は常に "no" なので、済んだ印を待ってから読む
+  // （ブラウザ試験 test/e2e/browser.mjs と同じ待ち方）
+  await author.page.waitForSelector('[data-testid="notice-entry"][data-loaded="true"]', { timeout: 30000 });
   return {
     unseen: await entry.getAttribute("data-unseen"),
     label: await entry.innerText(),
