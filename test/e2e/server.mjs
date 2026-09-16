@@ -21,6 +21,7 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { inspectEnvironment, neutraliseEnvFiles } from "../guard/no-production.mjs";
 import { reservePort, waitForFreePort } from "./exclusive.mjs";
+import { readMachine, describeMachine } from "./machine.mjs";
 import { startSupabaseMock, ANON_KEY, SERVICE_KEY } from "./supabase-mock.mjs";
 import { seedForE2E } from "./seed.mjs";
 
@@ -101,6 +102,19 @@ export async function warmupRoutes(base, paths, { timeoutMs = 120_000 } = {}) {
 }
 
 export async function startApp({ port = 3210, log = false } = {}) {
+  /* --- 始める前に、端末の混み具合を測って残す -----------------------------
+   *
+   * 出所: ユーザー指示（2026-09-10）「ブラウザ全件試験を走らせる工程では、
+   * 開始前に必ずswap使用量を記録する。」
+   *
+   * ここで測るのは、**まだ何も立てていない時点の値**である。
+   * 検証用サーバーもブラウザも自分で交換領域を押し出すので、
+   * 立てた後に測ると「試験のせいで増えた分」と
+   * 「もともと詰まっていた分」を見分けられない。
+   */
+  const machineAtStart = readMachine();
+  console.log(describeMachine(machineAtStart, "開始前の端末"));
+
   await reservePort(port);
 
   const mock = await startSupabaseMock();
@@ -207,6 +221,7 @@ export async function startApp({ port = 3210, log = false } = {}) {
     db: mock.db,
     seeded,
     logs,
+    machineAtStart,
     /**
      * 片づける。**ポートが本当に空くまで待ってから返る。**
      *

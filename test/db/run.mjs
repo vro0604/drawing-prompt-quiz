@@ -20,6 +20,10 @@
  *                       増やさず「最後に結果を開いた時刻」との差で出す。
  *                       件数と回答者を運んでいないことも数える
  *   S2. サブ指令        正式な語1つに添える制作の手がかり（D193）。
+ *   SY. 回答の出所      回答が人によるものか仕組みによるものか（D194）。
+ *                       人間の回答だけが統計・順位・配給を動かすこと
+ *   SQ. システム回答     仕組みが1件だけ答えるための待ち行列と保存の道（D195）。
+ *                       積む・取り出す・保存する。利用者からは1つも触れないこと
  *   S3. サブ指令の抽選  どの語に何を付けるかを決める、画面側の関数（D193）。
  *                       出題・正解・配給・回答者の画面へ1歩も漏れていないこと
  *
@@ -8454,6 +8458,1271 @@ async function main() {
 
 
 
+  // =========================================================================
+  // SY. 回答の出所（D194）
+  //
+  //    回答に「何が答えたか」を持たせ、人間の回答だけが統計を動かすようにした。
+  //    **この段ではシステム回答をまだ作らない。**作るのは次の段。
+  //    ここで確かめるのは、作られたときに壊れない形になっているかどうか。
+  //
+  //    見るのは3つ。
+  //
+  //    (1) 既存の回答と、これから出る回答が human になること
+  //    (2) 利用者がシステムを名乗れないこと。名乗る口が1つも無いこと
+  //    (3) システム回答が入っていても、人間の数字が1つも動かないこと
+  //
+  //    【システム回答をここでどう作るか】
+  //      作る窓口はまだ無い。だから試験は**表へ直接入れる。**
+  //      これはアプリの経路ではなく、検査の立場（所有者）でだけできること。
+  //      「もし入ったら」を先に確かめるための踏み台である。
+  // =========================================================================
+
+  /** 検査用に、システム回答を1件そのまま置く（アプリにこの経路は無い） */
+  async function putSystemAnswer(workId, { correct = false } = {}) {
+    const quiz = await db.query(
+      `select q.id as question_id, q.card_slot_key
+         from public.quiz_questions q
+         join public.works w on w.prompt_id = q.prompt_id
+        where w.id = $1
+        order by q.position`,
+      [workId],
+    );
+
+    const ins = await db.query(
+      `insert into public.answers
+         (work_id, user_id, correct_count, hint_used, question_count,
+          exact_attempts, exact_corrects, pair_attempts, pair_corrects,
+          scoring_version, answer_source)
+       values ($1, null, $2, false, $3, $3, $2, 0, 0, 'v2_all_words', 'system')
+       returning id`,
+      [workId, correct ? quiz.rows.length : 0, quiz.rows.length],
+    );
+    const answerId = ins.rows[0].id;
+
+    for (const q of quiz.rows) {
+      const pick = await db.query(
+        `select tag_id, is_correct from public.quiz_choices
+          where question_id = $1 order by (is_correct = $2) desc, position limit 1`,
+        [q.question_id, correct],
+      );
+      await db.query(
+        `insert into public.answer_items
+           (answer_id, question_id, card_slot_key, selected_tag_id,
+            answer_mode, is_correct)
+         values ($1, $2, $3, $4, 'exact', $5)`,
+        [answerId, q.question_id, q.card_slot_key, pick.rows[0].tag_id,
+         pick.rows[0].is_correct],
+      );
+    }
+    return answerId;
+  }
+
+  /** その作品の、人間から見た数字をまとめて読む */
+  async function humanNumbers(workId) {
+    const w = await db.query(
+      `select answers_count from public.works where id = $1`, [workId]);
+    const slot = await db.query(
+      `select coalesce(sum(attempts), 0)::int a, coalesce(sum(corrects), 0)::int c
+         from public.work_slot_stats where work_id = $1`, [workId]);
+    const hint = await db.query(
+      `select coalesce(sum(answers_count), 0)::int n,
+              coalesce(sum(total_items), 0)::int t
+         from public.work_hint_stats where work_id = $1`, [workId]);
+    const band = await db.query(
+      `select case when exists (select 1 from public.answers a
+                                 where a.work_id = $1 and a.answer_source = 'human')
+                   then 2 else 1 end as band`, [workId]);
+    return {
+      answers_count: w.rows[0].answers_count,
+      slot_attempts: slot.rows[0].a,
+      slot_corrects: slot.rows[0].c,
+      hint_answers: hint.rows[0].n,
+      hint_items: hint.rows[0].t,
+      band: band.rows[0].band,
+    };
+  }
+
+  await test("SY", "A. 既存の回答はすべて human", async () => {
+    // この試験用DBは migration から作り直しているので、
+    // ここでいう「既存」は、この段より前の道で入った回答のこと
+    const u = await makeMember(db, "sy-existing");
+    const p = await drawPrompt(db, u);
+    const workId = await postWork(db, u, p.prompt_id, "出所の検査A");
+    const viewer = await makeMember(db, "sy-viewer-a");
+    await answerWork(db, viewer, workId, { correct: true });
+
+    const rows = await db.query(
+      `select count(*) filter (where answer_source = 'human')::int h,
+              count(*)::int n from public.answers`);
+    assert(rows.rows[0].h === rows.rows[0].n,
+      `${rows.rows[0].n} 件中 ${rows.rows[0].h} 件しか human でない`);
+
+    const notNull = await db.query(
+      `select count(*)::int n from public.answers where answer_source is null`);
+    assert(notNull.rows[0].n === 0, "空の出所がある");
+  });
+
+  await test("SY", "B. 回答を出す窓口は、必ず human を作る", async () => {
+    const u = await makeMember(db, "sy-submit");
+    const p = await drawPrompt(db, u);
+    const workId = await postWork(db, u, p.prompt_id, "出所の検査B");
+    const viewer = await makeMember(db, "sy-viewer-b");
+    await answerWork(db, viewer, workId, { correct: true });
+
+    const r = await db.query(
+      `select answer_source from public.answers where work_id = $1`, [workId]);
+    assert(r.rows.length === 1, `回答が ${r.rows.length} 件`);
+    assert(r.rows[0].answer_source === "human",
+      `${r.rows[0].answer_source} になっている`);
+
+    // 窓口の定義そのものに、出所の文字が1つも無い
+    const def = await db.query(
+      `select count(*)::int n from pg_proc p join pg_namespace ns on ns.oid = p.pronamespace
+        where ns.nspname = 'public' and p.proname = 'submit_answer'
+          and pg_get_functiondef(p.oid) like '%answer_source%'`);
+    assert(def.rows[0].n === 0, "窓口が出所を扱っている");
+  });
+
+  await test("SY", "C. 利用者はシステムを名乗れない", async () => {
+    const u = await makeMember(db, "sy-forge");
+    const p = await drawPrompt(db, u);
+    const workId = await postWork(db, u, p.prompt_id, "出所の検査C");
+    const viewer = await makeMember(db, "sy-viewer-c");
+    await answerWork(db, viewer, workId, { correct: true });
+
+    // 1つめ。表へ直接入れる
+    await expectFailure(
+      () => value(db, asMember(viewer),
+        `insert into public.answers (work_id, user_id, answer_source)
+         values ($1, $2, 'system')`, [workId, viewer]),
+      "permission denied",
+    );
+
+    // 2つめ。自分の回答を system へ書き換える
+    await expectFailure(
+      () => value(db, asMember(viewer),
+        `update public.answers set answer_source = 'system' where work_id = $1`,
+        [workId]),
+      "permission denied",
+    );
+
+    // 3つめ。窓口へ引数として渡す（そんな引数は無い）
+    await expectFailure(
+      () => value(db, asMember(viewer),
+        `select public.submit_answer($1, '[]'::jsonb, 'system')`, [workId]),
+      "does not exist",
+    );
+
+    // 4つめ。未サインインでも入れられない
+    await expectFailure(
+      () => value(db, { role: "anon" },
+        `insert into public.answers (work_id, answer_source)
+         values ($1, 'system')`, [workId]),
+      "permission denied",
+    );
+
+    const left = await db.query(
+      `select count(*)::int n from public.answers where answer_source = 'system'`);
+    assert(left.rows[0].n === 0, `システムを名乗る回答が ${left.rows[0].n} 件入った`);
+  });
+
+  await test("SY", "C-2. 出所は、あとから書き換えられない", async () => {
+    const u = await makeMember(db, "sy-immutable");
+    const p = await drawPrompt(db, u);
+    const workId = await postWork(db, u, p.prompt_id, "出所の検査C2");
+    const viewer = await makeMember(db, "sy-viewer-c2");
+    await answerWork(db, viewer, workId, { correct: true });
+
+    // 所有者の立場（＝アプリより強い立場）でも断られること。
+    // 集計は入れたときに1回だけ数えるので、後から変えると数字が食い違う
+    await expectFailure(
+      () => db.query(
+        `update public.answers set answer_source = 'system' where work_id = $1`,
+        [workId]),
+      "ANSWER_SOURCE_IMMUTABLE",
+    );
+
+    // 出所に触らない更新は通る
+    await db.query(
+      `update public.answers set hint_used = hint_used where work_id = $1`, [workId]);
+  });
+
+  await test("SY", "D. 1作品につきシステム回答は1つまで", async () => {
+    const u = await makeMember(db, "sy-unique");
+    const p = await drawPrompt(db, u);
+    const workId = await postWork(db, u, p.prompt_id, "出所の検査D");
+
+    await putSystemAnswer(workId);
+    await expectFailure(() => putSystemAnswer(workId), "answers_one_system_per_work");
+
+    const n = await db.query(
+      `select count(*)::int n from public.answers
+        where work_id = $1 and answer_source = 'system'`, [workId]);
+    assert(n.rows[0].n === 1, `システム回答が ${n.rows[0].n} 件`);
+  });
+
+  await test("SY", "D-2. 人間の側の「1人1回」は今までどおり", async () => {
+    const u = await makeMember(db, "sy-onehuman");
+    const p = await drawPrompt(db, u);
+    const workId = await postWork(db, u, p.prompt_id, "出所の検査D2");
+    const viewer = await makeMember(db, "sy-viewer-d2");
+
+    await answerWork(db, viewer, workId, { correct: true });
+    await expectFailure(
+      () => answerWork(db, viewer, workId, { correct: true }),
+      "ALREADY_ANSWERED",
+    );
+
+    // 別の人は答えられる
+    const other = await makeMember(db, "sy-viewer-d3");
+    await answerWork(db, other, workId, { correct: true });
+    const n = await db.query(
+      `select count(*)::int n from public.answers where work_id = $1`, [workId]);
+    assert(n.rows[0].n === 2, `人間の回答が ${n.rows[0].n} 件`);
+  });
+
+  await test("SY", "E/F/I/J. 人間0・システム1 の作品は、数字がすべて0のまま", async () => {
+    const u = await makeMember(db, "sy-a-only");
+    const p = await drawPrompt(db, u);
+    const workId = await postWork(db, u, p.prompt_id, "出所の検査 作品A");
+
+    const before = await humanNumbers(workId);
+    await putSystemAnswer(workId, { correct: true });
+    const after = await humanNumbers(workId);
+
+    assert(after.answers_count === 0, `回答数が ${after.answers_count}（0のはず）`);
+    assert(after.slot_attempts === 0, `枠ごとの試行が ${after.slot_attempts}（0のはず）`);
+    assert(after.hint_answers === 0, `ヒント別の回答が ${after.hint_answers}（0のはず）`);
+    assert(after.hint_items === 0, `ヒント別の問が ${after.hint_items}（0のはず）`);
+    assert(after.band === 1, `band が ${after.band}（1のはず）`);
+    assert(JSON.stringify(before) === JSON.stringify(after),
+      `システム回答で数字が動いた: ${JSON.stringify(before)} → ${JSON.stringify(after)}`);
+
+    // 配給でも band1 のまま出る
+    const cand = await value(db, asMember(await makeMember(db, "sy-picker-a")),
+      `select jsonb_agg(jsonb_build_object('w', work_id, 'b', band))
+         from public.next_work_candidates(null)`);
+    const row = (cand ?? []).find((x) => x.w === workId);
+    assert(row !== undefined, "配給の候補に出てこない");
+    assert(row.b === 1, `配給の band が ${row.b}（1のはず）`);
+  });
+
+  await test("SY", "G/H/M. 人間1・システム1 の作品は、人間1人分だけが出る", async () => {
+    const u = await makeMember(db, "sy-b-mixed");
+    const p = await drawPrompt(db, u);
+    const workId = await postWork(db, u, p.prompt_id, "出所の検査 作品B");
+
+    const viewer = await makeMember(db, "sy-viewer-b2");
+    await answerWork(db, viewer, workId, { correct: true });
+    const onlyHuman = await humanNumbers(workId);
+
+    await putSystemAnswer(workId, { correct: true });
+    const withSystem = await humanNumbers(workId);
+
+    assert(withSystem.answers_count === 1,
+      `回答数が ${withSystem.answers_count}（1のはず）`);
+    assert(withSystem.band === 2, `band が ${withSystem.band}（2のはず）`);
+    assert(JSON.stringify(onlyHuman) === JSON.stringify(withSystem),
+      `システム回答で数字が動いた: ${JSON.stringify(onlyHuman)} → ${JSON.stringify(withSystem)}`);
+
+    // 作者へ返す集計も、人間1人分だけ
+    const result = await value(db, asMember(u),
+      `select public.get_my_work_result($1::uuid)`, [workId]);
+    assert(result.answers_count === 1,
+      `結果の回答数が ${result.answers_count}（1のはず）`);
+    const items = await db.query(
+      `select count(*)::int n from public.answer_items ai
+         join public.answers a on a.id = ai.answer_id
+        where a.work_id = $1 and a.answer_source = 'human'`, [workId]);
+    assert(result.total_items === items.rows[0].n,
+      `結果の問数が ${result.total_items}（人間の ${items.rows[0].n} のはず）`);
+    assert(result.exact_items + result.pair_items === items.rows[0].n,
+      `ビタ当て ${result.exact_items} ＋ 2択当て ${result.pair_items} が人間の問数と合わない`);
+  });
+
+  await test("SY", "K. 回答した人の成績に、システムは1件も入らない", async () => {
+    const u = await makeMember(db, "sy-userstats");
+    const p = await drawPrompt(db, u);
+    const workId = await postWork(db, u, p.prompt_id, "出所の検査K");
+    const viewer = await makeMember(db, "sy-viewer-k");
+    await answerWork(db, viewer, workId, { correct: true });
+
+    const before = await db.query(
+      `select total_answers, total_items from public.user_stats where user_id = $1`,
+      [viewer]);
+    await putSystemAnswer(workId, { correct: true });
+    const after = await db.query(
+      `select total_answers, total_items from public.user_stats where user_id = $1`,
+      [viewer]);
+    assert(JSON.stringify(before.rows) === JSON.stringify(after.rows),
+      "回答した人の成績が動いた");
+
+    // 誰のものでもない成績の行ができていないこと
+    const orphan = await db.query(`select count(*)::int n from public.user_stats
+      where user_id not in (select id from public.profiles)`);
+    assert(orphan.rows[0].n === 0, `持ち主のいない成績が ${orphan.rows[0].n} 件`);
+  });
+
+  await test("SY", "N. ランキングにシステムの分が入らない", async () => {
+    const u = await makeMember(db, "sy-rank");
+    const p = await drawPrompt(db, u);
+    const workId = await postWork(db, u, p.prompt_id, "出所の検査N");
+    const viewer = await makeMember(db, "sy-viewer-n");
+    await answerWork(db, viewer, workId, { correct: true });
+
+    // 順位は work_slot_stats から作られる。そこへ入らなければ順位も動かない
+    const read = async () => JSON.stringify(
+      (await db.query(
+        `select id, accuracy from public.get_rankings('accuracy', 'normal', null, 50, 0)`
+      )).rows);
+
+    const before = await read();
+    await putSystemAnswer(workId, { correct: true });
+    const after = await read();
+    assert(before === after, `システム回答で順位が動いた\n  前: ${before}\n  後: ${after}`);
+  });
+
+  await test("SY", "O. 回答履歴にシステムを出さない", async () => {
+    const u = await makeMember(db, "sy-history");
+    const p = await drawPrompt(db, u);
+    const workId = await postWork(db, u, p.prompt_id, "出所の検査O");
+    const viewer = await makeMember(db, "sy-viewer-o");
+    await answerWork(db, viewer, workId, { correct: true });
+    await putSystemAnswer(workId, { correct: true });
+
+    const mine = await asRole(db, asMember(viewer), async (cli) =>
+      (await cli.query(`select work_id from public.get_my_answers(50, 0)`)).rows);
+    const here = mine.filter((r) => r.work_id === workId);
+    assert(here.length === 1, `自分の回答履歴に ${here.length} 件（1件のはず）`);
+
+    const one = await value(db, asMember(viewer),
+      `select public.get_my_answer($1::uuid)`, [workId]);
+    assert(one !== null, "自分の回答が読めない");
+
+    // 公開の回答履歴は、本人か「履歴を見せる設定の登録者」にだけ返る。
+    // ここは本人として読む（設定の検査は別の群が見ている）
+    const pub = await asRole(db, asMember(viewer), async (cli) =>
+      (await cli.query(
+        `select work_id from public.get_public_answers($1::uuid, 50, 0)`, [viewer])).rows);
+    assert(pub.length === 1, `公開の回答履歴が ${pub.length} 件（1件のはず）`);
+    assert(pub[0].work_id === workId, "別の作品が出ている");
+  });
+
+  await test("SY", "P/Q. ゲストの回答と「1人1回」は今までどおり", async () => {
+    const u = await makeMember(db, "sy-guest");
+    const p = await drawPrompt(db, u);
+    const workId = await postWork(db, u, p.prompt_id, "出所の検査P");
+
+    const guest = await makeGuest(db);
+    await answerWork(db, guest, workId, { correct: true, guest: true });
+
+    const r = await db.query(
+      `select answer_source, user_id from public.answers where work_id = $1`, [workId]);
+    assert(r.rows.length === 1, `回答が ${r.rows.length} 件`);
+    assert(r.rows[0].answer_source === "human", "ゲストの回答が human になっていない");
+
+    await expectFailure(
+      () => answerWork(db, guest, workId, { correct: true, guest: true }),
+      "ALREADY_ANSWERED",
+    );
+
+    const w = await db.query(
+      `select answers_count from public.works where id = $1`, [workId]);
+    assert(w.rows[0].answers_count === 1,
+      `回答数が ${w.rows[0].answers_count}（1のはず）`);
+  });
+
+  // =========================================================================
+  // SQ. システム回答の待ち行列（D195 / オンボーディング Phase 2）
+  //
+  //    仕組みが1件だけ答えるための「積む・取り出す・保存する」道を作った。
+  //    **この段では、まだ誰も自動では呼ばない。**外部の AI にもつながない。
+  //    ここで確かめるのは、呼ばれたときに壊れないことと、
+  //    利用者からは1つも触れないこと。
+  //
+  //    【外部の AI の代わりに何を渡すか】
+  //      「AI がこの選択肢を選んだ」という結果だけを作って渡す。
+  //      でたらめな回答も決め打ちの回答も、本番の機能としては作っていない。
+  //      出所: ユーザー指示（2026-09-10）「system回答保存試験では、fixtureとして
+  //      『外部AIがこの選択肢を選んだ』という入力だけ与える。」
+  // =========================================================================
+
+  /** 信頼されたサーバーの立場 */
+  const SERVICE = { role: "service_role", uid: null };
+
+  /** 外部の AI が選んだことにする（正解かどうかは渡さない） */
+  async function aiSelections(workId, { correct = false, pair = false } = {}) {
+    const { rows } = await db.query(
+      `select q.id as question_id,
+              (select c.tag_id from public.quiz_choices c
+                where c.question_id = q.id and c.is_correct = $2
+                order by c.position limit 1) as tag_id,
+              (select c.tag_id from public.quiz_choices c
+                where c.question_id = q.id and c.is_correct <> $2
+                order by c.position limit 1) as other_tag_id
+         from public.quiz_questions q
+         join public.works w on w.prompt_id = q.prompt_id
+        where w.id = $1
+        order by q.position`,
+      [workId, correct],
+    );
+    return rows.map((r) => (pair
+      ? { question_id: r.question_id, tag_id: r.tag_id, tag_id_2: r.other_tag_id }
+      : { question_id: r.question_id, tag_id: r.tag_id }));
+  }
+
+  /** 待ち行列の様子を読む（信頼されたサーバーの窓から） */
+  async function job(workId) {
+    const r = await asRole(db, SERVICE, async (c) =>
+      (await c.query(`select * from public.get_system_answer_job($1::uuid)`, [workId])).rows);
+    return r[0] ?? null;
+  }
+
+  const svc = async (sql, params = []) =>
+    value(db, SERVICE, sql, params);
+
+  /** 普通に投稿された prompt_first の作品を1つ用意する */
+  async function normalWork(handle, title) {
+    const u = await makeMember(db, handle);
+    const p = await drawPrompt(db, u);
+    const workId = await postWork(db, u, p.prompt_id, title);
+    return { userId: u, workId };
+  }
+
+  await test("SQ", "A. 積める。同じ作品へ2度積んでも行は1つのまま", async () => {
+    const { userId, workId } = await normalWork("sq-a", "待ち行列の検査A");
+
+    const first = await svc(`select public.enqueue_system_answer($1::uuid)`, [workId]);
+    assert(first === true, "1度目が積めていない");
+
+    const second = await svc(`select public.enqueue_system_answer($1::uuid)`, [workId]);
+    assert(second === false, "2度目も積めてしまった");
+
+    const rows = await db.query(
+      `select count(*)::int n from public.system_answer_queue where work_id = $1`, [workId]);
+    assert(rows.rows[0].n === 1, `待ち行列の行が ${rows.rows[0].n} 件（1件のはず）`);
+
+    const j = await job(workId);
+    assert(j.status === "pending", `状態が ${j.status}（pending のはず）`);
+    assert(j.attempts === 0, `試行が ${j.attempts}（0のはず）`);
+    assert(j.owner_user_id === userId, "作者が入っていない");
+  });
+
+  await test("SQ", "B. 取り出すと処理中になり、試行が1つ増える", async () => {
+    const { workId } = await normalWork("sq-b", "待ち行列の検査B");
+    await svc(`select public.enqueue_system_answer($1::uuid)`, [workId]);
+
+    const claimed = await asRole(db, SERVICE, async (c) =>
+      (await c.query(`select * from public.claim_system_answer_jobs(10)`)).rows);
+    const mine = claimed.find((x) => x.work_id === workId);
+    assert(mine !== undefined, "取り出せていない");
+    assert(mine.attempts === 1, `試行が ${mine.attempts}（1のはず）`);
+
+    const j = await job(workId);
+    assert(j.status === "processing", `状態が ${j.status}（processing のはず）`);
+    assert(j.last_attempt_at !== null, "取り出した時刻が入っていない");
+  });
+
+  await test("SQ", "C. 2人が同時に取り出しても、同じ仕事は1人にしか渡らない", async () => {
+    // 待っている仕事を1件だけにしてから、2回続けて1件ずつ取り出す。
+    // 押さえた行は他からは見えないので、2回目は空になる
+    await db.query(`update public.system_answer_queue set status = 'cancelled'
+                     where status = 'pending'`);
+    const { workId } = await normalWork("sq-c", "待ち行列の検査C");
+    await svc(`select public.enqueue_system_answer($1::uuid)`, [workId]);
+
+    const a = await asRole(db, SERVICE, async (c) =>
+      (await c.query(`select * from public.claim_system_answer_jobs(1)`)).rows);
+    const b = await asRole(db, SERVICE, async (c) =>
+      (await c.query(`select * from public.claim_system_answer_jobs(1)`)).rows);
+
+    assert(a.length === 1, `1人目が ${a.length} 件（1件のはず）`);
+    assert(b.length === 0, `2人目が ${b.length} 件（0件のはず）`);
+    assert(a[0].work_id === workId, "取り出したのが別の仕事");
+  });
+
+  await test("SQ", "D. 保存できる。回答も中身も待ち行列も、まとめて揃う", async () => {
+    const { workId } = await normalWork("sq-d", "待ち行列の検査D");
+    await svc(`select public.enqueue_system_answer($1::uuid)`, [workId]);
+    await asRole(db, SERVICE, async (c) =>
+      c.query(`select * from public.claim_system_answer_jobs(50)`));
+
+    const saved = await svc(
+      `select public.save_system_answer($1::uuid, $2::jsonb)`,
+      [workId, JSON.stringify(await aiSelections(workId, { correct: true }))]);
+    assert(saved === true, "保存できていない");
+
+    const a = await db.query(
+      `select a.id, a.answer_source, a.user_id, a.question_count, a.correct_count,
+              a.hint_used, a.exact_attempts, a.pair_attempts,
+              (select count(*)::int from public.answer_items i where i.answer_id = a.id) items
+         from public.answers a where a.work_id = $1`, [workId]);
+    assert(a.rows.length === 1, `回答が ${a.rows.length} 件（1件のはず）`);
+    const row = a.rows[0];
+    assert(row.answer_source === "system", `出所が ${row.answer_source}`);
+    assert(row.user_id === null, "答えた人が入っている（null のはず）");
+    assert(row.hint_used === false, "ヒントを使ったことになっている");
+    assert(row.items === row.question_count,
+      `中身が ${row.items} 件 / 問が ${row.question_count} 問`);
+    assert(row.correct_count === row.question_count,
+      `正解が ${row.correct_count}（全問のはず）`);
+    assert(row.exact_attempts === row.question_count, "ビタ当ての数が合わない");
+    assert(row.pair_attempts === 0, "2択当てが混ざっている");
+
+    const j = await job(workId);
+    assert(j.status === "completed", `状態が ${j.status}（completed のはず）`);
+  });
+
+  await test("SQ", "E. 2択当ての形でも保存でき、1語目と2語目が別の語になる", async () => {
+    const { workId } = await normalWork("sq-e", "待ち行列の検査E");
+    const saved = await svc(
+      `select public.save_system_answer($1::uuid, $2::jsonb)`,
+      [workId, JSON.stringify(await aiSelections(workId, { correct: true, pair: true }))]);
+    assert(saved === true, "保存できていない");
+
+    const r = await db.query(
+      `select i.answer_mode, i.selected_tag_id, i.selected_tag_id_2
+         from public.answer_items i
+         join public.answers a on a.id = i.answer_id
+        where a.work_id = $1`, [workId]);
+    assert(r.rows.length > 0, "中身が無い");
+    for (const x of r.rows) {
+      assert(x.answer_mode === "pair", `方式が ${x.answer_mode}（pair のはず）`);
+      assert(x.selected_tag_id_2 !== null, "2語目が空");
+      assert(x.selected_tag_id_2 !== x.selected_tag_id, "同じ語を2回選んでいる");
+    }
+  });
+
+  await test("SQ", "F. 同じ作品に2件目のシステム回答は入らない", async () => {
+    const { workId } = await normalWork("sq-f", "待ち行列の検査F");
+    const sel = JSON.stringify(await aiSelections(workId));
+    assert(await svc(`select public.save_system_answer($1::uuid, $2::jsonb)`, [workId, sel]) === true,
+      "1件目が保存できていない");
+    assert(await svc(`select public.save_system_answer($1::uuid, $2::jsonb)`, [workId, sel]) === false,
+      "2件目も保存できてしまった");
+
+    const n = await db.query(
+      `select count(*)::int n from public.answers
+        where work_id = $1 and answer_source = 'system'`, [workId]);
+    assert(n.rows[0].n === 1, `システム回答が ${n.rows[0].n} 件（1件のはず）`);
+  });
+
+  await test("SQ", "G. 人間が先に答えていたら、システムは作らず取り消しで終わる", async () => {
+    const { workId } = await normalWork("sq-g", "待ち行列の検査G");
+    await svc(`select public.enqueue_system_answer($1::uuid)`, [workId]);
+
+    const viewer = await makeMember(db, "sq-g-viewer");
+    await answerWork(db, viewer, workId, { correct: true });
+
+    const saved = await svc(
+      `select public.save_system_answer($1::uuid, $2::jsonb)`,
+      [workId, JSON.stringify(await aiSelections(workId))]);
+    assert(saved === false, "人間が先に答えたのに保存された");
+
+    const n = await db.query(
+      `select count(*) filter (where answer_source = 'system')::int s,
+              count(*) filter (where answer_source = 'human')::int h
+         from public.answers where work_id = $1`, [workId]);
+    assert(n.rows[0].s === 0, `システム回答が ${n.rows[0].s} 件（0件のはず）`);
+    assert(n.rows[0].h === 1, `人間の回答が ${n.rows[0].h} 件（1件のはず）`);
+
+    const j = await job(workId);
+    assert(j.status === "cancelled", `状態が ${j.status}（cancelled のはず）`);
+    assert(j.last_error === "HUMAN_ANSWERED_FIRST", `理由が ${j.last_error}`);
+  });
+
+  await test("SQ", "H. 人間が先に答えた作品は、そもそも積めない", async () => {
+    const { workId } = await normalWork("sq-h", "待ち行列の検査H");
+    const viewer = await makeMember(db, "sq-h-viewer");
+    await answerWork(db, viewer, workId, { correct: true });
+
+    const ok = await svc(`select public.enqueue_system_answer($1::uuid)`, [workId]);
+    assert(ok === false, "回答済みの作品を積めてしまった");
+    assert(await job(workId) === null, "待ち行列に行ができている");
+  });
+
+  await test("SQ", "I. 消された作品は、積めないし保存もされない", async () => {
+    const { userId, workId } = await normalWork("sq-i", "待ち行列の検査I");
+    const sel = JSON.stringify(await aiSelections(workId));
+    await svc(`select public.enqueue_system_answer($1::uuid)`, [workId]);
+
+    await asRole(db, asMember(userId), async (c) =>
+      c.query(`select public.delete_work($1::uuid)`, [workId]));
+
+    const saved = await svc(`select public.save_system_answer($1::uuid, $2::jsonb)`,
+      [workId, sel]);
+    assert(saved === false, "消された作品に保存された");
+
+    const j = await job(workId);
+    assert(j.status === "cancelled", `状態が ${j.status}（cancelled のはず）`);
+    assert(j.last_error === "WORK_NOT_ELIGIBLE", `理由が ${j.last_error}`);
+
+    const again = await svc(`select public.enqueue_system_answer($1::uuid)`, [workId]);
+    assert(again === false, "消された作品を積めてしまった");
+  });
+
+  await test("SQ", "J. 表示を止められた作品は、積めないし保存もされない", async () => {
+    const { workId } = await normalWork("sq-j", "待ち行列の検査J");
+    const sel = JSON.stringify(await aiSelections(workId));
+    await svc(`select public.enqueue_system_answer($1::uuid)`, [workId]);
+
+    // 管理の経路ではなく所有者として印だけ変える（検査の準備）
+    await db.query(`update public.works set review_status = 'hidden' where id = $1`, [workId]);
+
+    assert(await svc(`select public.save_system_answer($1::uuid, $2::jsonb)`,
+      [workId, sel]) === false, "止められた作品に保存された");
+    assert((await job(workId)).status === "cancelled", "待ち行列が終わっていない");
+
+    await db.query(`update public.works set review_status = 'ok', is_published = false
+                     where id = $1`, [workId]);
+    assert(await svc(`select public.enqueue_system_answer($1::uuid)`, [workId]) === false,
+      "公開していない作品を積めてしまった");
+  });
+
+  await test("SQ", "K. 持ち込みの作品（art_first）は、積めないし保存もされない", async () => {
+    const u = await makeMember(db, "sq-k");
+    const tagIds = [
+      ...(await pickTags(db, "morph", 1)),
+      ...(await pickTags(db, "emotion", 1)),
+      ...(await pickTags(db, "color", 1)),
+    ].map((t) => t.id);
+    const { workId } = await postArtFirstWork(db, u, tagIds, { title: "待ち行列の検査K" });
+
+    assert(await svc(`select public.enqueue_system_answer($1::uuid)`, [workId]) === false,
+      "持ち込みの作品を積めてしまった");
+    assert(await job(workId) === null, "待ち行列に行ができている");
+
+    const saved = await svc(`select public.save_system_answer($1::uuid, $2::jsonb)`,
+      [workId, JSON.stringify(await aiSelections(workId))]);
+    assert(saved === false, "持ち込みの作品に保存された");
+
+    const n = await db.query(
+      `select count(*)::int n from public.answers where work_id = $1`, [workId]);
+    assert(n.rows[0].n === 0, `回答が ${n.rows[0].n} 件（0件のはず）`);
+  });
+
+  await test("SQ", "L. 別の作品の問や、選択肢に無い語は受け取らない", async () => {
+    const { workId } = await normalWork("sq-l", "待ち行列の検査L");
+    const { workId: other } = await normalWork("sq-l2", "待ち行列の検査L2");
+
+    // 別の作品の問を混ぜる
+    const mine = await aiSelections(workId);
+    const theirs = await aiSelections(other);
+    const mixed = [...mine.slice(1), theirs[0]];
+    await expectFailure(
+      () => svc(`select public.save_system_answer($1::uuid, $2::jsonb)`,
+        [workId, JSON.stringify(mixed)]),
+      "BAD_SELECTION",
+    );
+
+    // 選択肢に無い語
+    const outside = (await db.query(
+      `select t.id from public.tags t
+        where not exists (select 1 from public.quiz_choices c
+                           join public.quiz_questions q on q.id = c.question_id
+                           join public.works w on w.prompt_id = q.prompt_id
+                          where w.id = $1 and c.tag_id = t.id)
+        limit 1`, [workId])).rows[0].id;
+    const bad = mine.map((x, i) => (i === 0 ? { ...x, tag_id: outside } : x));
+    await expectFailure(
+      () => svc(`select public.save_system_answer($1::uuid, $2::jsonb)`,
+        [workId, JSON.stringify(bad)]),
+      "BAD_SELECTION",
+    );
+
+    // 問が足りない
+    await expectFailure(
+      () => svc(`select public.save_system_answer($1::uuid, $2::jsonb)`,
+        [workId, JSON.stringify(mine.slice(1))]),
+      "INCOMPLETE_ANSWER",
+    );
+
+    // 同じ問に2回
+    const dup = [...mine.slice(1), mine[1]];
+    await expectFailure(
+      () => svc(`select public.save_system_answer($1::uuid, $2::jsonb)`,
+        [workId, JSON.stringify(dup)]),
+      "DUPLICATE_QUESTION",
+    );
+
+    // どれも1件も保存されていない
+    const n = await db.query(
+      `select count(*)::int n from public.answers where work_id = $1`, [workId]);
+    assert(n.rows[0].n === 0, `回答が ${n.rows[0].n} 件（0件のはず）`);
+  });
+
+  await test("SQ", "M. 存在しない作品は断る", async () => {
+    await expectFailure(
+      () => svc(`select public.save_system_answer($1::uuid, '[]'::jsonb)`,
+        ["00000000-0000-0000-0000-000000000000"]),
+      "WORK_NOT_FOUND",
+    );
+    const ok = await svc(`select public.enqueue_system_answer($1::uuid)`,
+      ["00000000-0000-0000-0000-000000000000"]);
+    assert(ok === false, "存在しない作品を積めてしまった");
+  });
+
+  await test("SQ", "N. 失敗しても、戻せばもう一度取り出せる", async () => {
+    await db.query(`update public.system_answer_queue set status = 'cancelled'
+                     where status = 'pending'`);
+    const { workId } = await normalWork("sq-n", "待ち行列の検査N");
+    await svc(`select public.enqueue_system_answer($1::uuid)`, [workId]);
+    await asRole(db, SERVICE, async (c) =>
+      c.query(`select * from public.claim_system_answer_jobs(50)`));
+
+    assert(await svc(`select public.mark_system_answer_failed($1::uuid, $2)`,
+      [workId, "外部の呼び出しが時間切れ"]) === true, "失敗の印が付かない");
+
+    let j = await job(workId);
+    assert(j.status === "failed", `状態が ${j.status}（failed のはず）`);
+    assert(j.attempts === 1, `試行が ${j.attempts}（1のはず）`);
+    assert(j.last_error === "外部の呼び出しが時間切れ", `理由が ${j.last_error}`);
+
+    // 失敗のままでは取り出せない
+    const none = await asRole(db, SERVICE, async (c) =>
+      (await c.query(`select * from public.claim_system_answer_jobs(50)`)).rows);
+    assert(none.find((x) => x.work_id === workId) === undefined,
+      "失敗したままの仕事が取り出せてしまった");
+
+    assert(await svc(`select public.retry_system_answer_job($1::uuid)`, [workId]) === true,
+      "戻せていない");
+    j = await job(workId);
+    assert(j.status === "pending", `状態が ${j.status}（pending のはず）`);
+
+    const again = await asRole(db, SERVICE, async (c) =>
+      (await c.query(`select * from public.claim_system_answer_jobs(50)`)).rows);
+    const mine = again.find((x) => x.work_id === workId);
+    assert(mine !== undefined, "戻したのに取り出せない");
+    assert(mine.attempts === 2, `試行が ${mine.attempts}（2のはず）`);
+  });
+
+  await test("SQ", "O. 取り消した仕事は、取り出せないし戻せない", async () => {
+    const { workId } = await normalWork("sq-o", "待ち行列の検査O");
+    await svc(`select public.enqueue_system_answer($1::uuid)`, [workId]);
+
+    assert(await svc(`select public.cancel_system_answer_job($1::uuid, $2)`,
+      [workId, "検査で止めた"]) === true, "取り消せていない");
+    assert((await job(workId)).status === "cancelled", "取り消しになっていない");
+
+    assert(await svc(`select public.retry_system_answer_job($1::uuid)`, [workId]) === false,
+      "取り消した仕事を戻せてしまった");
+
+    const rows = await asRole(db, SERVICE, async (c) =>
+      (await c.query(`select * from public.claim_system_answer_jobs(50)`)).rows);
+    assert(rows.find((x) => x.work_id === workId) === undefined,
+      "取り消した仕事が取り出せてしまった");
+  });
+
+  await test("SQ", "P. 待ち行列の表は、利用者から1つも触れない", async () => {
+    const u = await makeMember(db, "sq-p");
+    for (const who of [ANON, asMember(u)]) {
+      for (const sql of [
+        `select * from public.system_answer_queue`,
+        `insert into public.system_answer_queue (work_id) values (gen_random_uuid())`,
+        `update public.system_answer_queue set status = 'completed'`,
+        `delete from public.system_answer_queue`,
+      ]) {
+        await expectFailure(() => value(db, who, sql), "permission denied");
+      }
+    }
+  });
+
+  await test("SQ", "Q. 積む・取り出す・保存する窓口は、利用者から呼べない", async () => {
+    const u = await makeMember(db, "sq-q");
+    const { workId } = await normalWork("sq-q-work", "待ち行列の検査Q");
+    for (const who of [ANON, asMember(u)]) {
+      for (const sql of [
+        `select public.enqueue_system_answer('${workId}'::uuid)`,
+        `select public.claim_system_answer_jobs(1)`,
+        `select public.save_system_answer('${workId}'::uuid, '[]'::jsonb)`,
+        `select public.mark_system_answer_failed('${workId}'::uuid, 'x')`,
+        `select public.cancel_system_answer_job('${workId}'::uuid, 'x')`,
+        `select public.retry_system_answer_job('${workId}'::uuid)`,
+        `select public.get_system_answer_job('${workId}'::uuid)`,
+      ]) {
+        await expectFailure(() => value(db, who, sql), "permission denied");
+      }
+    }
+  });
+
+  await test("SQ", "R. 正式な経路で入れても、出所は偽れず、あとから変えられない", async () => {
+    const { workId } = await normalWork("sq-r", "待ち行列の検査R");
+    await svc(`select public.save_system_answer($1::uuid, $2::jsonb)`,
+      [workId, JSON.stringify(await aiSelections(workId))]);
+
+    // 利用者は種別を書き換えられない（表への権限が無い）
+    const u = await makeMember(db, "sq-r-user");
+    await expectFailure(
+      () => value(db, asMember(u),
+        `update public.answers set answer_source = 'human' where work_id = '${workId}'`),
+      "permission denied",
+    );
+
+    // 所有者の立場でも、種別の書き換えは引き金が断る（Phase 1）
+    await expectFailure(
+      () => db.query(
+        `update public.answers set answer_source = 'human' where work_id = $1`, [workId]),
+      "ANSWER_SOURCE_IMMUTABLE",
+    );
+
+    // 種別に触らない更新は今までどおり通る
+    await db.query(`update public.answers set hint_used = hint_used where work_id = $1`,
+      [workId]);
+  });
+
+  await test("SQ", "S. 人間0・システム1 でも、人間から見た数字は動かない（Phase 1）", async () => {
+    const { workId } = await normalWork("sq-s", "待ち行列の検査S");
+    const before = await humanNumbers(workId);
+
+    const saved = await svc(`select public.save_system_answer($1::uuid, $2::jsonb)`,
+      [workId, JSON.stringify(await aiSelections(workId, { correct: true }))]);
+    assert(saved === true, "保存できていない");
+
+    const after = await humanNumbers(workId);
+    assert(JSON.stringify(before) === JSON.stringify(after),
+      `数字が動いた: ${JSON.stringify(before)} → ${JSON.stringify(after)}`);
+    assert(after.answers_count === 0, `回答数が ${after.answers_count}（0のはず）`);
+    assert(after.band === 1, `band が ${after.band}（1のはず）`);
+
+    // 配給でも band1 のまま出る
+    const cand = await value(db, asMember(await makeMember(db, "sq-s-picker")),
+      `select jsonb_agg(jsonb_build_object('w', work_id, 'b', band))
+         from public.next_work_candidates(null)`);
+    const row = (cand ?? []).find((x) => x.w === workId);
+    assert(row !== undefined, "配給の候補に出てこない");
+    assert(row.b === 1, `配給の band が ${row.b}（1のはず）`);
+
+    // 作者へ返る集計にも出ない
+    const author = (await db.query(
+      `select user_id from public.works where id = $1`, [workId])).rows[0].user_id;
+    const res = await value(db, asMember(author),
+      `select public.get_my_work_result($1::uuid)`, [workId]);
+    assert(res.answers_count === 0, `作者へ返る回答数が ${res.answers_count}（0のはず）`);
+    assert(res.total_items === 0, `作者へ返る問数が ${res.total_items}（0のはず）`);
+
+    // 公開の回答履歴にも出ない（そもそも答えた人が居ない）
+    const pub = await db.query(
+      `select count(*)::int n from public.answers
+        where work_id = $1 and answer_source = 'human'`, [workId]);
+    assert(pub.rows[0].n === 0, "人間の回答があることになっている");
+  });
+
+  await test("SQ", "T. 人間1が先、そのあとシステムを試すと band2 のまま人間1件だけ", async () => {
+    const { workId } = await normalWork("sq-t", "待ち行列の検査T");
+    const viewer = await makeMember(db, "sq-t-viewer");
+    await answerWork(db, viewer, workId, { correct: true });
+    const onlyHuman = await humanNumbers(workId);
+
+    await svc(`select public.enqueue_system_answer($1::uuid)`, [workId]);
+    const saved = await svc(`select public.save_system_answer($1::uuid, $2::jsonb)`,
+      [workId, JSON.stringify(await aiSelections(workId))]);
+    assert(saved === false, "人間が先なのに保存された");
+
+    const after = await humanNumbers(workId);
+    assert(JSON.stringify(onlyHuman) === JSON.stringify(after),
+      `数字が動いた: ${JSON.stringify(onlyHuman)} → ${JSON.stringify(after)}`);
+    assert(after.answers_count === 1, `回答数が ${after.answers_count}（1のはず）`);
+    assert(after.band === 2, `band が ${after.band}（2のはず）`);
+  });
+
+  await test("SQ", "U. 作品を本当に消すと、待ち行列の行も一緒に消える", async () => {
+    const { workId } = await normalWork("sq-u", "待ち行列の検査U");
+    await svc(`select public.enqueue_system_answer($1::uuid)`, [workId]);
+    assert(await job(workId) !== null, "積めていない");
+
+    // 所有者として作品ごと消す（管理の hard delete に当たる）
+    await db.query(`delete from public.works where id = $1`, [workId]);
+
+    const n = await db.query(
+      `select count(*)::int n from public.system_answer_queue where work_id = $1`, [workId]);
+    assert(n.rows[0].n === 0, `待ち行列の行が ${n.rows[0].n} 件残っている`);
+  });
+
+  // =========================================================================
+  // SC. システム回答を、作者向けの分析と取り込み枠から外す（D196）
+  //
+  //   Phase 1 で「人間の回答だけが数字を動かす」ようにしたあとで入った
+  //   分析（P2〜P3）と取り込み枠（P4）は、回答の出所を知らなかった。
+  //   20260912130000（D196）がそこへ絞り込みを足した。ここではそれを確かめる。
+  //   出所: ユーザー指示（2026-09-11）「システム回答は：作者向け分析に含めない／
+  //   取り込み枠を消費しない」
+  // =========================================================================
+
+  /** 取り込みまわりの副作用を、作品ごとに数える */
+  async function importSideEffects(workId) {
+    const r = await db.query(
+      `select (select count(*)::int from public.analysis_imports where work_id = $1) as imports,
+              (select count(*)::int from public.capacity_notifications where work_id = $1) as notices,
+              (select count(*)::int from public.work_capacity_grants where work_id = $1) as grants,
+              public.work_remaining_capacity($1) as remaining`,
+      [workId],
+    );
+    return r.rows[0];
+  }
+
+  /** 全体の数字（回答者の成績と順位）を読む */
+  async function globalNumbers() {
+    const us = await db.query(
+      `select coalesce(jsonb_agg(to_jsonb(t) - 'updated_at' order by to_jsonb(t)::text),
+                       '[]'::jsonb) as j
+         from public.user_stats t`);
+    const uss = await db.query(
+      `select coalesce(jsonb_agg(to_jsonb(t) - 'updated_at' order by to_jsonb(t)::text),
+                       '[]'::jsonb) as j
+         from public.user_slot_stats t`);
+    const rk = await value(db, ANON,
+      `select coalesce(jsonb_agg(r), '[]'::jsonb)
+         from public.get_rankings('accuracy', 'normal', null, 50, 0) r`);
+    const pop = await value(db, ANON,
+      `select coalesce(jsonb_agg(r), '[]'::jsonb)
+         from public.get_rankings('popular', 'normal', null, 50, 0) r`);
+    return { user_stats: us.rows[0].j, user_slot_stats: uss.rows[0].j, accuracy: rk, popular: pop };
+  }
+
+  /** 作品の枠ごとの集計を、行ごとそのまま読む（ビタ当て・2択当ての内訳を含む） */
+  async function slotRows(workId) {
+    const r = await db.query(
+      `select coalesce(jsonb_agg(to_jsonb(t) - 'updated_at' order by t.card_slot_key),
+                       '[]'::jsonb) as j
+         from public.work_slot_stats t where t.work_id = $1`, [workId]);
+    return r.rows[0].j;
+  }
+
+  /** 別の人から見た、その作品の配給の band */
+  async function bandFor(workId, handle) {
+    const picker = await makeMember(db, handle);
+    return value(db, asMember(picker),
+      `select (select band from public.next_work_candidates(null) where work_id = $1)`,
+      [workId]);
+  }
+
+  /** 回答の行を出所ごとに数える */
+  async function answerRows(workId) {
+    const r = await db.query(
+      `select answer_source, count(*)::int n from public.answers
+        where work_id = $1 group by answer_source`, [workId]);
+    return Object.fromEntries(r.rows.map((x) => [x.answer_source, x.n]));
+  }
+
+  /** 枠を10足し、自動取り込みを入れた作品を用意する */
+  async function workWithAutoImport(handle, title) {
+    const w = await normalWork(handle, title);
+    await grant(db, w.workId, 10);
+    await value(db, asMember(w.userId), `select public.set_auto_import($1, true)`, [w.workId]);
+    return w;
+  }
+
+  const saveSystem = async (workId) =>
+    svc(`select public.save_system_answer($1::uuid, $2::jsonb)`,
+      [workId, JSON.stringify(await aiSelections(workId, { correct: true }))]);
+
+  const same = (a, b) => JSON.stringify(a) === JSON.stringify(b);
+
+  await test("SC", "A. 人間0・システム1: 数字・順位・配給・取り込み枠・分析のどれも動かない", async () => {
+    const { userId: author, workId } = await workWithAutoImport("sc-a", "互換の検査A");
+    const numbers0 = await humanNumbers(workId);
+    const slots0 = await slotRows(workId);
+    const global0 = await globalNumbers();
+    const side0 = await importSideEffects(workId);
+
+    assert(await saveSystem(workId) === true, "システム回答が保存できていない");
+    const rows = await answerRows(workId);
+    assert(rows.system === 1 && !rows.human, `回答の行が ${JSON.stringify(rows)}`);
+
+    // 回答数・枠ごとの集計（ビタ当て・2択当ての内訳）・ヒント別の集計
+    const numbers1 = await humanNumbers(workId);
+    assert(same(numbers0, numbers1),
+      `作品の数字が動いた: ${JSON.stringify(numbers0)} → ${JSON.stringify(numbers1)}`);
+    assert(numbers1.answers_count === 0, `回答数が ${numbers1.answers_count}`);
+    assert(numbers1.hint_answers === 0, `ヒント別の集計が ${numbers1.hint_answers}`);
+    assert(same(slots0, await slotRows(workId)), "枠ごとの集計が動いた");
+
+    // 回答者の成績と順位
+    assert(same(global0, await globalNumbers()), "回答者の成績か順位が動いた");
+
+    // 配給（D169）
+    const band = await bandFor(workId, "sc-a-picker");
+    assert(band === 1, `配給の band が ${band}（1のはず）`);
+
+    // 取り込み枠: 減らない・取り込まれない・残量の知らせも増えない
+    const side1 = await importSideEffects(workId);
+    assert(same(side0, side1),
+      `取り込みの副作用が出た: ${JSON.stringify(side0)} → ${JSON.stringify(side1)}`);
+    assert(side1.imports === 0 && side1.remaining === 10, `枠が ${JSON.stringify(side1)}`);
+
+    const st = await importState(db, author, workId);
+    assert(st.answers_total === 0, `枠の画面の回答数が ${st.answers_total}`);
+    assert(st.unimported === 0, `未取り込みが ${st.unimported}`);
+    assert(st.oldest_unimported_at === null, "未取り込みの最古が入っている");
+
+    // 作者向けの分析・掘り下げ・回答一覧
+    const an = await authorView(db, author, workId);
+    assert(an.answers_count === 0, `分析の母数が ${an.answers_count}`);
+    assert(an.advanced_count === 0, `高度分析の対象が ${an.advanced_count}`);
+    const dr = await drill(db, author, workId, null, []);
+    assert(dr.not_imported === true, "掘り下げの母集団にシステム回答が入っている");
+    const list = await value(db, asMember(author),
+      `select public.get_work_answer_list($1)`, [workId]);
+    assert(list.total === 0 && list.answers.length === 0, `回答一覧が ${list.total}件`);
+
+    // 作者へ返る結果
+    const res = await value(db, asMember(author),
+      `select public.get_my_work_result($1::uuid)`, [workId]);
+    assert(res.answers_count === 0, `作者へ返る回答数が ${res.answers_count}`);
+  });
+
+  await test("SC", "B. 人間1が先: システムは作られず、取り込みと分析は人間の1件だけ", async () => {
+    const { userId: author, workId } = await workWithAutoImport("sc-b", "互換の検査B");
+    const viewer = await makeMember(db, "sc-b-viewer");
+    await answerWork(db, viewer, workId, { correct: true });
+    const side0 = await importSideEffects(workId);
+    assert(side0.imports === 1 && side0.remaining === 9,
+      `人間の回答が今までどおり自動で取り込まれていない: ${JSON.stringify(side0)}`);
+
+    await svc(`select public.enqueue_system_answer($1::uuid)`, [workId]);
+    assert(await saveSystem(workId) === false, "人間が先なのに保存された");
+
+    const rows = await answerRows(workId);
+    assert(rows.human === 1 && !rows.system, `回答の行が ${JSON.stringify(rows)}`);
+    assert(same(side0, await importSideEffects(workId)), "システムを試しただけで枠が動いた");
+
+    const band = await bandFor(workId, "sc-b-picker");
+    assert(band === 2, `配給の band が ${band}（2のはず）`);
+    const an = await authorView(db, author, workId);
+    assert(an.answers_count === 1 && an.advanced_count === 1,
+      `分析が ${an.answers_count} / ${an.advanced_count}（1 / 1 のはず）`);
+    const list = await value(db, asMember(author),
+      `select public.get_work_answer_list($1)`, [workId]);
+    assert(list.total === 1, `回答一覧が ${list.total}件`);
+  });
+
+  await test("SC", "C. システム1のあとに人間1: 表には2行、数字・分析・枠は人間の1件だけ", async () => {
+    const { userId: author, workId } = await workWithAutoImport("sc-c", "互換の検査C");
+    assert(await saveSystem(workId) === true, "システム回答が保存できていない");
+    const side0 = await importSideEffects(workId);
+    assert(side0.imports === 0 && side0.remaining === 10, `枠が ${JSON.stringify(side0)}`);
+    const band0 = await bandFor(workId, "sc-c-picker-1");
+    assert(band0 === 1, `人間が答える前の band が ${band0}（1のはず）`);
+
+    // 後から人間が答えられる（人間の1人1回と、システムの1作品1回は別の制約）
+    const viewer = await makeMember(db, "sc-c-viewer");
+    await answerWork(db, viewer, workId, { correct: true });
+    const rows = await answerRows(workId);
+    assert(rows.system === 1 && rows.human === 1, `回答の行が ${JSON.stringify(rows)}`);
+
+    const n = await humanNumbers(workId);
+    assert(n.answers_count === 1 && n.band === 2, `数字が ${JSON.stringify(n)}`);
+    const band1 = await bandFor(workId, "sc-c-picker-2");
+    assert(band1 === 2, `人間が答えたあとの band が ${band1}（2のはず）`);
+
+    // 枠を使ったのは人間の1件だけ。取り込まれたのも人間の回答
+    const side1 = await importSideEffects(workId);
+    assert(side1.imports === 1 && side1.remaining === 9, `枠が ${JSON.stringify(side1)}`);
+    const imported = await db.query(
+      `select a.answer_source from public.analysis_imports i
+         join public.answers a on a.id = i.answer_id where i.work_id = $1`, [workId]);
+    assert(imported.rows.length === 1 && imported.rows[0].answer_source === "human",
+      `取り込まれたのが ${JSON.stringify(imported.rows)}`);
+
+    const st = await importState(db, author, workId);
+    assert(st.answers_total === 1 && st.unimported === 0 && st.imported === 1,
+      `枠の画面が ${st.answers_total} / ${st.unimported} / ${st.imported}`);
+    const an = await authorView(db, author, workId);
+    assert(an.answers_count === 1 && an.advanced_count === 1,
+      `分析が ${an.answers_count} / ${an.advanced_count}（1 / 1 のはず）`);
+    const dr = await drill(db, author, workId, null, []);
+    assert(dr.not_imported === false, "人間の回答を取り込んだのに掘り下げが始まらない");
+    const list = await value(db, asMember(author),
+      `select public.get_work_answer_list($1)`, [workId]);
+    assert(list.total === 1 && list.answers[0].no === 1 && list.answers[0].is_imported === true,
+      `回答一覧が ${JSON.stringify(list.answers)}`);
+
+    // 答えた本人に返る集計も、自分以外の「人」にシステムを数えない
+    const mine = await answererView(db, viewer, workId);
+    assert(mine.answers_count === 1 && mine.others_count === 0,
+      `本人の集計が ${mine.answers_count} / ${mine.others_count}（1 / 0 のはず）`);
+    const res = await value(db, asMember(author),
+      `select public.get_my_work_result($1::uuid)`, [workId]);
+    assert(res.answers_count === 1, `作者へ返る回答数が ${res.answers_count}`);
+  });
+
+  await test("SC", "D. システム回答には番号が無く、分析から外す操作では指定できない", async () => {
+    const { userId: author, workId } = await normalWork("sc-d", "互換の検査D");
+    assert(await saveSystem(workId) === true, "システム回答が保存できていない");
+    const viewer = await makeMember(db, "sc-d-viewer");
+    await answerWork(db, viewer, workId, { correct: true });
+
+    // 人間は1人なので番号は1だけ。2を指すと、今までどおり「見つからない」で断る
+    await expectFailure(
+      () => value(db, asMember(author),
+        `select public.set_answer_excluded($1, $2::int[], true)`, [workId, "{2}"]),
+      "ANSWER_NOT_FOUND",
+    );
+    const done = await value(db, asMember(author),
+      `select public.set_answer_excluded($1, $2::int[], true)`, [workId, "{1}"]);
+    assert(done.changed === 1, `外した数が ${done.changed}`);
+    const ex = await db.query(
+      `select a.answer_source from public.analysis_exclusions x
+         join public.answers a on a.id = x.answer_id where x.work_id = $1`, [workId]);
+    assert(ex.rows.length === 1 && ex.rows[0].answer_source === "human",
+      `外した印が ${JSON.stringify(ex.rows)}`);
+  });
+
+  await test("SC", "E. 手で取り込んでも、システム回答は取り込まれず枠も使わない", async () => {
+    const { userId: author, workId } = await normalWork("sc-e", "互換の検査E");
+    await grant(db, workId, 10);
+    assert(await saveSystem(workId) === true, "システム回答が保存できていない");
+
+    let r = await importAll(db, author, workId);
+    assert(r.imported_now === 0 && r.remaining === 10, `取り込みが ${JSON.stringify(r)}`);
+
+    const viewer = await makeMember(db, "sc-e-viewer");
+    await answerWork(db, viewer, workId, { correct: true });
+    r = await importAll(db, author, workId);
+    assert(r.imported_now === 1 && r.remaining === 9, `人間の取り込みが ${JSON.stringify(r)}`);
+    r = await importAll(db, author, workId);
+    assert(r.imported_now === 0 && r.remaining === 9, `2回目の取り込みが ${JSON.stringify(r)}`);
+  });
+
+  // ── 人間だけの作品は、互換 migration の前と後で何も変わらない ──────────
+  //
+  //   互換 migration の直前までを当てたDBと、全部を当てたDBを作り、
+  //   同じ乱数の種で同じ手順を踏む。F は同じ中身のDBへ後から当てたときの比較、
+  //   G は「当てたあとで同じ操作をしたとき」の比較。
+  const COMPAT_FROM = "20260912130000";
+
+  /** 人間だけの作品を1つ育てる（枠3で自動取り込みが止まり、1件は手で取り込む） */
+  async function humanOnlyScenario(d) {
+    await d.query(`select setseed(0.42)`);
+    const author = await makeMember(d, "ho-author");
+    const { prompt_id: promptId } = await drawPrompt(d, author, { timeLimit: 3600 });
+    const workId = await postWork(d, author, promptId, "人間だけの作品");
+    await grant(d, workId, 3);
+    await value(d, asMember(author), `select public.set_auto_import($1, true)`, [workId]);
+    const viewers = [];
+    for (const [i, style] of [{ correct: true }, { wrong: true }, {}, { correct: true }].entries()) {
+      const v = await makeMember(d, `ho-viewer-${i}`);
+      viewers.push(v);
+      await answerWork(d, v, workId, style);
+    }
+    await value(d, asMember(author),
+      `select public.set_answer_excluded($1, $2::int[], true)`, [workId, "{2}"]);
+    await grant(d, workId, 5);
+    await importAll(d, author, workId);
+    const picker = await makeMember(d, "ho-picker");
+    return { author, workId, viewers, picker };
+  }
+
+  /** 人間の回答を母集団にする読み取りを、全部まとめて読む */
+  async function humanOnlySnapshot(d, s) {
+    const j = async (sql, params) => (await d.query(sql, params)).rows[0].j;
+    const author = asMember(s.author);
+    const viewer = asMember(s.viewers[0]);
+    return {
+      answers_count: await j(
+        `select w.answers_count as j from public.works w where w.id = $1`, [s.workId]),
+      slot_stats: await j(
+        `select coalesce(jsonb_agg(to_jsonb(t) - 'work_id' - 'updated_at'
+                  order by (to_jsonb(t) - 'work_id' - 'user_id' - 'updated_at')::text),
+                  '[]'::jsonb) as j
+           from public.work_slot_stats t where t.work_id = $1`, [s.workId]),
+      hint_stats: await j(
+        `select coalesce(jsonb_agg(to_jsonb(t) - 'work_id' - 'updated_at'
+                  order by (to_jsonb(t) - 'work_id' - 'user_id' - 'updated_at')::text),
+                  '[]'::jsonb) as j
+           from public.work_hint_stats t where t.work_id = $1`, [s.workId]),
+      user_stats: await j(
+        `select coalesce(jsonb_agg(to_jsonb(t) - 'user_id' - 'updated_at'
+                  order by (to_jsonb(t) - 'work_id' - 'user_id' - 'updated_at')::text),
+                  '[]'::jsonb) as j
+           from public.user_stats t where t.user_id = any ($1::uuid[])`, [s.viewers]),
+      user_slot_stats: await j(
+        `select coalesce(jsonb_agg(to_jsonb(t) - 'user_id' - 'updated_at'
+                  order by (to_jsonb(t) - 'work_id' - 'user_id' - 'updated_at')::text),
+                  '[]'::jsonb) as j
+           from public.user_slot_stats t where t.user_id = any ($1::uuid[])`, [s.viewers]),
+      imports: await j(
+        `select count(*)::int as j from public.analysis_imports where work_id = $1`, [s.workId]),
+      exclusions: await j(
+        `select count(*)::int as j from public.analysis_exclusions where work_id = $1`,
+        [s.workId]),
+      author_analysis: await value(d, author,
+        `select public.get_work_answer_analysis($1)`, [s.workId]),
+      drilldown: await value(d, author,
+        `select public.get_work_drilldown($1, null, '[]'::jsonb)`, [s.workId]),
+      answer_list: await value(d, author,
+        `select public.get_work_answer_list($1)`, [s.workId]),
+      import_state: await value(d, author,
+        `select public.get_work_import_state($1)`, [s.workId]),
+      work_result: await value(d, author,
+        `select public.get_my_work_result($1::uuid)`, [s.workId]),
+      answerer_analysis: await value(d, viewer,
+        `select public.get_my_answer_analysis($1)`, [s.workId]),
+      my_answers: await value(d, viewer,
+        `select coalesce(jsonb_agg(r), '[]'::jsonb) from public.get_my_answers(50, 0) r`),
+      public_answers: await value(d, ANON,
+        `select coalesce(jsonb_agg(r), '[]'::jsonb)
+           from public.get_public_answers($1::uuid, 50, 0) r`, [s.viewers[0]]),
+      band: await value(d, asMember(s.picker),
+        `select (select band from public.next_work_candidates(null) where work_id = $1)`,
+        [s.workId]),
+      ranking_accuracy: await value(d, ANON,
+        `select coalesce(jsonb_agg(r), '[]'::jsonb)
+           from public.get_rankings('accuracy', 'normal', null, 50, 0) r`),
+      ranking_popular: await value(d, ANON,
+        `select coalesce(jsonb_agg(r), '[]'::jsonb)
+           from public.get_rankings('popular', 'normal', null, 50, 0) r`),
+    };
+  }
+
+  /** 別のDBどうしで比べるため、そのDBでしか意味を持たない値だけを伏せる */
+  //   uuid は文字列の途中にも入る（画像のパスは「作者の id / 作品の id.png」）
+  const UUID_RE = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/gi;
+  const TIME_RE = /^\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}/;
+  const blindIds = (x) => JSON.parse(JSON.stringify(x, (k, v) => {
+    if (typeof v !== "string") return v;
+    if (TIME_RE.test(v)) return "<time>";
+    return v.replace(UUID_RE, "<uuid>");
+  }));
+
+  let beforeSnapshot = null;
+
+  await test("SC", "F. 人間だけの作品: 互換 migration を後から当てても、読める数字が1つも変わらない", async () => {
+    const d = await createTestDb({ before: COMPAT_FROM });
+    try {
+      const s = await humanOnlyScenario(d);
+      beforeSnapshot = await humanOnlySnapshot(d, s);
+      assert(beforeSnapshot.imports === 4, `取り込みが ${beforeSnapshot.imports}件（4件のはず）`);
+      assert(beforeSnapshot.exclusions === 1, `外した回答が ${beforeSnapshot.exclusions}件`);
+
+      const applied = await applyMigrations(d, { from: COMPAT_FROM });
+      assert(applied.length === 1, `後から当てた migration が ${applied.length}本（1本のはず）`);
+
+      const after = await humanOnlySnapshot(d, s);
+      for (const k of Object.keys(beforeSnapshot)) {
+        assert(same(beforeSnapshot[k], after[k]),
+          `${k} が変わった: ${JSON.stringify(beforeSnapshot[k])} → ${JSON.stringify(after[k])}`);
+      }
+    } finally {
+      await d.close();
+    }
+  });
+
+  await test("SC", "G. 人間だけの作品: 同じ操作を互換の前と後で踏むと、取り込み・除外・集計・順位・履歴・配給が一致する", async () => {
+    assert(beforeSnapshot !== null, "F が前の状態を読めていない");
+    const d = await createTestDb();
+    try {
+      const s = await humanOnlyScenario(d);
+      const after = blindIds(await humanOnlySnapshot(d, s));
+      const before = blindIds(beforeSnapshot);
+      for (const k of Object.keys(before)) {
+        assert(same(before[k], after[k]),
+          `${k} が違う: ${JSON.stringify(before[k])} → ${JSON.stringify(after[k])}`);
+      }
+    } finally {
+      await d.close();
+    }
+  });
 }
 
 // ===========================================================================
