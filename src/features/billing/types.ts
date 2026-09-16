@@ -149,3 +149,22 @@ export function purchaseStatusText(status: PurchaseStatus): string {
       return "お支払いが取り消されました";
   }
 }
+
+/**
+ * 課金の migration がまだ当たっていない DB から返るエラーか。
+ *
+ * 【なぜ要るか】
+ *   課金のコードは、課金の migration より先に本番へ出ることがある
+ *   （2026-09-17 に main へ取り込んだ時点で、本番の DB には課金の関数が無い）。
+ *   そのとき PostgREST は関数を見つけられず、HTTP 404・コード PGRST202 を返す
+ *   （2026-09-17 に本番へ読むだけの呼び出しをして実測）。
+ *
+ *   /founder と /tokushoho は「商品が読めない＝準備中」を出す分岐を持っているが、
+ *   読み出しがこのエラーで例外を投げると、その分岐へ届かずエラー画面になる。
+ *
+ * 【これ以外のエラーは握りつぶさない】
+ *   見るのは PGRST202 だけ。権限の拒否や通信の失敗は、今までどおり例外にする。
+ */
+export function isBillingNotInstalled(error: { code?: string | null } | null | undefined): boolean {
+  return error?.code === "PGRST202";
+}

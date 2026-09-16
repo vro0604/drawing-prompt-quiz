@@ -98,7 +98,7 @@ import {
   toStripeForm,
   verifyStripeSignature,
 } from "../../src/features/billing/signature.ts";
-import { STRIPE_API_VERSION } from "../../src/features/billing/types.ts";
+import { STRIPE_API_VERSION, isBillingNotInstalled } from "../../src/features/billing/types.ts";
 import { recordCount } from "../counts.mjs";
 
 const results = [];
@@ -1195,6 +1195,17 @@ test("課金", "知らせから、Stripe が使った API の版を取り出せ�
     JSON.stringify({ id: "evt_n", type: "checkout.session.completed", data: { object: {} } }),
   );
   assert(without.apiVersion === null, "版が無いときに null になっていない");
+});
+
+
+test("課金", "DB に課金の関数がまだ無いときのエラー（PGRST202）だけを『未導入』と見なす", () => {
+  // 2026-09-17 に本番で実測した形。課金の migration より先にコードが出ると、これが返る
+  assert(isBillingNotInstalled({ code: "PGRST202" }) === true, "PGRST202 を未導入と見なさなかった");
+  // 権限の拒否・関数の中の例外・通信の失敗は、握りつぶさずに例外のまま扱う
+  for (const code of ["42501", "P0001", "PGRST301", "", null, undefined]) {
+    assert(isBillingNotInstalled({ code }) === false, `${String(code)} を未導入と見なした`);
+  }
+  assert(isBillingNotInstalled(null) === false, "エラーが無いのに未導入と見なした");
 });
 
 

@@ -2,6 +2,7 @@ import { createSupabaseAdminClient } from "@/lib/supabase/admin";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
 import {
   FOUNDER_OFFER_CODE,
+  isBillingNotInstalled,
   type FounderBadge,
   type FounderOfferStatus,
   type FounderRow,
@@ -167,6 +168,8 @@ export async function fetchFounderOfferStatus(
     p_offer_code: offerCode,
   });
 
+  // 課金の migration がまだ無い DB では「商品が無い」として扱い、画面の準備中へ回す
+  if (isBillingNotInstalled(error)) return null;
   if (error) fail(error.message);
   return (data as FounderOfferStatus | null) ?? null;
 }
@@ -178,6 +181,8 @@ export async function fetchFounderList(
   const supabase = await createSupabaseServerClient();
   const { data, error } = await supabase.rpc("list_founders", { p_offer_code: offerCode });
 
+  // 課金の migration がまだ無い DB では、誰も買っていない一覧として出す
+  if (isBillingNotInstalled(error)) return [];
   if (error) fail(error.message);
   return (data as FounderRow[] | null) ?? [];
 }
