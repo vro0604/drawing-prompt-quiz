@@ -29,7 +29,7 @@
  *   3 = 接続・実行の失敗
  *
  * 【期待値の出どころ】
- *   scripts/landing-d194-expected.json。本番と同じ60本を当てた使い捨ての
+ *   scripts/landing-d194-expected.json。本番の履歴と同じ順で本番と同じ本数を当てた使い捨ての
  *   PostgreSQL 17.6（本番と同じ UTF8 / ICU）へ3本を1本ずつ当て、そのたびに
  *   部品の一覧を取ったもの。作り方は docs/landing-d194-d196.md の「再現試験」。
  */
@@ -370,7 +370,7 @@ export async function evaluate(client, stage, expected, before, now) {
   // 部品と権限
   if (stage === "pre") {
     const bad = Object.entries(expected.pre).filter(([k, v]) => (now.catalog[k] ?? null) !== v);
-    add("当てる3本が触る部品が、使い捨てDB（本番と同じ60本）と同じ定義・同じ権限",
+    add("当てる3本が触る部品が、使い捨てDB（本番の履歴と同じ順・同じ本数）と同じ定義・同じ権限",
       bad.length === 0, bad.slice(0, 8).map(([k]) => k).join(", "));
   } else {
     const d = diffCatalog(before.catalog, now.catalog);
