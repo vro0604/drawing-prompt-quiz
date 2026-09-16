@@ -9590,6 +9590,9 @@ async function main() {
   //   同じ乱数の種で同じ手順を踏む。F は同じ中身のDBへ後から当てたときの比較、
   //   G は「当てたあとで同じ操作をしたとき」の比較。
   const COMPAT_FROM = "20260912130000";
+  // 互換 migration の「次の版」より前まで。後ろに別の作業線の migration
+  // （20260914120000 の時計など）が並んでも、当てるのは互換の1本だけにする
+  const COMPAT_UNTIL = "20260912130001";
 
   /** 人間だけの作品を1つ育てる（枠3で自動取り込みが止まり、1件は手で取り込む） */
   async function humanOnlyScenario(d) {
@@ -9695,7 +9698,7 @@ async function main() {
       assert(beforeSnapshot.imports === 4, `取り込みが ${beforeSnapshot.imports}件（4件のはず）`);
       assert(beforeSnapshot.exclusions === 1, `外した回答が ${beforeSnapshot.exclusions}件`);
 
-      const applied = await applyMigrations(d, { from: COMPAT_FROM });
+      const applied = await applyMigrations(d, { from: COMPAT_FROM, before: COMPAT_UNTIL });
       assert(applied.length === 1, `後から当てた migration が ${applied.length}本（1本のはず）`);
 
       const after = await humanOnlySnapshot(d, s);
