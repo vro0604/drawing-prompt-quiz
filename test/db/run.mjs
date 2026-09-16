@@ -10641,6 +10641,135 @@ async function main() {
       await d.close();
     }
   });
+
+  // =========================================================================
+  // SU. 運営の利用状況は、人の回答と仕組みの回答を分けて数える（D202）
+  //
+  //   answer_completed        … 人の回答（answer_source = 'human'）だけ
+  //   answer_completed_system … 仕組みの回答（answer_source = 'system'）だけ
+  //
+  //   数は期間内の全体を数えるので、ほかの試験の回答が混ざらないよう
+  //   試験ごとに新しいDBを作る。仕組みの回答は、SY 群と同じく表へ直接置く
+  //   （アプリにこの経路は無い。検査の立場でだけできること）。
+  // =========================================================================
+
+  const USAGE_FROM = "20260916120000";
+  const USAGE_UNTIL = "20260916120001";
+
+  const usageOf = (d) => value(d, { role: "service_role", uid: null },
+    `select public.get_usage_summary(30)`);
+
+  /** 仕組みの回答を1件そのまま置く（持ち主なし・1作品に1件まで） */
+  async function putSystemAnswerIn(d, workId) {
+    const n = await d.query(
+      `select count(*)::int as n from public.quiz_questions q
+         join public.works w on w.prompt_id = q.prompt_id where w.id = $1`, [workId]);
+    await d.query(
+      `insert into public.answers
+         (work_id, user_id, correct_count, hint_used, question_count,
+          exact_attempts, exact_corrects, pair_attempts, pair_corrects,
+          scoring_version, answer_source)
+       values ($1, null, 0, false, $2, $2, 0, 0, 0, 'v2_all_words', 'system')`,
+      [workId, n.rows[0].n]);
+  }
+
+  /** 作者1人が作品を1つ出す */
+  async function usageWork(d, tag) {
+    const author = await makeMember(d, `us-author-${tag}`);
+    const { prompt_id: promptId } = await drawPrompt(d, author, { timeLimit: 3600 });
+    const workId = await postWork(d, author, promptId, `利用状況の作品 ${tag}`);
+    return { author, workId };
+  }
+
+  await test("SU", "A. 人1・仕組み0 → answer_completed 1 / answer_completed_system 0", async () => {
+    const d = await createTestDb();
+    try {
+      const { workId } = await usageWork(d, "a");
+      await answerWork(d, await makeMember(d, "us-viewer-a"), workId, { correct: true });
+      const u = await usageOf(d);
+      assert(u.answer_completed === 1, `answer_completed が ${u.answer_completed}`);
+      assert(u.answer_completed_system === 0, `answer_completed_system が ${u.answer_completed_system}`);
+    } finally {
+      await d.close();
+    }
+  });
+
+  await test("SU", "B. 人0・仕組み1 → answer_completed 0 / answer_completed_system 1", async () => {
+    const d = await createTestDb();
+    try {
+      const { workId } = await usageWork(d, "b");
+      await putSystemAnswerIn(d, workId);
+      const u = await usageOf(d);
+      assert(u.answer_completed === 0, `answer_completed が ${u.answer_completed}`);
+      assert(u.answer_completed_system === 1, `answer_completed_system が ${u.answer_completed_system}`);
+    } finally {
+      await d.close();
+    }
+  });
+
+  await test("SU", "C・D. 人1・仕組み1 → 1 / 1。仕組みの回答を足しても、人の側の数は1つも変わらない", async () => {
+    const d = await createTestDb();
+    try {
+      const { author, workId } = await usageWork(d, "cd");
+      await answerWork(d, await makeMember(d, "us-viewer-cd"), workId, { correct: true });
+      await value(d, asMember(author), `select public.record_usage_event('share_opened', null)`);
+      const before = await usageOf(d);
+
+      await putSystemAnswerIn(d, workId);
+      const after = await usageOf(d);
+      assert(after.answer_completed === 1, `answer_completed が ${after.answer_completed}`);
+      assert(after.answer_completed_system === 1, `answer_completed_system が ${after.answer_completed_system}`);
+      for (const k of Object.keys(before)) {
+        if (k === "answer_completed_system") continue;
+        assert(same(before[k], after[k]), `${k} が ${before[k]} → ${after[k]}`);
+      }
+      assert(before.answer_completed_system === 0 && after.answer_completed_system === 1,
+        "仕組みの側だけが 0 → 1 になるはず");
+    } finally {
+      await d.close();
+    }
+  });
+
+  await test("SU", "E. 人だけのデータでは、差し替える前の値と後の answer_completed が一致する（仕組みは0）", async () => {
+    const d = await createTestDb({ before: USAGE_FROM });
+    try {
+      const { author, workId } = await usageWork(d, "e");
+      for (const [i, style] of [{ correct: true }, { wrong: true }, {}].entries()) {
+        await answerWork(d, await makeMember(d, `us-viewer-e${i}`), workId, style);
+      }
+      await value(d, asMember(author), `select public.record_usage_event('share_opened', null)`);
+      const old = await usageOf(d);
+      assert(!("answer_completed_system" in old), "差し替える前から answer_completed_system がある");
+      assert(old.answer_completed === 3, `前の answer_completed が ${old.answer_completed}`);
+
+      const applied = await applyMigrations(d, { from: USAGE_FROM, before: USAGE_UNTIL });
+      assert(applied.length === 1, `後から当てた migration が ${applied.length}本（1本のはず）`);
+
+      const now = await usageOf(d);
+      for (const k of Object.keys(old)) {
+        assert(same(old[k], now[k]), `${k} が ${old[k]} → ${now[k]}`);
+      }
+      assert(now.answer_completed_system === 0, `answer_completed_system が ${now.answer_completed_system}`);
+      const extra = Object.keys(now).filter((k) => !(k in old));
+      assert(extra.length === 1 && extra[0] === "answer_completed_system",
+        `増えた鍵が ${extra.join(", ")}`);
+    } finally {
+      await d.close();
+    }
+  });
+
+  await test("SU", "守りは変わらない: anon と authenticated は呼べず、service_role だけが呼べる", async () => {
+    const u = await makeMember(db, "us-priv");
+    await expectFailure(() => value(db, ANON, `select public.get_usage_summary(30)`), "permission denied");
+    await expectFailure(() => value(db, asMember(u), `select public.get_usage_summary(30)`), "permission denied");
+    const r = await db.query(
+      `select p.prosecdef, p.proconfig, pg_get_function_result(p.oid) as res
+         from pg_proc p where p.oid = 'public.get_usage_summary(int)'::regprocedure`);
+    assert(r.rows[0].prosecdef === true, "security definer でない");
+    assert(JSON.stringify(r.rows[0].proconfig) === JSON.stringify(['search_path=""']),
+      `search_path が ${JSON.stringify(r.rows[0].proconfig)}`);
+    assert(r.rows[0].res === "jsonb", `戻り値が ${r.rows[0].res}`);
+  });
 }
 
 // ===========================================================================

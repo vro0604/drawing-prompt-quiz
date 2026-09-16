@@ -3317,6 +3317,18 @@ export const diagnostics = [
              and p.prosrc not like '%answer_source%'`,
   },
   {
+    // 運営の利用状況は、回答完了を人と仕組みに分けて数える（D202）。
+    // どちらかの絞り込みが消えたら、ここで落ちる。
+    id: "A63",
+    label: "回答完了を人と仕組みに分けて数えていない、運営の利用状況",
+    sql: `select p.proname
+            from pg_proc p join pg_namespace n on n.oid = p.pronamespace
+           where n.nspname = 'public' and p.proname = 'get_usage_summary'
+             and (p.prosrc not like '%answer_completed_system%'
+                  or p.prosrc not like '%answer_source = ''human''%'
+                  or p.prosrc not like '%answer_source = ''system''%')`,
+  },
+  {
     // 回答を出す窓口は、出所を引数に取らない（D194）。
     // 取ると、そこが「システムを名乗る口」になる。
     id: "A55",
