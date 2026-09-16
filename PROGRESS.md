@@ -4,6 +4,53 @@
 `/next` はここを起点に「現在地と次の一手」を出し、`/progress` がここへ追記します。
 日時は JST。全体が400行を超えたら、一番下（最も古いもの）から削ります。
 
+## 2026-09-17 運営の利用状況を人と仕組みに分けた／smoke-unseen を読み込み完了で読む形へ／etag の変化の原因（D202 / D203）
+
+### 何ができるようになったか
+
+運営用の利用状況（get_usage_summary）で、回答完了を「人が答えた数」（answer_completed）と
+「仕組みが答えた数」（answer_completed_system）に分けて見られる。本番へ適用済み。
+いまは仕組みの回答が0件なので、本番の値は前と同じで、仕組みの側は0。
+
+本番スモーク smoke-unseen が、実際のブラウザで開いて知らせの入口の読み込み完了を待ってから読むようになった。
+前は HTML の仮の値（いつも「無し」）を読んでいて、何も確かめていなかった。
+
+公開サイトの etag が push の前に変わった件は、同意の保存がサイト全体のキャッシュを作り直すためと分かった（D203）。
+
+### 何を引き換えにしたか
+
+get_usage_summary の定義が1本入れ替わった。権限・持ち主・戻り値の型は同じ。返す jsonb の鍵が1つ増えた
+（呼び出し元はアプリに無い）。smoke-unseen は Playwright を使うようになり、実行が数秒遅い。
+
+### 何が何を呼ぶか
+
+運営が service_role で `get_usage_summary(日数)` を呼ぶ → answers を answer_source で human / system に分けて数え、
+ほかの4つ（共有・次の作品・制作開始・持ち出し）と一緒に jsonb で返す。
+smoke-unseen: `smoke:prod -- unseen` → Chromium で / /works /rankings を開く → ブラウザが /api/notices/unseen を呼ぶ →
+入口が data-loaded="true" になるのを待つ → 入口の状態と、ブラウザが受け取った答えを突き合わせる。
+
+### どこまでで、どこからが未着手か
+
+済み: migration 20260916120000 の作成と本番適用、試験（SU 群5件・構造 A63）、smoke-unseen の書き直し、
+etag の原因の特定、全試験、push と deploy、本番確認。
+
+未着手:
+- 課金 v0 の2本（20260917090000 / 100000）の本番適用（別の作業線。本番の構造検査の17項目はこれが未適用のため）
+- 履歴 20260909180000 の名前の食い違い
+- 仕組みの回答を実際に作る仕組み（外部 AI・自動の積み込み・画面）
+
+### 次の一手
+
+課金 v0 の本番適用は課金の作業線で判断する。システム回答の起動前の技術的な後始末は、この節で残り0件。
+
+### 触ったファイル
+
+- `supabase/migrations/20260916120000_usage_summary_human_answers.sql`（新規）
+- `test/db/run.mjs`（SU 群）`scripts/db-checks.mjs`（A63）`scripts/smoke-unseen.mjs`
+- `docs/decisions.md`（D202 / D203）`docs/spec.md` `docs/launch-checklist.md` `docs/landing-d194-d196.md` `README.md` `docs/test-layers.md` `PROGRESS.md`
+
+---
+
 ## 2026-09-17 課金 v0 を main へ取り込んだ（版番号 20260917090000 / 100000。本番へは未適用）
 
 ### 何ができるようになったか
@@ -57,6 +104,8 @@ Founder 番号と権限（founding_creator / beta_access）を付ける。権限
 - 規約の版が変わることを受け入れるかを決め、課金 SQL 2本を本番へ当てる工程を用意する
 - Stripe の試験用の鍵を用意し、D201 の「鍵が渡されたあとに実施する試験」を1回通す
 
+---
+
 ## 2026-09-16 D194〜D196 を本番へ当て、main へ push して deploy した（システム回答はまだ動かない）
 
 ### 何ができるようになったか
@@ -90,7 +139,7 @@ Founder 番号と権限（founding_creator / beta_access）を付ける。権限
 
 未着手:
 - システム回答を実際に作る仕組み（外部 AI への接続、投稿時の自動の積み込み、画面での見せ方）
-- get_usage_summary の案C（answer_completed = human / answer_completed_system = system）。自動化を始める前に作る
+- get_usage_summary の案C（answer_completed = human / answer_completed_system = system）。自動化を始める前に作る → 2026-09-17 に完了（D202）
 - 履歴 20260909180000 の行の名前と実体の食い違い（別工程）
 - 課金の作業線 billing-renumber（c92b333）と手元の main（6d24ec1）は未着地のまま
 
@@ -285,70 +334,3 @@ D196 → D195 → D194 の順でしか動かない。どれもまだ本番へ流
 - supabase/rollback/2026091{1090000,2090000,2100000}_*_rollback.sql（新規）、supabase/rollback/README.md
 - docs/decisions.md（D197）
 - PROGRESS.md（この節。400行に収めるため、いちばん古い「本番向けの検査を、新しい画面に追いつかせた」を削った）
-
----
-
-## 2026-09-12 公開前の本番クリーンアップ（知らせの修正を本番へ／検査用330人と検査データを削除／判定を1か所へ）
-
-### 何ができるようになったか
-
-未サインインでページを開いても、ヘッダーが DB に知らせの有無を聞かなくなった（本番で確認）。
-デプロイ（00:55 JST、fe642c3）以降、has_unseen_results の 401 と Postgres の権限エラーは0件。
-未サインインで開いた2つの窓には呼び出しが1件も無く、間を空けて開いたサインイン済みの1画面では200が1件。
-
-2026-08 に作られた検査用の利用者330人（dpq-smoke 328・dpq-probe 2）と、その人たちの検査データを
-本番から消した。作品381・お題403（カード1547・問い1209・選択肢4836）・回答355・回答の項目1065・
-いいね237・保存40・通報29・枠の集計378・同意記録236 は、ID を固定したトランザクションで消した（00:43 JST）。
-利用者330人は管理 API で消し（00:57 JST）、プロフィール・ドラフト403・候補6331・集計53/159・
-ハンドル履歴18・認証の行が連鎖で消えた。本番の利用者は32人（本物4・メールの無いゲスト28）。
-本物の作品2件と本物の利用者4人の行指紋は、前後で同じ。
-
-検査用の利用者の見分けかたを scripts/_test-accounts.mjs の1か所にまとめた。
-片づけ道具は人数を指定でき（違えば1人も消さない）、消したあとに名簿を読み直す。
-
-### 何を引き換えにしたか
-
-消した行は戻らない。
-
-回答を消しても集計は減らない（既知）。持ち主のいない検査作品17件の回答件数（1のまま）と、
-その作品の枠の集計51行が、この時点では実データと食い違ったまま残っていた。
-db:verify:keychain は205項目が合格、4項目（A8 / A21 / A24 / A32）が期待と違った。
-段A を確定する前に db:verify を下見に含めていなかったのが原因（トランザクションの外からは見えないため）。
-**この4項目は同じ日の続きの作業で直した。1つ上の項目を見ること。**
-
-片づけ道具が dpq-smoke / dpq-probe も消すようになった。作品を持つ使い捨て利用者は、
-先に作品を片づけないと、作品の持ち主が空になって残る。
-
-### 何が何を呼ぶか
-
-`npm run smoke:prod -- fixtures --apply --expect N` → smoke-fixtures.mjs → _smoke-users.mjs の
-purgeFixtureUsers が名簿を全部並べ、_test-accounts.mjs の isTestAccountEmail で対象を決める →
-人数が N と違えば1人も消さずに止める → 合えば管理 API へ1人ずつ DELETE → 最後に名簿を読み直して
-対象が残っていないかを数え、残っていれば失敗で終わる。cleanup-testdata.mjs も同じ判定を使う。
-
-### どこまでで、どこからが未着手か
-
-済み: push（dd71970 → fe642c3）、Vercel のデプロイ（成功）、本番での知らせの確認、
-330人と関連データの削除、判定の統一（7153609）、全検査（型・lint・単体86・道具37・縦断344・
-アップグレード31・構造198・build・ブラウザ130・スモーク11・文書15/15）。
-
-未着手:
-- 持ち主のいない検査作品17件の集計の修正（承認待ち）
-- 課金2本の版番号の衝突。本番の履歴行 20260909180000 の name が billing_founding_creator_v0 で、
-  実際に入った SQL と食い違う。直すには履歴の書き換えが要るので止めた（docs/decisions.md に追記）
-- Vercel 側の Cron の実行履歴（CLI がサインインしていない）。Supabase の記録では 9/11 03:39 UTC の定期実行が全部 200
-- 20260911120000 と D194〜D196 の番号順の扱い（2026-09-11 の質問に未回答）
-
-### 次の一手
-
-17作品の集計の修正を当ててよいか、ユーザーに確かめる。
-
-### 触ったファイル
-
-- `scripts/_test-accounts.mjs`（新規）`scripts/_smoke-users.mjs` `scripts/smoke-fixtures.mjs` `scripts/cleanup-testdata.mjs`
-- `scripts/smoke-unseen.mjs`（新規。本番で知らせの呼び分けを確かめる）
-- `test/tools/run.mjs`（片づけの試験）
-- `README.md`（道具の自己試験 37）`docs/decisions.md`（版番号の衝突の追記）`docs/launch-checklist.md`（Cron の確かめ方）
-
----
-

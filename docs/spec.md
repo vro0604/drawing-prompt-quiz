@@ -2503,7 +2503,7 @@ answers / answer_items を読む・書く関数と引き金は40本ある（2026
 | 除外する（D194 で済み） | 9 | 回答の集計の引き金4本、next_work_candidates、get_my_work_result、get_public_answers、get_my_answers、get_my_answer |
 | 除外する（D196 で直した） | 8 | answers_after_insert_auto_import、consume_import_capacity、analysis_all_answers、analysis_advanced_answers、get_work_answer_list、set_answer_excluded、get_work_import_state、get_my_answer_analysis |
 | 除外する（上流で絞られるので触らない） | 3 | get_work_answer_analysis、get_work_drilldown、answer_word_stats |
-| 除外すべきだが未対応 | 1 | get_usage_summary（運営の利用状況。D196 の範囲外） |
+| 分けて数える（D202 で直した。2026-09-17） | 1 | get_usage_summary（運営の利用状況。answer_completed は人の回答だけ、answer_completed_system は仕組みの回答だけ） |
 | 含めてよい（本人の回答を user_id で探すので、user_id が空のシステム回答は当たらない） | 11 | get_answered_prompt、get_flavor_replies、get_my_reaction、get_public_works、get_saved_works、get_work_detail、get_work_flavor、get_work_quiz、open_flavor_hint、post_flavor_reply、save_prompt_elements |
 | 含めてよい（その他） | 4 | submit_answer（人間の回答を作る窓口）、start_account_deletion（本人の行だけを空にする）、has_unseen_results・list_unseen_result_works（回答の知らせ。D192 のまま） |
 | システム回答を作るのに要る | 4 | save_system_answer、enqueue_system_answer、answers_guard_source_immutable、app_guard_account_active |

@@ -9134,6 +9134,7 @@ D194 と D195 は、本番より古い土台（profile-on-main）の上で作っ
   文言はまだ作らない（D194「まだ作らない：notification文言」）
 - 運営の利用状況（`get_usage_summary`）の回答数: 人間に絞るべきものだが、
   今回の範囲（分析と取り込み枠）の外。残課題として置く
+  （2026-09-17 追記: D202 で人と仕組みに分けて数えるようにした）
 - 出所: ユーザー指示（2026-09-11）「以下は混ぜない：… notices/result表示 …」
 
 #### 確かめたこと
@@ -9602,3 +9603,79 @@ metadata）は版をまたいで名前が変わっていないので処理は続
 - 本番のデータベースへの適用（`db:deploy` → `db:verify`）
 - 本番・試験どちらの Stripe も、鍵が無いため**一度も通信していない**
 - `billing_offers.is_active` は false のまま
+
+---
+
+### D202. 運営の利用状況は、回答完了を人の回答と仕組みの回答に分けて数える
+
+出所: ユーザー指示（2026-09-12）「get_usage_summaryは将来C」、（2026-09-16）
+「answer_completed = human answerのみ / answer_completed_system = system answerのみ」
+「既存answer_completedの名前は維持」「期間条件など既存ロジックはそのまま維持する」「権限を広げない」。
+
+#### 何が問題だったか
+
+`get_usage_summary` の `answer_completed` は、期間内に作られた `answers` の行をすべて数えていた
+（20260904096000）。D195 で仕組みが答える回答を保存できるようになったので、
+それを動かし始めると「人が答えた数」に仕組みの回答が混ざる。
+
+#### 決めたこと
+
+- `answer_completed` は `answer_source = 'human'` の行だけを数える（名前はそのまま）
+- `answer_completed_system` を足す（`answer_source = 'system'` の行だけ）
+- ほかは変えない: 引数・戻り値の型（jsonb）・security definer・search_path = ''・持ち主（postgres）・
+  権限（service_role だけ）・期間の数え方・ほかの4つの数
+
+仕組みの回答が0件のあいだは、`answer_completed` の値は変更の前と同じ。
+アプリの中にこの関数の呼び出し元は無い（運営用。docs/admin-tool-investigation.md）。
+
+#### 版番号 20260916120000
+
+本番の最大（20260914120000）より後ろで、main にある課金の2本（20260917090000 / 100000。本番未適用）より前。
+課金の2本より後ろの番号を先に本番へ当てると、課金の2本が本番の最大より前になり、
+`db:deploy`（`--include-all` を使わない）が断る。適用後の `db push --dry-run` は、課金の2本だけを
+`--include-all` なしで当てる計画を出した。全ブランチ・全コミット・全作業木で 20260915〜20260916 の版は0件だった。
+
+#### 確かめたこと
+
+- 縦断試験 SU 群: 人1/仕組み0 → 1/0、人0/仕組み1 → 0/1、人1/仕組み1 → 1/1、
+  仕組みの回答を足しても人の側の値は1つも変わらない、差し替えの前後で人だけのデータの値が一致、守りが不変。
+  migration を外すと4件が落ちる
+- 構造検査 A63: 人と仕組みの絞り込みが関数から消えたら落ちる。migration を外すと落ちる
+- 本番（2026-09-16T17:26Z）: 期間 1 / 7 / 30 / 365 日のどれでも、前からあった6つの値は前後で同じ。
+  `answer_completed_system` は0。定義の md5 だけが変わり、持ち主・security definer・search_path・権限・引数・戻り値は同じ
+
+---
+
+### D203. 公開サイトのキャッシュは、同意の保存で作り直される（etag の変化の原因）
+
+出所: 実測（2026-09-17）。
+
+#### 何を見たか
+
+2026-09-16 の push（14:58:35Z）の数分前に、トップの etag が変わり、キャッシュの経過秒（age）が395秒に戻っていた。
+deploy の記録（GitHub の deployments）は 58dce03（2026-09-14T18:38Z）のあと cd6a7d5（14:59:21Z）までの間に1件も無い。
+
+#### 原因
+
+同意の保存（`src/app/consent/actions.ts` の `agreeAction`）が `revalidatePath("/", "layout")` を呼び、
+サイト全体のキャッシュを作り直させる。本番スモークは検査用の利用者でサインインするとき同意を押すので、
+そのたびにトップも作り直される。
+
+- 2026-09-16 の最後の同意の記録は 14:51:58Z。etag を見た時刻と age から逆算した作り直しの時刻（約 14:52Z）と合う
+- 2026-09-17 に再現した: 同意（16:51:12Z）→ 16:53:42Z に age 149（= 16:51:13Z）。
+  同意（16:55:19Z）の直前の age 206 が、直後に 33（= 16:55:21Z）へ戻った。このときは中身が同じだったので etag は変わらなかった
+- 同意の無いあいだは作り直されない（2026-09-16 の朝は age 156397 秒 = 約43時間）
+
+#### 本番を更新できる経路（確認できた範囲）
+
+- Vercel の Git 連携: main への push で Production、その他のブランチで Preview（GitHub の deployments は
+  すべて vercel[bot]。Production はすべて main の commit）
+- GitHub Actions: 実行0件、`.github/workflows` も無い
+- `vercel.json`: 掃除の cron（`/api/cron/cleanup`、毎日 03:17 UTC）だけ。deploy はしない
+- アプリの中のキャッシュの作り直し: `revalidatePath` を呼ぶ server action（同意・作品・お題・通報の対応）。
+  deploy ではなく、同じ deploy の中で画面を作り直すだけ
+- 確認できなかったもの: Vercel の Deploy Hook と、ダッシュボードからの手動 Redeploy の有無
+  （手元の VERCEL_TOKEN は forbidden。API で読めなかった）。今回の etag の変化はそれらを必要とせず説明がつく
+
+変えていない（機能の不具合ではない）。
+
