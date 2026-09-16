@@ -4,6 +4,59 @@
 `/next` はここを起点に「現在地と次の一手」を出し、`/progress` がここへ追記します。
 日時は JST。全体が400行を超えたら、一番下（最も古いもの）から削ります。
 
+## 2026-09-17 課金 v0 を main へ取り込んだ（版番号 20260917090000 / 100000。本番へは未適用）
+
+### 何ができるようになったか
+
+課金 v0（Founding Creator、D187 / D201）のコード・画面・SQL・試験が、正式な開発線（main）に載った。
+これまで課金は手元の main（6d24ec1、未 push）にしか無く、origin/main とは 9/4 の地点で分かれていた。
+課金 SQL 2本は `20260917090000_billing_founding_creator_v0.sql` と `20260917100000_legal_v2_billing.sql`。
+本文は1バイトも変えていない（sha256 `997f9e9b…` / `d9711e75…`、9/12 の記録と同じ）。
+本番に対して読むだけで確かめた: migration list は66行のうち64本が両方にあり、手元だけが課金の2本、
+db push --dry-run が当てようとするのもこの2本だけ。**本番へは当てていない。**
+
+課金の DB がまだ無い本番へコードだけが出ても、課金の画面が落ちないようにした。
+`/founder`・`/tokushoho`・`/founder/members` は「準備中」「販売している商品はありません」
+「まだどなたも購入されていません」を出す（手元の開発サーバを本番の DB へつないで HTTP 200 を実測）。
+直す前は、読み出しが「関数が無い」（PGRST202、本番で実測）で例外を投げ、画面の準備中の分岐へ届かなかった。
+
+### 何を引き換えにしたか
+
+- 本番へ課金を当てるまで、`npm run db:verify:keychain` は表の数（期待69・本番64）などで食い違う。
+  検査の定義が「手元の migration を全部当てた状態」を表すため。
+- 課金の決定「売れる形にする」は main の D188（検索）と番号が重なっていたので D201 へ移した。
+  課金の commit 説明に残る「D188」はこの節を指す。
+- 版番号は 9/12 の `20260912140000` / `150000` からもう一度動かした。9/16 に本番へ `20260914120000` が
+  入り、その番号では db:deploy が「最後より前への挿入」として断るため。
+
+### どこまでで、どこからが未着手か
+
+済み: 取り込み、競合の解消（試験の実行ファイル2つ・DB 検査の定義・環境変数の確認・文書）、全検査16工程。
+未着手: 本番への適用、Stripe との実通信（鍵が無い）、`billing_offers.is_active` を true にすること。
+監査で見つけた要判断1件: `legal_v2_billing.sql` を当てると規約の有効な版が 2026-08-08 → 2026-09-09 に移り、
+本物の利用者（メールあり4人）も次の投稿で同意画面を通る。SQL の説明は「検査用の利用者だけ」と書いているが、
+いまは本物がいる（2026-09-17 の実測）。仕様は変えていない。
+
+### 何が何を呼ぶか
+
+購入ボタン（/founder）→ `/api/billing/checkout` が DB の `billing_reserve_slot` で枠を押さえる
+（規約の最新版への同意が無ければ断る）→ Stripe の決済ページを `fetch` で作る。
+払われると Stripe が `/api/billing/webhook` へ知らせ、署名を確かめてから `billing_complete_checkout` が
+Founder 番号と権限（founding_creator / beta_access）を付ける。権限を付けるのはこの知らせだけ。
+
+### 触ったファイル
+
+- 課金 commit の一式（src/features/billing/・src/app/founder/・src/app/api/billing/・src/app/tokushoho/ ほか）
+- 課金の DB が無いときの読み出し: `src/features/billing/rpc.ts`・`src/features/billing/types.ts`（単体試験1件）
+- 競合を解いたもの: `scripts/db-checks.mjs`・`scripts/check-env.mjs`・`src/lib/env.ts`・`test/unit/run.mjs`・
+  `test/db/run.mjs`・`.env.example`・`package.json`
+- `docs/decisions.md`（D187・D201・版番号の衝突の追記）、`docs/launch-checklist.md`、`README.md`、`docs/test-layers.md`
+
+### 次の一手
+
+- 規約の版が変わることを受け入れるかを決め、課金 SQL 2本を本番へ当てる工程を用意する
+- Stripe の試験用の鍵を用意し、D201 の「鍵が渡されたあとに実施する試験」を1回通す
+
 ## 2026-09-16 D194〜D196 を本番へ当て、main へ push して deploy した（システム回答はまだ動かない）
 
 ### 何ができるようになったか
@@ -299,56 +352,3 @@ purgeFixtureUsers が名簿を全部並べ、_test-accounts.mjs の isTestAccoun
 
 ---
 
-## 2026-09-11 Phase 1・2 を本番相当の土台へ載せ直し、システム回答を分析と取り込み枠から外した（D196。本番未適用）
-
-### 何ができるようになったか
-
-Phase 1（回答の出所）と Phase 2（システム回答の待ち行列）が、**本番と同じ59本の
-migration の上で**動くようになった。これまでは本番より古い土台（profile-on-main）の
-上でしか試していなかった。
-
-載せ直して分かった穴も塞いだ。本番にだけあった作者向けの分析と取り込み枠は、
-回答の出所を知らなかったので、システム回答が1件入ると作者の枠を1つ使い、
-分析にも1人分として混ざるはずだった。いまは、システム回答は分析にも枠にも入らない。
-人間の回答だけの作品では、何も変わらない（前後で読める数字が1つも変わらないことを試験で確かめた）。
-
-### 何を引き換えにしたか
-
-- 作者の回答一覧と「分析から外す」の通し番号は、人間の回答だけに振る。
-  システム回答は番号を持たないので、作者は外す操作でそれを指定できない
-  （存在しない番号として今までどおり断る）
-- 運営の利用状況（get_usage_summary）の回答数は、まだシステム回答も数える。
-  今回の範囲（分析と取り込み枠）の外なので触っていない
-
-### 何が何を呼び、値がどこへ渡るか
-
-回答が answers に1行入ると、引き金 answers_after_insert_auto_import が走る。
-ここで出所が human でなければ、そのまま帰る（枠を読みにも行かない）。
-human なら consume_import_capacity を呼び、そこでも human の回答だけを古い順に選んで
-analysis_imports へ入れる。作者の集計・掘り下げ・語ごとの数は、母集団を返す
-analysis_all_answers / analysis_advanced_answers を通して回答を受け取り、
-その2本が human だけを返す。回答一覧・外す操作・枠の状態・答えた本人の集計は
-answers を直接読むので、それぞれの読み取りに同じ条件を足した。
-
-### どこまでで、どこからが未着手か
-
-- 済み: 新しい作業線 onboarding-phase12-integration（8a8a947 から）、Phase 系6コミットの載せ替え、
-  互換 migration 20260912100000、SC 群7件、D196、spec §21
-- 確かめたこと（2026-09-11）: 縦断試験 383/383、DB構造 211/211、アップグレード 31/31、
-  ブラウザ全件 130/130（中央値 3.4秒・全体 10.9分・開始時の交換領域 9.0GB）、型検査・lint・build 終了コード0。
-  PostgreSQL 17.6 でも縦断試験 380/383（落ちた3件は語彙の候補の検査で、土台の 8a8a947 でも同じ3件が落ちる）
-- 未着手: 本番への適用（D194・D195・D196 の3本）、get_usage_summary の扱い、
-  回答の知らせの文言、本番履歴 20260909180000 の修復（別作業）
-
-### 次の一手
-
-1. この作業線を本番へ出すかを人が決める（出すなら 3本を db:apply:one で順に当て、repair で記録）
-2. get_usage_summary を人間に絞るかを決める
-3. 20260909180000 の偽の履歴（課金の下書き）の修復を、課金の作業線と合わせて決める
-
-### 触ったファイル
-
-- supabase/migrations/20260912100000_system_answer_out_of_analysis_and_import.sql（新規）
-- test/db/run.mjs（SC 群）、scripts/db-checks.mjs（A62）
-- docs/decisions.md（D196）、docs/spec.md（§21）、README.md・docs/launch-checklist.md・docs/test-layers.md（件数）
-- PROGRESS.md（この節。400行に収めるため下の古い5節を削った。Phase 1 の節の中身は D194 と、この節にある）
