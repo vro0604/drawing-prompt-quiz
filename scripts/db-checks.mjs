@@ -654,8 +654,8 @@ export const checks = [
     // 2026-09-17 に5表増えた（課金 v0 / D187 を main へ取り込んだ）。
     //   ・billing_offers ・billing_customers ・billing_purchases
     //   ・billing_entitlements ・billing_webhook_events
-    // 合わせて 69。**本番は課金を当てるまで 64 のまま**なので、
-    // 課金を当てる前に db:verify:keychain を回すとここが食い違う。
+    // 合わせて 69。本番も 2026-09-17T07:22Z に課金を当てて 69 になった
+    // （当てる前の本番は 64 で、db:verify:keychain はここで食い違っていた）。
     name: "public スキーマの表が69個",
     expected: 69,
     sql: `select count(*)::int from pg_tables where schemaname = 'public'`,

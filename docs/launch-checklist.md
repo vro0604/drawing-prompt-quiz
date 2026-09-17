@@ -60,12 +60,16 @@ CAPTCHA の検証は、Cloudflare が返してきた hostname を
 履歴表にも記録された。以下は、そのとき何をどの順で当てたかの記録として残す。
 
 2026-09-11 時点の本数は 60本。**当時の60本はすべて本番へ入っている。**
-いまの本数は 67本<!--count:migration-->。**うち65本が本番へ入っている**（2026-09-17 の実測）。
+いまの本数は 67本<!--count:migration-->。**67本すべて本番へ入っている**（2026-09-17 の実測）。
+66・67本目の課金 v0（`20260917090000_billing_founding_creator_v0` と `20260917100000_legal_v2_billing`）は
+2026-09-17T07:22:19Z〜07:22:28Z に `npm run db:deploy`（supabase db push）で当てた。履歴は CLI が自動で記録（repair は使っていない）。
+当てる前に、本番の1つのトランザクションで2本を流して全部を確かめ、rollback する下見を行った（期待と違う0件）。
+適用後の db:verify:keychain は236項目すべて期待どおり。規約・ポリシーの有効版は 2026-09-08 → 2026-09-09 に移り、
+メールで登録した本物の利用者4人は、次に守られた画面を開いたときに再同意を求められる（ユーザー承認、2026-09-17）。
+商品 `founding_creator_v0` は `is_active = false` のまま（**販売していない**）。Stripe の試験は docs/billing-stripe-test.md。
 65本目の `20260916120000_usage_summary_human_answers`（運営の利用状況の回答数を人と仕組みに分ける。D202）は
 2026-09-16T17:26:55Z に `npm run db:apply:one` で当て、`supabase migration repair --status applied --linked` で履歴へ記録した。
-適用の前後で db:verify:keychain の不合格は18 → 17（減ったのは A63。残る17は課金の2本が未適用のため）。
-残る2本は課金 v0 の `20260917090000_billing_founding_creator_v0` と
-`20260917100000_legal_v2_billing`（2026-09-17 に main へ取り込んだ。**本番へは未適用**）。
+適用の前後で db:verify:keychain の不合格は18 → 17（減ったのは A63。残る17は、その時点で課金の2本が未適用だったため。上の適用で0になった）。
 D194・D195・D196（20260912110000 / 120000 / 130000）は 2026-09-16T14:43Z〜14:44Z に
 `npm run db:apply:one` で1本ずつ当て、そのたびに `supabase migration repair --status applied --linked` で履歴へ記録した。
 版の順では 20260914120000（時計）の手前に並ぶが、本番へ入ったのは時計のあと。依存と置き換える関数の重なりは0件（D200）。

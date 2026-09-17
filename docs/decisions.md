@@ -9601,7 +9601,11 @@ metadata）は版をまたいで名前が変わっていないので処理は続
 #### まだやっていないこと
 
 - 本番のデータベースへの適用（`db:deploy` → `db:verify`）
+  → **2026-09-17 に済んだ。**2本とも `db:deploy` で適用、db:verify:keychain 236項目すべて期待どおり。
+    規約の版の切り替え（再同意）はユーザーが承認。商品は `is_active = false` のまま
 - 本番・試験どちらの Stripe も、鍵が無いため**一度も通信していない**
+  → 2026-09-17 時点でも同じ（`BLOCKED: STRIPE_TEST_CREDENTIALS`）。手順と、8段の1段目が
+    販売停止中の商品では通らない件は `docs/billing-stripe-test.md`
 - `billing_offers.is_active` は false のまま
 
 ---
