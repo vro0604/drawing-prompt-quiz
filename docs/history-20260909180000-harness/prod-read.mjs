@@ -1,0 +1,27 @@
+// 本番を読み取り専用のトランザクションで読む。書き込みはしない。
+import { createRequire } from "node:module"; import fs from "node:fs";
+import * as C from "./catalog.mjs";
+const require = createRequire(`${process.env.HIST_TREE}/package.json`);
+const pg = require("pg");
+const c = new pg.Client({ connectionString: process.env.SUPABASE_DB_URL, ssl: { rejectUnauthorized: false }, application_name: "dpq-hist-readonly" });
+await c.connect();
+await c.query("begin transaction isolation level repeatable read read only");
+const q = async (s, p) => (await c.query(s, p)).rows;
+const o = {};
+o.now = (await q("select now() t, version() v, current_setting('transaction_read_only') ro"))[0];
+o.db = (await q(`select pg_encoding_to_char(encoding) e, datlocprovider p, datcollate, datctype, datlocale from pg_database where datname=current_database()`))[0];
+o.migSchemaTables = await q(`select table_name from information_schema.tables where table_schema='supabase_migrations' order by 1`);
+o.shape = await C.historyTableShape(q);
+o.history = await C.historyRows(q);
+o.digests = o.history.rows.map(C.rowDigest);
+o.cat = await C.catalog(q);
+o.data = await C.dataFp(q);
+o.profileAcl = await C.profileAcl(q);
+o.offer = await q(`select code, is_active, updated_at from public.billing_offers order by 1`);
+o.counts = (await q(`select (select count(*)::int from public.billing_purchases) purchases,(select count(*)::int from public.billing_entitlements) entitlements,(select count(*)::int from public.billing_customers) customers,(select count(*)::int from public.billing_webhook_events) webhook_events,(select count(*)::int from public.answers where answer_source<>'human') system_answers,(select count(*)::int from public.system_answer_queue) queue`))[0];
+o.roles = await q(`select rolname, rolsuper, rolbypassrls from pg_roles where rolname in ('postgres','anon','authenticated','service_role','supabase_admin') order by 1`);
+o.whoami = (await q(`select current_user u, session_user s`))[0];
+await c.query("rollback"); await c.end();
+fs.writeFileSync(process.argv[2], JSON.stringify(o, null, 1));
+const d = o.digests.find((x) => x.version === "20260909180000");
+console.log(JSON.stringify({ now: o.now, db: o.db, migSchemaTables: o.migSchemaTables, shape: o.shape, n: o.digests.length, max: o.digests.at(-1).version, row0909: d, offer: o.offer, counts: o.counts, profileAcl: o.profileAcl, schemaKeys: Object.keys(o.cat.schema).length, aclKeys: Object.keys(o.cat.acl).length, fpSchema: C.fp(o.cat.schema), fpAcl: C.fp(o.cat.acl), fpData: C.fp(o.data), whoami: o.whoami }, null, 1));
