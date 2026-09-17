@@ -35,14 +35,18 @@ import {
   describeCleanup,
 } from "../../scripts/_smoke-own-rows.mjs";
 import { asRole, createTestDb } from "../db/harness.mjs";
+import { FUNNEL_SQL, ratio } from "../../scripts/funnel-query.mjs";
+import { collectFunnel } from "../../scripts/db-funnel.mjs";
 import {
   answerWork,
   asMember,
   drawPrompt,
+  makeGuest,
   makeMember,
   pickTags,
   postArtFirstWork,
   postWork,
+  startDraftOnly,
   value,
 } from "../db/helpers.mjs";
 import { recordCount } from "../counts.mjs";
@@ -725,6 +729,168 @@ await test("この実行の分", "帳面に無い表は積めない。空の帳�
 });
 
 await ownDb.close();
+
+// ============================================================================
+// 初回利用の進みぐあいを数える SQL（scripts/funnel-query.mjs）
+// ============================================================================
+//
+// 本番を読む道具（scripts/db-funnel.mjs）と、ここで試す数え方は**同じ1本の SQL**。
+// 数え方の間違いは本番では見つけられない（正解の人数を誰も知らないため）ので、
+// 人数が分かっている小さな場を手元のDBに作って、期待どおりの人数と率になるかを見る。
+//
+// 置く人（すべて本物の migration を当てたDBへ、本物の RPC で作る）:
+//   A … 登録して、お題を引き、確定し、投稿し、人から回答が付き、結果を開いた
+//   B … ゲスト。ドラフトを始めただけ（確定していない）
+//   C … ゲスト。3件に答えただけ（作っていない）
+//   D … 登録して、絵を先に出す形（art_first）で投稿した
+//   E … 仕組みの回答だけが付いた作品の作者（人からの回答は無い）
+//   F … 同じ人が2件作って2件投稿した（人数が2重にならないか）
+
+console.log("\n初回利用の進みぐあいを数える SQL");
+
+const funnelDb = await createTestDb();
+const funnelQuery = (sql, params) => funnelDb.query(sql, params);
+
+/** 期間を指定して1回数える */
+async function funnel(period = "all") {
+  const got = await collectFunnel(funnelQuery, [period]);
+  return got[period];
+}
+
+const scene = {};
+{
+  // A
+  scene.a = await makeMember(funnelDb, "fn-a");
+  const ap = await drawPrompt(funnelDb, scene.a);
+  scene.aWork = await postWork(funnelDb, scene.a, ap.prompt_id, "A の作品");
+
+  // C（答えるだけのゲスト。A の作品を含めて3件に答える）
+  scene.c = await makeGuest(funnelDb);
+
+  // F（同じ人が2件）
+  scene.f = await makeMember(funnelDb, "fn-f");
+  const fp1 = await drawPrompt(funnelDb, scene.f);
+  scene.fWork1 = await postWork(funnelDb, scene.f, fp1.prompt_id, "F の作品1");
+  const fp2 = await drawPrompt(funnelDb, scene.f);
+  scene.fWork2 = await postWork(funnelDb, scene.f, fp2.prompt_id, "F の作品2");
+
+  // E（仕組みの回答だけ）
+  scene.e = await makeMember(funnelDb, "fn-e");
+  const ep = await drawPrompt(funnelDb, scene.e);
+  scene.eWork = await postWork(funnelDb, scene.e, ep.prompt_id, "E の作品");
+  await funnelDb.query(
+    `insert into public.answers (work_id, user_id, answer_source, correct_count, question_count)
+     values ($1, null, 'system', 0, 0)`,
+    [scene.eWork],
+  );
+
+  // C が3件に答える（A・F1・F2）。A には人の回答が付く
+  await answerWork(funnelDb, scene.c, scene.aWork, { guest: true });
+  await answerWork(funnelDb, scene.c, scene.fWork1, { guest: true });
+  await answerWork(funnelDb, scene.c, scene.fWork2, { guest: true });
+
+  // A が結果を開く（result_seen_at が入るのはこの経路だけ）
+  await asRole(funnelDb, asMember(scene.a), (c) =>
+    c.query(`select public.open_my_work_result($1)`, [scene.aWork]),
+  );
+
+  // B（ドラフトだけのゲスト）
+  scene.b = await makeGuest(funnelDb);
+  await startDraftOnly(funnelDb, scene.b);
+
+  // D（絵が先）
+  scene.d = await makeMember(funnelDb, "fn-d");
+  const dTags = [];
+  for (const category of ["morph", "emotion", "color"]) {
+    for (const t of await pickTags(funnelDb, category, 1)) dTags.push(t.id);
+  }
+  scene.dWork = await postArtFirstWork(funnelDb, scene.d, dTags);
+}
+
+await test("ファネル", "作った人の段が、1人1回だけ数えられる", async () => {
+  const f = await funnel();
+  const c = f.creator_prompt_first;
+  // 作る側から入ったのは A・F・E・B の4人（D は art_first で作るので入口は不明）
+  assert(c.actor === 4, `作る側の人数が ${c.actor}（A・F・E・B の4人のはず）`);
+  assert(c.draft === 4, `ドラフトが ${c.draft}`);
+  assert(c.prompt === 3, `お題の確定が ${c.prompt}（B は確定していない）`);
+  assert(c.work === 3, `投稿が ${c.work}（F は2件出しても1人）`);
+  assert(c.human_answer === 2, `人からの回答が ${c.human_answer}（A と F。E は仕組みだけ）`);
+  assert(c.result_seen === 1, `結果を開いたのが ${c.result_seen}（A だけ）`);
+});
+
+await test("ファネル", "回答が何件あっても、作った人の人数は増えない", async () => {
+  const before = (await funnel()).creator_prompt_first.human_answer;
+  await answerWork(funnelDb, await makeGuest(funnelDb), scene.aWork, { guest: true });
+  await answerWork(funnelDb, await makeGuest(funnelDb), scene.fWork1, { guest: true });
+  const after = (await funnel()).creator_prompt_first.human_answer;
+  assert(after === before, `回答を足したら作った人が ${before} → ${after} に増えた`);
+});
+
+await test("ファネル", "仕組みの回答は、人からの回答に混ざらない", async () => {
+  const f = await funnel();
+  const c = f.creator_prompt_first;
+  assert(c.system_answer === 1, `仕組みの回答が付いた人が ${c.system_answer}（E だけのはず）`);
+  assert(
+    c.human_answer === 2,
+    `人からの回答の人数に仕組みが混ざっている: ${c.human_answer}`,
+  );
+});
+
+await test("ファネル", "答えた回数で段が分かれる（1・2・3・5回以上）", async () => {
+  const a = (await funnel()).answerer;
+  assert(a.a1 >= 1, `1回答えた人が ${a.a1}`);
+  assert(a.a3 >= 1, `3回答えた人が ${a.a3}（C が3件答えている）`);
+  assert(a.a5 === 0, `5回以上の人が ${a.a5}（まだ居ないはず）`);
+  assert(a.a2 >= a.a3, `2回以上(${a.a2}) が 3回以上(${a.a3}) より少ない`);
+});
+
+await test("ファネル", "絵が先（art_first）は、お題が先と別に数える", async () => {
+  const f = await funnel();
+  assert(f.creator_art_first.work === 1, `絵が先の投稿者が ${f.creator_art_first.work}（D だけ）`);
+  assert(
+    f.creator_prompt_first.work === 3,
+    `お題が先の投稿者に絵が先が混ざっている: ${f.creator_prompt_first.work}`,
+  );
+});
+
+await test("ファネル", "ゲストと登録済みを分けて数える", async () => {
+  const f = await funnel();
+  assert(f.by_identity.guest_work === 0, `ゲストが投稿したことになっている: ${f.by_identity.guest_work}`);
+  assert(f.by_identity.registered_work === 3, `登録済みの投稿者が ${f.by_identity.registered_work}`);
+  assert(f.by_identity.guest_draft >= 1, `ゲストのドラフトが ${f.by_identity.guest_draft}`);
+});
+
+await test("ファネル", "期間を切ると、古い人が母数から外れる", async () => {
+  const all = await funnel("all");
+  await funnelDb.query(
+    `update public.profiles set created_at = now() - interval '40 days' where id = $1`,
+    [scene.b],
+  );
+  const recent = await funnel("30d");
+  const allAfter = await funnel("all");
+  assert(
+    allAfter.actors.total === all.actors.total,
+    `全期間の人数が変わった: ${all.actors.total} → ${allAfter.actors.total}`,
+  );
+  assert(
+    recent.actors.total === all.actors.total - 1,
+    `30日の人数が ${recent.actors.total}（全期間 ${all.actors.total} から1人減るはず）`,
+  );
+});
+
+await test("ファネル", "率は件数と一緒に出す（母数0で割らない）", () => {
+  assert(ratio(3, 7) === "3 / 7 = 42.9%", `率の形が違う: ${ratio(3, 7)}`);
+  assert(ratio(0, 0) === "0 / 0", `母数0で率を出している: ${ratio(0, 0)}`);
+});
+
+await test("ファネル", "読むだけ。SQL に書き込みの語が1つも無い", () => {
+  const forbidden = /\b(insert|update|delete|truncate|create|drop|alter|grant|revoke)\b/i;
+  assert(!forbidden.test(FUNNEL_SQL), "数える SQL に書き込みの語が入っている");
+  assert(/^\s*with/i.test(FUNNEL_SQL), "select 以外から始まっている");
+});
+
+await funnelDb.close();
 
 const passed = results.filter((r) => r.ok).length;
 const failed = results.filter((r) => !r.ok);

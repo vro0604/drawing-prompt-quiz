@@ -24,6 +24,7 @@
     "db:verify": "node scripts/db-verify.mjs",
     "db:verify:keychain": "bash scripts/db-verify-keychain.sh",
     "db:audit:prod": "bash scripts/db-audit-prod.sh",
+    "db:funnel": "bash scripts/db-funnel.sh",
     "audit:schema-diff": "node test/audit/schema-diff.mjs",
     "audit:migration-ops": "node scripts/scan-migration-ops.mjs",
     "db:privs": "node scripts/db-privs.mjs",
