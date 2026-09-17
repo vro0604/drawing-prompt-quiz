@@ -1704,9 +1704,15 @@ async function main() {
     //   そこには4択の語がそのまま入っている（画面に出ている以上、当然入る）。
     //   **どれが正解かは入っていない**ので漏洩ではないが、
     //   文字としては全部あるので、外さないと数えられない。
+    //
+    // 【フッターを外す理由】
+    //   サイト共通のフッター（data-site-nav）はどの画面でも同じ固定の文言で、お題から作られない。
+    //   ところが「特定商取引法に基づく表示」は「取引」を含むので、
+    //   お題にその語が引かれた回だけ「答えが出ている」と誤って落ちた
+    //   （2026-09-17 の test:all で実測。課金 v0 でフッターに1行増えてから起きうる）。
     const outside = await p.evaluate(() => {
       const clone = document.body.cloneNode(true);
-      for (const el of clone.querySelectorAll("script, style, template, noscript")) el.remove();
+      for (const el of clone.querySelectorAll("script, style, template, noscript, footer[data-site-nav]")) el.remove();
       for (const fs of clone.querySelectorAll("[data-answer-flow]")) fs.remove();
       return clone.textContent;
     });

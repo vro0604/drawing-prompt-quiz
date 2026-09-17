@@ -4,6 +4,44 @@
 `/next` はここを起点に「現在地と次の一手」を出し、`/progress` がここへ追記します。
 日時は JST。全体が400行を超えたら、一番下（最も古いもの）から削ります。
 
+## 2026-09-17 課金 v0 を D201 の8段で一周させる道具を作った（D205。Stripe との通信は鍵待ち）
+
+### 何ができるようになったか
+
+課金 v0 を「予約 → 決済ページ → 支払い → 知らせ → 確定 → 番号 → 権限 → 公開設定 → 返金 → 欠番 → 枠が戻る」の順に、
+手元のアプリと手元の DB の中だけで一周させられるようになった。本番の DB にも本番の商品にも触れない
+（販売を開けるのは手元の PGlite の中だけ）。
+
+- Stripe と通信しない形（既定）: 50項目すべて合格。3〜8段、二重処理、不正な知らせ5種、突き合わせの失敗6種を本物の受け口で確かめた
+- Stripe のテストモードへ実際に通信する形（`-- --mode stripe`）: 道具は作ったが、**未実施。**Stripe の鍵がこの端末のどこにも無い
+  （環境変数・.env.local・キーチェーン・ホーム以下のファイルを探して0件。Stripe CLI のログイン情報も無い）
+
+### 何を引き換えにしたか
+
+`stripe` モードは Stripe の決済ページ（checkout.stripe.com）を Playwright で操作するので、Stripe が画面を変えると入力欄の指定が壊れうる。
+ほかの引き換えは無し（本番のコードは変えていない）。
+
+ブラウザ試験の誤判定を1件直した（D205 の新規発見）。お題に「取引」が引かれると、フッターの「特定商取引法に基づく表示」を答えの漏れと数えて落ちていた。
+数える前にサイト共通のフッターを外す。
+
+### どこまでで、どこからが未着手か
+
+済み: 8段の定義を D201 から復元、案 A の組み直し（Webhook の受け口を管理画面に作らず、stripe listen で転送）、
+道具（local 50項目合格）、鍵が無い・sk_live_ の形の鍵では通信前に止まることの確認、Stripe CLI v1.50.11 の取得と照合、全回帰試験、記録。
+
+未着手（人の操作が要る）: Stripe テストモードの秘密鍵をキーチェーンへ入れる（手順は docs/billing-stripe-test.md の 2。人がやるのはこれだけ）。
+そのあと Claude が `stripe` モードで1〜8段・連打・枠の競合・返金を通す。
+
+### 触ったファイル
+
+- `test/billing/stripe-e2e.mjs`（新規）、`package.json`（test:billing:stripe）、`test/e2e/browser.mjs`（誤判定の修正）
+- `docs/billing-stripe-test.md`、`docs/decisions.md`（D205・D201 の追記）、`README.md`、`PROGRESS.md`
+
+### 次の一手
+
+- ユーザー: docs/billing-stripe-test.md の 2 の 1〜8
+- Claude: `STRIPE_CLI=<CLI のパス> npm run test:billing:stripe -- --mode stripe`
+
 ## 2026-09-17 課金 v0 の本番着地を、別の作業線とは独立に確かめ直した（D204。販売はしていない）
 
 ### 何ができるようになったか
@@ -340,40 +378,5 @@ merge は手元だけ。push も deploy も本番への適用もしていない�
 
 - `PROGRESS.md` `README.md` `docs/decisions.md` `docs/launch-checklist.md` `docs/test-layers.md`（merge の衝突を解いた5件）
 - `docs/landing-d194-d196.md`（本番の今の値・増える10項目・投入の最終チェックリストを追記）
-
----
-
-## 2026-09-12 D194〜D196 の版番号を 20260912110000 / 120000 / 130000 へ振り直した（D198。本番は未実行）
-
-### 何ができるようになったか
-
-D194〜D196 の3本が、本番の最大（20260911120000、別の作業線が当てた掃除）より新しい番号になった。
-本番へ1本当てるごとに、履歴の最大がその版になる（61本 → 62本 → 63本）。
-当てた順と版の順が一致し、古い番号を後から当てる特別な扱い（`--include-all`）が要らなくなった。
-使い捨ての PostgreSQL 17.6 で、本番と同じ60本のあとに新しい3本を1本ずつ当てて確かめた。
-
-### 何を引き換えにしたか
-
-SQL の本文は変えていない（sha256 が旧版と同じ）。そのため SQL の中のコメントには古い番号が残る
-（各ファイル1行目のファイル名、D195・D196 の中の「Phase 1（20260911090000）」など）。
-
-### 分かったこと
-
-- origin/main が 6f4521a（別の作業線）まで進んだ。案Aの「p0-p5 を main へ」は済んでいる。残りは onboarding の merge だけ
-- 本番の Vercel には fe642c3 が deploy され、検査用の利用者330人が消えた（回答 679 → 324）。
-  別の作業線の記録では db:verify:keychain の4項目（A8 / A21 / A24 / A32）が期待と違う（D70 の既知の問題）
-- 6f4521a と merge すると、文書が5つ衝突する（docs/decisions.md が増えた）。コードの衝突は0
-
-### 次の一手（どれも人の承認が要る）
-
-1. onboarding-phase12-integration を main（6f4521a）へ merge し、文書5つの衝突を解く
-2. docs/landing-d194-d196.md の手順で、clean checkout から3本を1本ずつ当てる
-
-### 触ったファイル
-
-- supabase/migrations/2026091{2110000,2120000,2130000}_*.sql（名前だけ変更）
-- supabase/rollback/2026091{2110000,2120000,2130000}_*_rollback.sql（名前と中の版番号の文字）、supabase/rollback/README.md
-- test/db/run.mjs（互換 migration の境目 COMPAT_FROM）、scripts/landing-d194-expected.json
-- docs/landing-d194-d196.md、docs/decisions.md（D198。D195・D196・D197 に振り直しを書き足した）、PROGRESS.md
 
 ---

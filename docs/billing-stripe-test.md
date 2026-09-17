@@ -23,6 +23,7 @@
 | 知らせの受け口 `POST /api/billing/webhook` | 503（`STRIPE_WEBHOOK_SECRET` が本番に無い） |
 | Stripe の鍵 | **どこにも無い**（手元・環境変数・鍵束のどれにも無い。Stripe CLI も無い） |
 | Vercel の環境変数 | 手元の Vercel CLI が未ログインのため、読めない・書けない |
+| Stripe CLI | この端末に無かった。2026-09-17 に公式リリース v1.50.11 を取得できることを確かめた（sha256 一致）。ログイン情報は無い |
 
 販売停止のまま閉じていることは `npm run smoke:prod -- billing` で本番を見て確かめられる（2026-09-17 に全項目合格。D204）。
 販売を始めるとこのスモークは落ちるので、そのときに期待値を直す。
@@ -53,66 +54,72 @@ Stripe の口座の既定の版には左右されない。受け口を登録す�
 
 ---
 
-## 2. 人が行う操作（ここだけは私からは行えない）
+## 2. 人が行う操作（2026-09-17 に案 A で組み直した。人がやるのは鍵を1つ入れるだけ）
 
-1. Stripe のダッシュボードで**テストモード**に切り替え、秘密鍵（`sk_test_…`）を発行する。
-   **本番（live）の鍵は発行しない・使わない。**
-2. 同じくテストモードで、Webhook の受け口を登録する。
-   - URL: `https://<試験に使うドメイン>/api/billing/webhook`
-   - API の版: `2026-08-26.dahlia`
-   - 購読する知らせ（**これ以外は購読しない**）:
-     `checkout.session.completed` / `checkout.session.expired` /
-     `refund.created` / `refund.updated` / `refund.failed` /
-     `charge.dispute.created` / `charge.dispute.closed`
-   - 登録すると署名の鍵（`whsec_…`）が出る。
-3. 1 と 2 の値を、**試験に使う環境の**環境変数へ入れる（下の 3 で選ぶ）。
-4. Vercel CLI を使う場合は、対話できる端末で `vercel login` を済ませる。
+2026-09-17 のユーザー指示で**案 A（手元のアプリ＋手元の DB＋Stripe テストモード）を採用した。**
+Stripe からの知らせは Stripe CLI の `stripe listen` が手元のアプリへ転送するので、
+**Stripe の管理画面に Webhook の受け口を作る必要は無い。**署名の鍵（`whsec_…`）も CLI が出す。
+Stripe 側に商品や価格も作らない（1 のとおり、金額は DB から渡す）。
 
----
+人にしかできないのは、Stripe のアカウントに入ってテストモードの秘密鍵を1つ取り出し、この端末のキーチェーンへ入れることだけ。
+（Stripe のログインと鍵の表示は、本人の認証が要る。この端末には Stripe の鍵も CLI のログイン情報も無い。2026-09-17 の実測）
 
-## 3. どの環境で8段を通すか（未決定。判断が要る）
-
-D201 が決めた試験の8段（`docs/decisions.md` の D201「鍵が渡されたあとに実施する試験」）の
-**1段目は「`/founder` から決済ページを作る」**。ところが、
-
-- 予約の関数 `billing_reserve_slot` は、商品が販売中でなければ `OFFER_CLOSED` で止める
-  （Stripe を1回も呼ぶ前に止まる。2026-09-17 にコードで確認）
-- 画面と受け口が使う商品は `founding_creator_v0` の1つに固定されている
-
-ので、**いまのコードのまま本番で8段を通すには、本番の商品を一時的に販売中にするしかない。**
-これは 2026-09-17 のユーザー指示で「停止して報告」とされている操作。
-
-### 提案（ユーザーの採否は未回答）
-
-| 案 | やり方 | 本番の利用者から見えるか | 新しい仕様が要るか |
-|---|---|---|---|
-| A（推奨） | 手元の開発サーバ＋手元の Postgres（全 migration 適用済み）＋ Stripe テストモードの鍵。受け口は `stripe listen` で手元へ転送 | 見えない | 要らない（手元の DB でだけ商品を販売中にする） |
-| B | 本番で、決めた時間だけ `is_active = true` にして8段を通し、すぐ戻す | **その時間は見える** | 要らない |
-| C | 検査用アカウントだけが買える隠し商品を作る | 見えない | **要る**（コードと DB の変更） |
-
-推奨は A。本番に一切触れずに、Stripe テストモードとの往復（決済ページ・署名つきの知らせ・
-番号・権限・返金・欠番・枠の戻り）を全部確かめられるため。
-本番で確かめるのは、A が通ったあとに「知らせの受け口が署名つきの試験の知らせを受け取り、
-無署名・不正な署名を 400 で拒否する」ところまでにする（商品を開けずに確かめられる）。
+1. ブラウザで https://dashboard.stripe.com/test/apikeys を開く。ログインを求められたらログインする
+   （アカウントが無ければ https://dashboard.stripe.com/register で作る。テストモードだけなら本人確認・口座登録は要らない）
+2. テストモードであることを確かめる。画面の上部に「テスト環境」または「サンドボックス」の表示があり、
+   URL に `/test/` が入っている。**「本番環境」と出ていたら先へ進まない**
+3. 何も作らない（商品・価格・Webhook の受け口のどれも作らない）
+4. 「標準キー」の「シークレットキー」で「テスト用キーを表示」を押し、`sk_test_` で始まる値をコピーする
+   （`sk_live_` で始まる値は使わない。試験の道具も、その形の鍵なら通信する前に止まる）
+5. Webhook の URL は指定しない（CLI が転送する）
+6. 購読する知らせも指定しない（道具が7種類だけを指定する）
+7. ターミナルで次を実行し、聞かれたら 4 の値を貼り付けて Enter（2回聞かれる）。
+   **.env.local にも Vercel にも入れない**
+   ```
+   security add-generic-password -s drawing-prompt-quiz-stripe-test-secret-key -a "$USER" -w
+   ```
+8. Claude へは「Stripe テストの鍵をキーチェーンに入れた」とだけ伝える（値は伝えない）
 
 ---
 
-## 4. 設定したあとに確かめること（どの案でも同じ）
+## 3. 8段の通し方（案 A）
 
-- `POST /api/billing/checkout` が 503 ではなくなる（販売していないあいだは、予約の段で
-  「いまは販売していません」と断られ、**決済ページは作られない**）
-- `POST /api/billing/webhook` に署名の無い本文を送ると **400**
-- 署名が合わない本文を送ると **400**
-- Stripe のダッシュボードから試験の知らせを送ると **200**
-- `npm run check:env`（手元）で `[任意・課金]` の2つが「設定あり」になる
+道具は `test/billing/stripe-e2e.mjs`（`npm run test:billing:stripe`）。
 
-その後、D201 の8段を**この順で1回だけ**通す。加えて、次を確かめる。
+| モード | Stripe と通信するか | 何を確かめるか |
+|---|---|---|
+| `local`（既定） | しない | 3〜8段と、二重処理・不正な知らせ・突き合わせの失敗を、手元が Stripe と同じ手順で署名した知らせで確かめる。1・2段目は DB の関数で代わりにする |
+| `stripe` | する（テストモードだけ） | 1〜8段をこの順に。決済ページを作り、テストカード 4242 4242 4242 4242 で払い、`stripe listen` が知らせを転送する。返金は Stripe の API で全額 |
 
-- 同じ `checkout.session.completed` を2回送っても、番号は1つしか付かない
-  （`billing_webhook_events` の主キーが `stripe_event_id`）
-- 返金した番号は欠番のまま残り、次の購入に付け直されない
-- `admin_audit_log` に課金の行が増えていない（結び直しを使っていないので0件のはず）
-- 本物の利用者4人の行指紋が、試験の前後で同じ
+`stripe` モードの始め方（鍵を入れたあと）:
+
+```
+# Stripe CLI（2026-09-17 に v1.50.11 を公式の GitHub リリースから取得し、sha256 を照合）
+curl -sLO https://github.com/stripe/stripe-cli/releases/download/v1.50.11/stripe_1.50.11_mac-os_arm64.tar.gz
+curl -sLO https://github.com/stripe/stripe-cli/releases/download/v1.50.11/stripe-mac-checksums.txt
+grep arm64 stripe-mac-checksums.txt; shasum -a 256 stripe_1.50.11_mac-os_arm64.tar.gz   # 2つが一致すること
+tar xzf stripe_1.50.11_mac-os_arm64.tar.gz
+STRIPE_CLI="$PWD/stripe" npm run test:billing:stripe -- --mode stripe
+```
+
+道具が Stripe へ最初に通信する前に止まる条件:
+
+- キーチェーンに鍵が無い
+- 鍵が `sk_test_` / `rk_test_` で始まらない（2026-09-17 に `sk_live_` の形の偽の値で止まることを確かめた）
+- 本番の Supabase の痕跡が環境にある（`test/guard/no-production.mjs`）
+
+最初の通信は `GET /v1/balance`（読むだけ）で、`livemode` が false でなければ何も作らずに止まる。
+販売を開けるのは手元の PGlite の中の `founding_creator_v0` だけ。本番の DB へは接続しない。
+
+1段目が販売停止中の商品では通らない件（以前の案 A〜C）は、手元の DB でだけ `is_active = true` にすることで解いた。
+本番の商品は `is_active = false` のまま。
+
+---
+
+## 4. 結果（2026-09-17）
+
+- `local`: 50項目すべて合格（Stripe へは通信していない）
+- `stripe`: 未実施（2 の鍵が未設定。`BLOCKED: STRIPE_TEST_CREDENTIALS`）
 
 ---
 
@@ -134,3 +141,13 @@ D201 が決めた試験の8段（`docs/decisions.md` の D201「鍵が渡され�
 購入の行は `profiles` を消しても `profile_id` が空になって残り（`on delete set null`）、
 Founder 番号も欠番として残る設計のため、検査用アカウントを消しても行は残る。
 案 A なら手元の DB ごと捨てられるので、この問題は起きない。
+
+Stripe のテストモード側に残るもの（`stripe` モード）:
+
+- 道具が片づけるもの: 開いたままの決済ページ（失効させる）、作った顧客（削除する）
+- 残るもの（Stripe では削除できない。テストモードの履歴として正常）: 支払い（PaymentIntent・Charge）、返金、知らせ（Event）、
+  失効・完了した決済ページ
+
+D201 の6段目は「Stripe の管理画面から全額返金する」だが、道具は同じ返金を Stripe の API（`POST /v1/refunds`）で作る。
+Stripe 側にできるもの（Refund と、その知らせ）は同じ。管理画面の操作は人の手が要るため、置き換えた。
+
