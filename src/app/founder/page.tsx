@@ -106,7 +106,10 @@ export default async function FounderPage({
         <div className="flex flex-wrap items-baseline justify-between gap-2">
           <p className="text-xl font-bold">{priceText}</p>
           <p className="text-sm">
-            {status.sales_cap === null ? (
+            {!status.is_open ? (
+              // 販売していないあいだは、残り枠を出さない（買える数に見えてしまうため）
+              <span className="font-bold">ただいま販売しておりません</span>
+            ) : status.sales_cap === null ? (
               "枠の上限はありません"
             ) : status.sold_out ? (
               <span className="font-bold">販売枠が埋まりました</span>
@@ -273,6 +276,12 @@ function FounderState({
   }
 
   // 5. まだ買っていない
+  // **販売していないあいだは、ログインや登録へ誘わない。**
+  // 誘った先で買えないので、誰に対しても「販売していない」だけを出す（2026-09-17）。
+  if (!isOpen) {
+    return <p className="text-sm">ただいま販売しておりません。</p>;
+  }
+
   if (!signedIn) {
     return (
       <div className="space-y-3">
@@ -296,10 +305,6 @@ function FounderState({
         </Link>
       </div>
     );
-  }
-
-  if (!isOpen) {
-    return <p className="text-sm">ただいま販売しておりません。</p>;
   }
 
   if (soldOut) {

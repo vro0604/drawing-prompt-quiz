@@ -58,6 +58,15 @@ export default async function TokushohoPage() {
         </div>
       ) : null}
 
+      {status !== null && !status.is_open ? (
+        <div className={surface}>
+          <p className="text-sm">
+            <strong>現在、この商品は販売していません。</strong>
+            下の表示は、販売を始めるときの条件です。
+          </p>
+        </div>
+      ) : null}
+
       <dl className={`${surface} divide-y divide-line`}>
         <Row label="販売事業者">
           VRO（個人運営）
