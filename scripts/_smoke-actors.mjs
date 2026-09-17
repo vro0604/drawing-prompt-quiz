@@ -44,6 +44,33 @@ function decodeBase64Url(part) {
   return Buffer.from(padded, "base64").toString("utf8");
 }
 
+function safeDecodeUri(value) {
+  try {
+    return decodeURIComponent(value);
+  } catch {
+    return value;
+  }
+}
+
+/** Cookie の中身を、いまの入れかた2通りのどちらでも読む */
+function parseSession(value) {
+  let raw = value;
+  // @supabase/ssr は中身を base64 にして "base64-" を付ける版と、そのまま入れる版がある
+  if (raw.startsWith("base64-")) {
+    try {
+      raw = decodeBase64Url(raw.slice("base64-".length));
+    } catch {
+      return null;
+    }
+  }
+  try {
+    const parsed = JSON.parse(raw);
+    return typeof parsed?.access_token === "string" ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
 /**
  * ブラウザの入れ物にある Cookie から、いま誰としてアクセスしているかを読む。
  *
@@ -60,23 +87,17 @@ export function actorFromCookies(cookies) {
   if (chunks.length === 0) return null;
 
   chunks.sort((a, b) => a.index - b.index);
-  let raw = chunks.map((c) => c.value).join("");
+  const joined = chunks.map((c) => c.value).join("");
 
-  // @supabase/ssr は中身を base64 にして "base64-" を付ける版と、そのまま入れる版がある
-  if (raw.startsWith("base64-")) {
-    try {
-      raw = decodeBase64Url(raw.slice("base64-".length));
-    } catch {
-      return null;
-    }
+  // 生のまま読めなければ、URL 符号化を外して読み直す。
+  // ブラウザ越しに取ると復号済みだが、Set-Cookie をそのまま溜める入れ物では
+  // %7B のような形で入っている（scripts/_smoke-http.mjs の session）
+  let session = null;
+  for (const candidate of [joined, safeDecodeUri(joined)]) {
+    session = parseSession(candidate);
+    if (session) break;
   }
-
-  let session;
-  try {
-    session = JSON.parse(raw);
-  } catch {
-    return null;
-  }
+  if (!session) return null;
 
   const token = session?.access_token;
   if (typeof token !== "string") return null;

@@ -74,9 +74,11 @@
 import { readFileSync, writeFileSync, unlinkSync } from "node:fs";
 import { readTargetEnv } from "./_env-target.mjs";
 import { createClient } from "@supabase/supabase-js";
+import { cleanupActors, supabaseActorRemover } from "./_smoke-actors.mjs";
 import {
   isFixtureAccountEmail,
   isTestAccountEmail,
+  testAccountKind,
   testAccountLabel,
 } from "./_test-accounts.mjs";
 
@@ -271,6 +273,64 @@ export async function createThrowawayUser(role) {
  *
  * @returns 消した件数。鍵が無いなど、消せなかったときは null
  */
+/**
+ * この実行が作った匿名ゲストを、ID で名指しして消す。
+ *
+ * **消してよい相手を先に決める。**
+ *   ・認証の口が「匿名」と言う相手              → 消す
+ *   ・匿名ではないが、使い捨ての検査用のメール
+ *     （dpq-smoke- / dpq-probe-）を持つ相手      → 消す（smoke-anon の昇格がこれ）
+ *   ・固定の検査用利用者（dpq-fixture-）         → 消さない。**毎回使い回す人**
+ *   ・それ以外                                   → 消さない。理由を返して不合格にする
+ *   ・相手を読めなかったとき                     → Cookie が匿名と言っていたときだけ消す
+ *
+ * @param actors [{ id, isAnonymous }]。isAnonymous は Cookie から読んだ申告
+ * @param client 試験から差し替えるとき用。既定は本物の Admin API
+ */
+export async function deleteAnonymousActors(actors, { client = null } = {}) {
+  const seen = new Set();
+  const list = (actors ?? []).filter((a) => a?.id && !seen.has(a.id) && seen.add(a.id));
+  if (list.length === 0) return [];
+
+  const admin = client ?? adminClient();
+  const removable = [];
+  const refused = [];
+
+  for (const a of list) {
+    const { data } = await admin.auth.admin.getUserById(a.id).catch(() => ({ data: null }));
+    const user = data?.user ?? null;
+
+    if (!user) {
+      // もう居ないか、読めなかった。Cookie の申告が匿名のときだけ消しにいく
+      if (a.isAnonymous) removable.push({ id: a.id, role: "ゲスト", anonymous: true, how: "Cookie" });
+      continue;
+    }
+    if (user.is_anonymous) {
+      removable.push({ id: a.id, role: "ゲスト", anonymous: true, how: "Cookie" });
+      continue;
+    }
+
+    const kind = testAccountKind(user.email);
+    if (kind === "fixture") continue; // 使い回す人。消さない
+    if (kind) {
+      removable.push({ id: a.id, role: "昇格した検査用の人", anonymous: false, how: "Cookie＋メールの形" });
+      continue;
+    }
+    refused.push({
+      id: a.id,
+      role: "見送り",
+      anonymous: false,
+      how: "Cookie",
+      ok: false,
+      gone: false,
+      error: "匿名でも検査用のメールの形でもないので消しませんでした",
+    });
+  }
+
+  const report = await cleanupActors(removable, supabaseActorRemover(admin));
+  return [...report, ...refused];
+}
+
 export async function deleteReportsBy(userIds) {
   const ids = [...new Set((userIds ?? []).filter(Boolean))];
   if (ids.length === 0) return 0;

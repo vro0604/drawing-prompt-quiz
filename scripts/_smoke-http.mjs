@@ -16,12 +16,14 @@ import { deflateSync } from "node:zlib";
 import { readTargetEnv } from "./_env-target.mjs";
 import {
   createThrowawayUser,
+  deleteAnonymousActors,
   deleteReportsBy,
   ensureFixtureUser,
   generateSignupConfirm,
   loadCookies,
   storeCookies,
 } from "./_smoke-users.mjs";
+import { actorFromCookies, cleanupFailed, describeActor } from "./_smoke-actors.mjs";
 
 export const BASE = process.env.SMOKE_BASE_URL ?? "http://localhost:3000";
 
@@ -186,6 +188,7 @@ async function cleanupSmokeReports() {
 export async function finish() {
   await cleanupCreatedWorks();
   await cleanupSmokeReports();
+  await cleanupAnonymousGuests();
 
   // 通りがけに拾った分をまとめて出す。**開いた画面のぶんしか見ていない**ので、
   // 「0件だった」は「この検査が通った画面には無かった」という意味。
@@ -385,7 +388,52 @@ export function session(name, initialCookies) {
 
   // 片づけは「この session が消す」ので、自分自身を渡せるように名前を付ける
   const self = { name, get, post, cookies };
+  openedSessions.push(self);
   return self;
+}
+
+/**
+ * この実行で開いた入れ物ぜんぶ。**後片づけの範囲を決めるためだけ**に持つ。
+ *
+ * ここを見れば、サーバー側が勝手に作った匿名ゲストも拾える。
+ * ゲストは「回答を送る」「お題を引く」などの書き込みの瞬間に
+ * サーバーが作る（src/features/auth/session.ts の ensureUserId）。
+ * スモークは頼んでいないので ID を知らないが、**そのとき渡された
+ * セッション Cookie はこの入れ物に残る。**そこから読む。
+ */
+const openedSessions = [];
+
+/**
+ * この実行が作った匿名ゲストを消す。**失敗したら合否を変える。**
+ *
+ * 作品や通報の片づけ（D85）は失敗しても握りつぶすが、人は別扱いにする。
+ * 消し残した匿名ゲストは電子メールを持たないので、あとから見分けられず、
+ * 30日間そのまま本番の利用者数と初回利用ファネルに混ざるため（D210）。
+ */
+async function cleanupAnonymousGuests() {
+  const found = [];
+  for (const s of openedSessions) {
+    const actor = actorFromCookies(
+      Object.entries(s.cookies()).map(([name, value]) => ({ name, value })),
+    );
+    if (actor?.id) found.push(actor);
+  }
+  if (found.length === 0) return;
+
+  let report;
+  try {
+    report = await deleteAnonymousActors(found);
+  } catch (e) {
+    must(false, "片づけ: この検査が作ったゲストを消せた", String(e?.message ?? e).slice(0, 160));
+    return;
+  }
+
+  for (const r of report) console.log(`[片づけ] ${describeActor(r)}`);
+  must(
+    !cleanupFailed(report),
+    "片づけ: この検査が作ったゲストを消せた",
+    report.filter((r) => !r.ok).map((r) => r.error).join(" ／ "),
+  );
 }
 
 /**

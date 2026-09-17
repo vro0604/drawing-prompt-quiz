@@ -23,6 +23,7 @@ import { fileURLToPath } from "node:url";
 import { PGlite } from "@electric-sql/pglite";
 import { buildPlan, applyPlan, linkedProjectRef } from "../../scripts/db-apply-many.mjs";
 import {
+  deleteAnonymousActors,
   isFixtureEmail,
   purgeFixtureUsers,
   summarizeFailures,
@@ -1099,6 +1100,89 @@ await test("片づけ", "一周のスクリプトは、帳面を通してしか�
   assert(direct.length === 0, `帳面を通さずに人を消している箇所が ${direct.length} か所ある`);
   assert(!/created_at.*(gte|gt|lt)/.test(src), "時刻の範囲で消そうとしている");
   assert(/} finally {/.test(src), "finally で片づけていない");
+});
+
+// ── どのスモークが作ったゲストも、その実行が消す（共通の入口） ─────────
+
+/** 認証の口の代わり。誰が居て、誰が消されたかを覚える */
+function fakeAuth(users) {
+  const removed = [];
+  return {
+    removed,
+    auth: {
+      admin: {
+        async getUserById(id) {
+          const u = users.get(id);
+          return u ? { data: { user: u }, error: null } : { data: null, error: { message: "not found" } };
+        },
+        async deleteUser(id) {
+          if (!users.has(id)) return { error: { message: "User not found" } };
+          users.delete(id);
+          removed.push(id);
+          return { error: null };
+        },
+      },
+    },
+  };
+}
+
+await test("片づけ", "使い回す固定の検査用利用者は消さない", async () => {
+  const id = "aaaaaaaa-1111-1111-1111-111111111111";
+  const users = new Map([[id, { id, is_anonymous: false, email: "dpq-fixture-artist@dpq-smoke.invalid" }]]);
+  const fake = fakeAuth(users);
+  const report = await deleteAnonymousActors([{ id, isAnonymous: false }], { client: fake });
+  assert(fake.removed.length === 0, "毎回使い回す人を消している");
+  assert(report.length === 0, "見送ったのに報告へ出している");
+  assert(users.has(id), "固定の利用者が消えた");
+});
+
+await test("片づけ", "ゲストが途中で登録に変わっても、使い捨ての形なら消す", async () => {
+  const id = "bbbbbbbb-1111-1111-1111-111111111111";
+  const users = new Map([[id, { id, is_anonymous: false, email: "dpq-smoke-anon-12-34@example.com" }]]);
+  const fake = fakeAuth(users);
+  const report = await deleteAnonymousActors([{ id, isAnonymous: true }], { client: fake });
+  assert(fake.removed.includes(id), "昇格した検査用の人が残っている");
+  assert(report[0].ok === true, "合格になっていない");
+});
+
+await test("片づけ", "匿名なら消す。相手を読めなくても Cookie が匿名と言えば消しにいく", async () => {
+  const anon = "cccccccc-1111-1111-1111-111111111111";
+  const ghost = "dddddddd-1111-1111-1111-111111111111";
+  const users = new Map([[anon, { id: anon, is_anonymous: true, email: null }]]);
+  const fake = fakeAuth(users);
+  const report = await deleteAnonymousActors(
+    [{ id: anon, isAnonymous: true }, { id: ghost, isAnonymous: true }],
+    { client: fake },
+  );
+  assert(fake.removed.includes(anon), "匿名ゲストが残っている");
+  assert(report.length === 2, `報告の件数が違う: ${report.length}`);
+  assert(report.every((r) => r.ok), "すでに居ない相手を失敗にしている");
+});
+
+await test("片づけ", "検査用でない登録者は消さず、不合格として返す", async () => {
+  const real = "eeeeeeee-1111-1111-1111-111111111111";
+  const users = new Map([[real, { id: real, is_anonymous: false, email: "someone@example.jp" }]]);
+  const fake = fakeAuth(users);
+  const report = await deleteAnonymousActors([{ id: real, isAnonymous: false }], { client: fake });
+  assert(fake.removed.length === 0, "実利用者を消している");
+  assert(report[0].ok === false, "黙って見送っている");
+  assert(users.has(real), "実利用者が消えた");
+});
+
+await test("片づけ", "Cookie が URL 符号化されていても読める（通信だけのスモーク）", () => {
+  const id = "ffffffff-1111-1111-1111-111111111111";
+  const [cookie] = sessionCookie("sb-abc123-auth-token", { sub: id, encode: "plain" });
+  const encoded = { name: cookie.name, value: encodeURIComponent(cookie.value) };
+  assert(encoded.value !== cookie.value, "符号化されていない（試験の前提が崩れている）");
+  const got = actorFromCookies([encoded]);
+  assert(got?.id === id, `符号化された Cookie を読めていない: ${JSON.stringify(got)}`);
+});
+
+await test("片づけ", "通信だけのスモークも、共通の入口で人を片づける", () => {
+  const src = fs.readFileSync(path.join(ROOT, "scripts", "_smoke-http.mjs"), "utf8");
+  assert(/openedSessions\.push\(self\)/.test(src), "開いた入れ物を控えていない");
+  assert(/cleanupAnonymousGuests\(\)/.test(src), "共通の終わりで人を片づけていない");
+  assert(/deleteAnonymousActors\(/.test(src), "消す側を呼んでいない");
 });
 
 await test("片づけ", "前後の件数は、1件でも違えば取りこぼさず出る", () => {

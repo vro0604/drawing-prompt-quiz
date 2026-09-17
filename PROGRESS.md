@@ -36,9 +36,22 @@
 限定公開を広げて実利用者が入ったら、同じ `npm run db:funnel` で測り直し、検査の痕跡だけだった時期の数字と比べる。
 閲覧・押下の記録を足すかどうかはそのあとで決める（今回も1つも足していない）。
 
+### 同じ穴が journey 以外にもあった
+
+`scripts/smoke-anon.mjs` も本番でゲストを残す作り（同ファイル44行目に明記）。
+1本ずつ直すのをやめ、すべてのスモークが使う共通の入口（`scripts/_smoke-http.mjs` の `finish()`）で、開いた入れ物の Cookie から人を拾って消すようにした。
+本番で `smoke:prod -- anon` を1回流し、匿名ゲスト3人が消えることを実測した。
+固定の検査用利用者（`dpq-fixture-`）だけは使い回す前提なので消さない。本番で流したあとは `npm run smoke:fixtures:purge` を別に流す必要がある。
+
+### 未処理（ユーザーの判断待ち）
+
+上の確認で本番に固定の検査用利用者2人が残っている（本番の人は 40人 → 42人）。
+消すコマンド（本番向けの `_smoke-users.mjs --purge`）は取り消せない削除として自動実行を止められた。
+承認があれば私が流す。あわせて確定したお題4件・ドラフト2件・作品2件（削除済み）・回答1件・同意4件が増えている。
+
 ### 触ったもの
 
-`scripts/_smoke-actors.mjs`（新規）、`scripts/_smoke-baseline.mjs`（新規）、`scripts/smoke-journey.mjs`、`test/tools/run.mjs`（片づけの試験14件を追加。46→61）、`docs/smoke-selfclean.md`（新規）、`docs/funnel-v0.md`、`docs/decisions.md`（D210）、`README.md`。
+`scripts/_smoke-actors.mjs`（新規）、`scripts/_smoke-baseline.mjs`（新規）、`scripts/smoke-journey.mjs`、`scripts/_smoke-http.mjs`、`scripts/_smoke-users.mjs`、`test/tools/run.mjs`（片づけの試験20件を追加。46→67）、`docs/smoke-selfclean.md`（新規）、`docs/funnel-v0.md`、`docs/decisions.md`（D210）、`README.md`。
 
 ---
 
