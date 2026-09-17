@@ -4,6 +4,34 @@
 `/next` はここを起点に「現在地と次の一手」を出し、`/progress` がここへ追記します。
 日時は JST。全体が400行を超えたら、一番下（最も古いもの）から削ります。
 
+## 2026-09-18 履歴 20260909180000 を本番で直した（方式 C。変わったのは履歴の1行だけ）
+
+### 何ができるようになったか
+
+本番の migration の記録が、手元の origin/main と1行残らず一致した。20260909180000 の行は、古い課金の下書き（106文）から
+実際に入っているプロフィール権限の修正（11文）の記録に置き換わった。これで、本番の履歴からファイルを作り直す操作（`migration fetch`）をしても
+同じ版番号のファイルが2つにならず、その後の `db push --dry-run` も止まらない（本番へ書かずに確かめた）。
+表・関数・権限・データは1つも変わっていない（部品1,515個・権限378個・public の全表の件数とハッシュが前後で同じ、構造検査は前後とも236/236）。
+
+### 何を引き換えにしたか
+
+本番の履歴表へ1行書き込んだ。戻すときは `node scripts/db-history-0909.mjs rollback --yes` で修復前の行へ戻せる（使い捨ての DB で確認済み、本番では使っていない）。
+道具はリポジトリに残っていて、いま流すと「修復後」と判定され、`fix` は何も書かずに止まる。
+
+### どこまでで、どこからが未着手か
+
+済み: origin/main（de46a84）から作った作業木での事前確認（止める条件すべて不成立）、修復、直後の check・構造検査・前後の比較、fetch の経路の確認、記録。
+未着手: 無し（この件）。手元の main（6d24ec1）には同じ版番号の古い課金のファイルが残っているので、その作業木から CLI の repair を流さないこと。
+
+### 触ったファイル
+
+- `docs/history-20260909180000.md`（冒頭に本番修復の記録）、`docs/decisions.md`（D206）、`docs/launch-checklist.md`、`docs/history-20260909180000-harness/README.md`
+- `scripts/db-history-0909.mjs`（冒頭の説明に「修復済み」を足しただけ）、`PROGRESS.md`
+
+### 次の一手
+
+- この件は完了。次の migration を本番へ当てるときは、いつもどおり `db push --dry-run` から始める
+
 ## 2026-09-17 履歴 20260909180000 の食い違いを、使い捨ての PostgreSQL で再現し、3つの直し方を比べた（本番は読み取りだけ）
 
 ### 何ができるようになったか
@@ -36,7 +64,7 @@ repair の正体（届いた文と前後）、fetch と履歴からの作り直�
 ### 次の一手
 
 - ユーザー: 本番で直すかを決める（推奨は C、急ぎではない。行うなら次の migration より前）
-- 直す場合の手順・止める条件・戻し方は `docs/history-20260909180000.md` の 10 にある。実行するのは承認の後
+- 直す場合の手順・止める条件・戻し方は `docs/history-20260909180000.md` の 10 にある。→ 2026-09-17T15:27Z に実行済み（上の節）
 
 ## 2026-09-17 一般公開の前に残る非課金の問題を、本番を実際に操作して洗い直した（課金は対象外）
 
@@ -318,60 +346,5 @@ etag の原因の特定、全試験、push と deploy、本番確認。
 - `supabase/migrations/20260916120000_usage_summary_human_answers.sql`（新規）
 - `test/db/run.mjs`（SU 群）`scripts/db-checks.mjs`（A63）`scripts/smoke-unseen.mjs`
 - `docs/decisions.md`（D202 / D203）`docs/spec.md` `docs/launch-checklist.md` `docs/landing-d194-d196.md` `README.md` `docs/test-layers.md` `PROGRESS.md`
-
----
-
-## 2026-09-17 課金 v0 を main へ取り込んだ（版番号 20260917090000 / 100000。この時点では本番へ未適用）
-
-### 何ができるようになったか
-
-課金 v0（Founding Creator、D187 / D201）のコード・画面・SQL・試験が、正式な開発線（main）に載った。
-これまで課金は手元の main（6d24ec1、未 push）にしか無く、origin/main とは 9/4 の地点で分かれていた。
-課金 SQL 2本は `20260917090000_billing_founding_creator_v0.sql` と `20260917100000_legal_v2_billing.sql`。
-本文は1バイトも変えていない（sha256 `997f9e9b…` / `d9711e75…`、9/12 の記録と同じ）。
-本番に対して読むだけで確かめた: migration list は66行のうち64本が両方にあり、手元だけが課金の2本、
-db push --dry-run が当てようとするのもこの2本だけ。**本番へは当てていない。**
-
-課金の DB がまだ無い本番へコードだけが出ても、課金の画面が落ちないようにした。
-`/founder`・`/tokushoho`・`/founder/members` は「準備中」「販売している商品はありません」
-「まだどなたも購入されていません」を出す（手元の開発サーバを本番の DB へつないで HTTP 200 を実測）。
-直す前は、読み出しが「関数が無い」（PGRST202、本番で実測）で例外を投げ、画面の準備中の分岐へ届かなかった。
-
-### 何を引き換えにしたか
-
-- 本番へ課金を当てるまで、`npm run db:verify:keychain` は表の数（期待69・本番64）などで食い違う。
-  検査の定義が「手元の migration を全部当てた状態」を表すため。
-- 課金の決定「売れる形にする」は main の D188（検索）と番号が重なっていたので D201 へ移した。
-  課金の commit 説明に残る「D188」はこの節を指す。
-- 版番号は 9/12 の `20260912140000` / `150000` からもう一度動かした。9/16 に本番へ `20260914120000` が
-  入り、その番号では db:deploy が「最後より前への挿入」として断るため。
-
-### どこまでで、どこからが未着手か
-
-済み: 取り込み、競合の解消（試験の実行ファイル2つ・DB 検査の定義・環境変数の確認・文書）、全検査16工程。
-未着手: 本番への適用、Stripe との実通信（鍵が無い）、`billing_offers.is_active` を true にすること。
-監査で見つけた要判断1件: `legal_v2_billing.sql` を当てると規約の有効な版が 2026-08-08 → 2026-09-09 に移り、
-本物の利用者（メールあり4人）も次の投稿で同意画面を通る。SQL の説明は「検査用の利用者だけ」と書いているが、
-いまは本物がいる（2026-09-17 の実測）。仕様は変えていない。
-
-### 何が何を呼ぶか
-
-購入ボタン（/founder）→ `/api/billing/checkout` が DB の `billing_reserve_slot` で枠を押さえる
-（規約の最新版への同意が無ければ断る）→ Stripe の決済ページを `fetch` で作る。
-払われると Stripe が `/api/billing/webhook` へ知らせ、署名を確かめてから `billing_complete_checkout` が
-Founder 番号と権限（founding_creator / beta_access）を付ける。権限を付けるのはこの知らせだけ。
-
-### 触ったファイル
-
-- 課金 commit の一式（src/features/billing/・src/app/founder/・src/app/api/billing/・src/app/tokushoho/ ほか）
-- 課金の DB が無いときの読み出し: `src/features/billing/rpc.ts`・`src/features/billing/types.ts`（単体試験1件）
-- 競合を解いたもの: `scripts/db-checks.mjs`・`scripts/check-env.mjs`・`src/lib/env.ts`・`test/unit/run.mjs`・
-  `test/db/run.mjs`・`.env.example`・`package.json`
-- `docs/decisions.md`（D187・D201・版番号の衝突の追記）、`docs/launch-checklist.md`、`README.md`、`docs/test-layers.md`
-
-### 次の一手
-
-- 規約の版が変わることを受け入れるかを決め、課金 SQL 2本を本番へ当てる工程を用意する
-- Stripe の試験用の鍵を用意し、D201 の「鍵が渡されたあとに実施する試験」を1回通す
 
 ---
