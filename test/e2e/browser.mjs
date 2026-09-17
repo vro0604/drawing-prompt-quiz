@@ -674,6 +674,43 @@ async function main() {
   const guest = await browser.newContext({ viewport: { width: 1280, height: 900 } });
   const g = await guest.newPage();
 
+  /* --- トップの3つの手順（2026-09-18。docs/home-first-use.md） -----------------
+   *
+   * 初めて来た人が押す場所。**3つとも押せる行き先で、説明の図ではない。**
+   * まだ何もしていない人には「引く」「描く」が /play、「答える」が /works。
+   * いちばん狭い幅（320px）で横にはみ出さず、押す場所が 44px を下回らないことも見る。 */
+  await test("A", "トップ: 初見の人に3つの手順が押せる形で出て、行き先が正しい", async () => {
+    const ctx = await browser.newContext({ viewport: { width: 320, height: 568 } });
+    try {
+      const p = await ctx.newPage();
+      await p.goto(`${base}/`, { waitUntil: "domcontentloaded" });
+      await assertBody(p, /何を描いたか伝わる/, "問いかけが出ていない");
+      // 「描く」は /api/challenge を読んでから行き先を決める。読み終わった印を待つ
+      await p.waitForSelector('[data-home-step="draw"][data-home-step-state]', { timeout: 20000 });
+      const steps = await p.$$eval("[data-home-step]", (as) =>
+        as.map((a) => {
+          const r = a.getBoundingClientRect();
+          return { key: a.dataset.homeStep, href: a.getAttribute("href"), w: r.width, h: r.height };
+        }),
+      );
+      assert(
+        JSON.stringify(steps.map((x) => `${x.key}=${x.href}`)) ===
+          JSON.stringify(["draw-prompt=/play", "draw=/play", "answer=/works"]),
+        `行き先が違う: ${JSON.stringify(steps)}`,
+      );
+      assert(steps.every((x) => x.w >= 44 && x.h >= 44), `押す場所が狭い: ${JSON.stringify(steps)}`);
+      assert((await p.getByRole("link", { name: "お題を引く", exact: true }).count()) >= 1, "最初のボタンが無い");
+      assert((await p.getByRole("link", { name: "描かずに、絵に答える" }).count()) === 1, "答えるだけの入口が無い");
+      const overflow = await p.evaluate(() => document.documentElement.scrollWidth - window.innerWidth);
+      assert(overflow <= 0, `横にはみ出している（${overflow}px）`);
+
+      await clickSafely(p.locator('[data-home-step="answer"]'));
+      await p.waitForURL("**/works");
+    } finally {
+      await ctx.close();
+    }
+  });
+
   await test("A", "共有URLを開いたゲストに、答えが出ていない", async () => {
     await g.goto(`${base}/works/${seeded.works[1].workId}`);
     const html = await g.content();
@@ -720,6 +757,17 @@ async function main() {
     assert(/30分枠/.test(bar.text), `枠が出ていない: ${bar.text}`);
     assert(/経過 \d\d:\d\d:\d\d/.test(bar.text), `経過が出ていない: ${bar.text}`);
     assert(/残り \d\d:\d\d:\d\d/.test(bar.text), `残りが出ていない: ${bar.text}`);
+  });
+
+  await test("A", "トップ: 確定したお題を持つ人の「描く」は、そのお題のページを指す", async () => {
+    assert(guestPromptId !== null, "前の試験でお題が確定していない（準備の失敗）");
+    await g.goto(`${base}/`, { waitUntil: "domcontentloaded" });
+    await g.waitForSelector('[data-home-step="draw"][data-home-step-state="challenge"]', { timeout: 20000 });
+    const href = await g.locator('[data-home-step="draw"]').getAttribute("href");
+    assert(href === `/prompt/${guestPromptId}`, `描くの行き先が ${href}`);
+    assert((await g.locator('[data-home-step="draw-prompt"]').getAttribute("href")) === "/play", "引くの行き先が変わった");
+    await clickSafely(g.locator('[data-home-step="draw"]'));
+    await g.waitForURL(`**/prompt/${guestPromptId}`);
   });
 
   /* =====================================================================
