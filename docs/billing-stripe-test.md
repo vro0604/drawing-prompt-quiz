@@ -21,14 +21,14 @@
 | `/tokushoho` | 「現在、この商品は販売していません」＋販売を始めるときの条件 |
 | 購入の受け口 `POST /api/billing/checkout` | 503（Stripe の鍵が本番に無い） |
 | 知らせの受け口 `POST /api/billing/webhook` | 503（`STRIPE_WEBHOOK_SECRET` が本番に無い） |
-| Stripe の鍵 | **どこにも無い**（手元・環境変数・鍵束のどれにも無い。Stripe CLI も無い） |
+| Stripe の鍵 | テストモードの秘密鍵を 2026-09-17 にユーザーが手元のキーチェーンへ入れた（`drawing-prompt-quiz-stripe-test-secret-key`）。本番の Vercel には入れていない |
 | Vercel の環境変数 | 手元の Vercel CLI が未ログインのため、読めない・書けない |
 | Stripe CLI | この端末に無かった。2026-09-17 に公式リリース v1.50.11 を取得できることを確かめた（sha256 一致）。ログイン情報は無い |
 
 販売停止のまま閉じていることは `npm run smoke:prod -- billing` で本番を見て確かめられる（2026-09-17 に全項目合格。D204）。
 販売を始めるとこのスモークは落ちるので、そのときに期待値を直す。
 
-状態の呼び名は D201 と同じ `BLOCKED: STRIPE_TEST_CREDENTIALS`。
+2026-09-17 に鍵が入り、テストモードで8段を通した（4 と D205）。
 
 ---
 
@@ -119,7 +119,9 @@ STRIPE_CLI="$PWD/stripe" npm run test:billing:stripe -- --mode stripe
 ## 4. 結果（2026-09-17）
 
 - `local`: 50項目すべて合格（Stripe へは通信していない）
-- `stripe`: 未実施（2 の鍵が未設定。`BLOCKED: STRIPE_TEST_CREDENTIALS`）
+- `stripe`: 60項目すべて合格（2026-09-17T11:2xZ、4回目。1・2回目は Managed Payments のバグで1段目が 500、3回目で修正を確認。D205）
+- Stripe のテストモードに残ったもの: 支払い4件（3,000円。うち2件は返金済み）、返金2件、完了した決済ページ4件、失効した決済ページ6件、知らせ。
+  作った顧客はすべて削除（残り0）、開いたままの決済ページは0
 
 ---
 

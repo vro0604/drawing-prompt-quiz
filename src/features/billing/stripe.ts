@@ -1,6 +1,6 @@
 import { STRIPE_SECRET_KEY, hasStripeSecretKey } from "@/lib/env";
 import { STRIPE_API_VERSION } from "./types";
-import { toStripeForm, type FormShape } from "./signature";
+import { buildCheckoutSessionForm, toStripeForm, type FormShape } from "./signature";
 
 // 署名の確かめ方と、送る文字列の組み立ては signature.ts にある
 // （外部を呼ばないので、単体で試せるように分けてある）。ここから通して出す。
@@ -190,39 +190,8 @@ export async function createCheckoutSession(input: {
     method: "POST",
     // **連打しても増えない。**同じ購入なら同じ決済ページが返る
     idempotencyKey: `checkout-${input.purchaseId}`,
-    form: {
-      mode: "payment",
-      // **支払い方法をここで縛る。**ダッシュボードの設定に任せない。
-      // card を指定すると、Checkout の画面では
-      // カードに加えて Apple Pay / Google Pay / Link（カードを束ねる財布）が出る。
-      // コンビニ払いと PayPay は v0 では扱わない（後払いは
-      // 「戻ってきた時点でまだ払われていない」状態を作り、
-      // 枠を押さえたまま何日も待つことになるため）。
-      payment_method_types: ["card"],
-      customer: input.customerId,
-      client_reference_id: input.purchaseId,
-      success_url: input.successUrl,
-      cancel_url: input.cancelUrl,
-      locale: "ja",
-      expires_at: Math.floor(Date.now() / 1000) + input.expiresInSeconds,
-      line_items: [
-        {
-          quantity: 1,
-          price_data: {
-            currency: input.currency,
-            unit_amount: input.amount,
-            product_data: { name: input.productName },
-          },
-        },
-      ],
-      metadata: {
-        purchase_id: input.purchaseId,
-        profile_id: input.profileId,
-        offer_code: input.offerCode,
-      },
-    },
+    form: buildCheckoutSessionForm(input, Math.floor(Date.now() / 1000)),
   });
-
   return asSession(json);
 }
 

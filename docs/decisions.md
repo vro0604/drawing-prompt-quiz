@@ -9607,7 +9607,7 @@ metadata）は版をまたいで名前が変わっていないので処理は続
   → 2026-09-17 時点でも同じ（`BLOCKED: STRIPE_TEST_CREDENTIALS`）。手順と、8段の1段目が
     販売停止中の商品では通らない件は `docs/billing-stripe-test.md`
   → 2026-09-17 に案 A を採用し、8段を一周させる道具を作った（D205）。Stripe と通信しない形では50項目合格。
-    Stripe のテストモードとの通信は、鍵がまだ無いため未実施
+    2026-09-17 にユーザーが鍵をキーチェーンへ入れ、`stripe` モードで1〜8段を最後まで通した（60項目すべて合格。D205 の「実通信の結果」）
 - `billing_offers.is_active` は false のまま
 
 ---
@@ -9792,4 +9792,50 @@ Stripe は呼ばない（受け口は設定の確認か販売停止で止まる�
 
 直し方: 数える前に、サイト共通のフッターを外す（`test/e2e/browser.mjs`）。フッターはお題から作られない固定の文言なので、
 答えが漏れる場所ではない。アプリのコードは変えていない。
+
+#### 実通信の結果（2026-09-17T11:17Z〜。ユーザー指示「D205に従ってStripe実通信による8段試験を最後まで実行して」）
+
+鍵はテストモードの形（`sk_test_`）で、Stripe は `GET /v1/balance` に livemode=false と答えた。
+販売を開けたのは手元の PGlite の中だけで、本番の DB へは読み取りしかしていない（本番の商品は `is_active = false`、購入・権限・顧客・知らせは0件のまま）。
+
+1回目と2回目は1段目で止まった。3回目で直した箇所を確かめ、4回目を1段目から通して **60項目すべて合格**。
+
+| 段 | 4回目で見たこと |
+|---|---|
+| 1 | Stripe の決済ページへ移った。購入の行が reserved・決済ページの ID（`cs_test_…`）。Stripe 側は open / unpaid / 3000 / jpy / metadata に購入の ID |
+| 2 | テストカード 4242 で支払い、`/founder?paid=1` へ戻った。Stripe 側は complete / paid |
+| 3 | `stripe listen` が転送した `checkout.session.completed` が1行・処理済み。api_version は `2026-08-26.dahlia`、livemode=false |
+| 4 | 購入が paid・#001・支払いの ID（`pi_…`）。権限は founding_creator と beta_access。残り29。/founder に「Founding Creator #001」 |
+| 5 | 表示名を出すと一覧に #001 と名前、戻すと「匿名希望」 |
+| 6 | Stripe の API で全額返金（succeeded・3000 jpy）。`refund.created` と `refund.updated` が届き、購入が refunded、権限2本とも取り消し |
+| 7 | 一覧で #001 が「欠番」。番号は購入の行に残る |
+| 8 | used 1→0・remaining 29→30。同じ人がもう一度決済ページを作れた |
+
+あわせて: 同じ event ID の再送（Stripe に記録された同じ知らせを取り寄せて署名し直した）は duplicate、
+同じ決済ページの別 event は already_granted、買い終えた人は 409（ALREADY_OWNED）、2人目は #002、
+不正な知らせ5種は 400、突き合わせの失敗6種は権限0、失効で枠が戻る、同じ人の同時2回で購入の行は1つ、
+残り1枠に2人が同時に来ると 200 と 409（used 4 / sales_cap 4）。
+
+#### 実通信で見つかったバグ（直した）
+
+**Managed Payments が既定で有効な口座では、購入の受け口が必ず 500 になっていた。**
+Stripe の答え: `Unsupported parameter: payment_method_types. Managed Payments, which is enabled by default on your account, handles this parameter for you. Remove payment_method_types, or pass managed_payments[enabled]=false to disable it for this request.`
+（1回目・2回目で実測。受け口は 500 で「想定外の失敗です: STRIPE_ERROR: Unsupported parameter…」を返し、画面はそれを出したまま決済ページへ移らない）
+
+Managed Payments は Stripe（Link）が販売者になる仕組みで、税を価格に上乗せするのが既定
+（出所: https://docs.stripe.com/payments/managed-payments/how-it-works ・ /set-up 、2026-09-17 取得）。
+v0 は販売者がこのサービス自身（/tokushoho・規約 13 条）、税込み価格、カードだけ、という仕様なので、
+**仕様を変えずに通すため、決済ページの要求ごとに `managed_payments[enabled]=false` を送る**ようにした
+（Stripe の文書が示す、要求単位で切る方法）。要求の中身を組み立てる部分を `buildCheckoutSessionForm` に切り出し、単体試験を1件足した
+（外すと落ちることを確認）。Managed Payments を使うかどうかは、この修正とは別の判断になる。
+
+#### 実通信で分かったこと（提案。ユーザーの採否は未回答）
+
+- **6段目の途中状態:** テストカードの返金は、`refund.created` の時点ですでに status=succeeded だった（2回とも）。
+  そのため購入は paid から直接 refunded になり、D201 に書いた「refund_pending → refunded」は Stripe では起きなかった。
+  refund_pending の扱いは `local` モードで確かめてある。D201 の期待を「refunded になる（途中で refund_pending を通ることがある）」と読み替える案
+- **受け口の連打:** 同じ人が同時に2回押すと、2回目は Stripe の「同じ Idempotency-Key の要求が処理中」で 500 になり、
+  画面へ「想定外の失敗です: STRIPE_ERROR: There is currently another in-progress request…」と英語のまま出る。
+  購入の行は1つ、決済ページは1つで、二重購入にはならない。もう一度押すと同じ決済ページが返る。
+  購入ボタンは押すと塞がるので、同じ画面からは起きず、2つのタブから同時に押したときだけ起きる。文言を直すかは提案
 

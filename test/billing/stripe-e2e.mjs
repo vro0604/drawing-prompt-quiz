@@ -299,8 +299,20 @@ try {
   let sessionId = null;
   let paymentIntent = null;
   if (STRIPE) {
+    const checkoutAnswers = [];
+    A.page.on("response", (r) => {
+      if (new URL(r.url()).pathname === "/api/billing/checkout") {
+        checkoutAnswers.push(r.text().then((t) => `${r.status()} ${t.replace(/https:\/\/checkout\.stripe\.com\S*/g, "<決済ページの URL>").slice(0, 300)}`).catch(() => `${r.status()}`));
+      }
+    });
     await buyBtn.click();
-    await A.page.waitForURL(/checkout\.stripe\.com/, { timeout: 60_000 });
+    try {
+      await A.page.waitForURL(/checkout\.stripe\.com/, { timeout: 60_000 });
+    } catch (e) {
+      const answers = await Promise.all(checkoutAnswers);
+      const logs = app.logs.join("").split("\n").filter((l) => /billing|STRIPE|Error|error/.test(l)).slice(-15).join("\n");
+      throw new Error(`決済ページへ移らなかった。受け口の答え: ${answers.join(" / ") || "（無し）"}\n画面: ${(await A.page.locator("main").innerText()).slice(0, 300)}\nサーバー: ${logs}\n${e.message}`);
+    }
     check("1", "Stripe の決済ページへ移った", /checkout\.stripe\.com/.test(A.page.url()), new URL(A.page.url()).host);
     const p = await purchaseOf(buyer.id);
     sessionId = p[0]?.sid ?? null;
@@ -396,7 +408,7 @@ try {
   const entDup = await entitlementsOf(buyer.id);
   check("二重", "購入1行・権限2本のまま", (await purchaseOf(buyer.id)).length === 1 && entDup.length === 2, JSON.stringify(afterDup));
   const rebuy = await postCheckoutAs(A.ctx);
-  check("二重", "買い終えた人が受け口を叩いても買えない", STRIPE ? rebuy.status === 409 && /すでに購入済み/.test(rebuy.body.error ?? "") : rebuy.status === 503, `${rebuy.status} ${rebuy.body.error ?? ""}`);
+  check("二重", "買い終えた人が受け口を叩いても買えない", STRIPE ? rebuy.status === 409 && rebuy.body.code === "ALREADY_OWNED" : rebuy.status === 503, `${rebuy.status} ${rebuy.body.error ?? ""}`);
 
   /* ---------------- 5段目: 公開設定 ---------------- */
   section("5段目: 公開設定を切り替える");
@@ -421,7 +433,8 @@ try {
   if (STRIPE) {
     const refund = await stripeApi("POST", "/refunds", { payment_intent: pA.pi });
     refundId = refund.id;
-    check("6", "Stripe で返金を作った（テストモード）", /^re_/.test(refundId) && refund.livemode === false, refund.status);
+    // Refund の物には livemode が無い。テストモードであることは 0 段目の balance で確かめてある
+    check("6", "Stripe で全額返金を作った", /^re_/.test(refundId) && refund.amount === 3000 && refund.currency === "jpy", `${refund.status} ${refund.amount}${refund.currency}`);
   } else {
     refundId = `re_local${Date.now()}`;
     const created = localEvent("refund.created", { id: refundId, object: "refund", payment_intent: pA.pi ?? paymentIntent, status: "pending", amount: 3000, currency: "jpy" });
@@ -443,8 +456,11 @@ try {
     return p.status === "refunded" ? p : null;
   }, { timeoutMs: 120_000 });
   check("6", "購入が refunded・返金の ID が記録された", refunded.status === "refunded" && refunded.rid === refundId && refunded.refunded_at, refunded.status);
+  if (STRIPE) await sleep(15_000); // refund.updated が遅れて届く場合に備えて待ってから数える
   const refundEvents = await all(`select event_type from public.billing_webhook_events where event_type like 'refund.%'`);
-  check("6", "返金の知らせ（refund.created / refund.updated）を受け取った", refundEvents.some((e) => e.event_type === "refund.created") && refundEvents.some((e) => e.event_type === "refund.updated"), refundEvents.map((e) => e.event_type).join(","));
+  check("6", "返金の知らせを1件以上受け取った", refundEvents.some((e) => e.event_type === "refund.created"), refundEvents.map((e) => e.event_type).join(","));
+  // D201 の6段目の記載そのもの。テストカードの返金がすぐ成立すると、この2つは起きない（それを事実として残す）
+  check("6", "D201 の記載どおり refund.updated も届いた", refundEvents.some((e) => e.event_type === "refund.updated"), refundEvents.map((e) => e.event_type).join(","));
   const entR = await entitlementsOf(buyer.id);
   check("6", "権限2本とも取り消された（行は残る）", entR.length === 2 && entR.every((e) => e.revoked_at), JSON.stringify(entR.map((e) => Boolean(e.revoked_at))));
 
@@ -595,15 +611,20 @@ try {
 } finally {
   if (STRIPE) {
     section("片づけ（Stripe のテストモード）");
+    // 途中で落ちても、DB に記録された決済ページと顧客はすべて片づけの対象に入れる
+    try {
+      for (const r of await all(`select stripe_checkout_session_id sid from public.billing_purchases where stripe_checkout_session_id is not null`)) cleanupStripe.sessions.add(r.sid);
+      for (const r of await all(`select stripe_customer_id c from public.billing_customers`)) cleanupStripe.customers.add(r.c);
+    } catch { /* DB が読めなければ、集めた分だけ片づける */ }
     let expiredN = 0;
-    for (const sid of cleanupStripe.sessions) {
+    for (const sid of [...cleanupStripe.sessions].filter((x) => x && !x.includes("_local"))) {
       try {
         const s = await stripeApi("GET", `/checkout/sessions/${sid}`);
         if (s.status === "open") { await stripeApi("POST", `/checkout/sessions/${sid}/expire`); expiredN += 1; }
       } catch (e) { console.log(`    （決済ページ ${sid.slice(0, 14)}… を失効できませんでした: ${e.message.slice(0, 80)}）`); }
     }
     let deletedN = 0;
-    for (const cus of cleanupStripe.customers) {
+    for (const cus of [...cleanupStripe.customers].filter((x) => x && !x.startsWith("cus_local"))) {
       try { await stripeApi("DELETE", `/customers/${cus}`); deletedN += 1; } catch { /* 既に消えている */ }
     }
     console.log(`  開いたままの決済ページを失効: ${expiredN} 件 / 顧客を削除: ${deletedN} 件`);

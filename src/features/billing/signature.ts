@@ -46,6 +46,78 @@ export function toStripeForm(shape: FormShape): URLSearchParams {
   return params;
 }
 
+/**
+ * 決済ページを作るときに Stripe へ送る中身。
+ *
+ * 【値段をここで決めない】
+ *   金額も通貨も商品名も、呼ぶ側が DB の商品定義から読んだ値を渡す。
+ *   **ブラウザから来た値をここへ流さないこと。**
+ *
+ * 【Managed Payments を、この決済ページでは使わない】
+ *   2026-09-17 に Stripe のテストモードへ実際に通信したところ、口座で既定の
+ *   Managed Payments（Stripe 側が販売者になる仕組み）が有効で、
+ *   `payment_method_types` を付けた要求は「Unsupported parameter」で断られた。
+ *   v0 の販売者はこのサービス自身（/tokushoho・規約 13 条）で、価格は税込み、
+ *   支払い方法はカードに限る。これを保つため、要求ごとに
+ *   `managed_payments[enabled]=false` を送る（Stripe の文書が示す、要求単位で切る方法）。
+ *   出所: https://docs.stripe.com/payments/managed-payments/set-up （2026-09-17 取得）
+ *
+ * 【失効までの時間】
+ *   Stripe は「作成から30分〜24時間」しか受け付けない（公式仕様）。
+ *   Founder は枠を押さえたまま待たせるので、呼ぶ側が30分を渡す。
+ *
+ * 外部を呼ばない純粋な組み立てなので、単体試験で中身を確かめられる。
+ */
+export function buildCheckoutSessionForm(
+  input: {
+    purchaseId: string;
+    profileId: string;
+    offerCode: string;
+    productName: string;
+    amount: number;
+    currency: string;
+    customerId: string;
+    successUrl: string;
+    cancelUrl: string;
+    expiresInSeconds: number;
+  },
+  nowSeconds: number,
+): FormShape {
+  return {
+    mode: "payment",
+    // **Stripe が販売者になる仕組みを、この決済ページでは使わない**（上の説明）
+    managed_payments: { enabled: false },
+    // **支払い方法をここで縛る。**ダッシュボードの設定に任せない。
+    // card を指定すると、Checkout の画面では
+    // カードに加えて Apple Pay / Google Pay / Link（カードを束ねる財布）が出る。
+    // コンビニ払いと PayPay は v0 では扱わない（後払いは
+    // 「戻ってきた時点でまだ払われていない」状態を作り、
+    // 枠を押さえたまま何日も待つことになるため）。
+    payment_method_types: ["card"],
+    customer: input.customerId,
+    client_reference_id: input.purchaseId,
+    success_url: input.successUrl,
+    cancel_url: input.cancelUrl,
+    locale: "ja",
+    expires_at: nowSeconds + input.expiresInSeconds,
+    line_items: [
+      {
+        quantity: 1,
+        price_data: {
+          currency: input.currency,
+          unit_amount: input.amount,
+          product_data: { name: input.productName },
+        },
+      },
+    ],
+    metadata: {
+      purchase_id: input.purchaseId,
+      profile_id: input.profileId,
+      offer_code: input.offerCode,
+    },
+  };
+}
+
 /* ---------------------------------------------------------------------------
  * 署名の確かめ方
  * ------------------------------------------------------------------------- */

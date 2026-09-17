@@ -94,6 +94,7 @@ import {
 } from "../../src/features/challenge/warning.ts";
 import { hasUnseenResults } from "../../src/features/notice/unseen.ts";
 import {
+  buildCheckoutSessionForm,
   parseStripeEvent,
   toStripeForm,
   verifyStripeSignature,
@@ -1169,6 +1170,35 @@ test("課金", "Stripe へ送る文字列が、入れ子のまま組み立てら
   );
   assert(!form.has("customer_email"), "null の項目を送っている");
   assert(!form.has("locale"), "undefined の項目を送っている");
+});
+
+test("課金", "決済ページの要求は Managed Payments を切り、カードだけ・DB の金額で作る", () => {
+  // 2026-09-17 に Stripe のテストモードで実測: Managed Payments が既定で有効な口座では、
+  // managed_payments[enabled]=false を送らないと payment_method_types が断られて購入が 500 になった
+  const form = toStripeForm(
+    buildCheckoutSessionForm(
+      {
+        purchaseId: "p1",
+        profileId: "u1",
+        offerCode: "founding_creator_v0",
+        productName: "Founding Creator",
+        amount: 3000,
+        currency: "jpy",
+        customerId: "cus_1",
+        successUrl: "https://example.test/founder?paid=1",
+        cancelUrl: "https://example.test/founder?canceled=1",
+        expiresInSeconds: 1800,
+      },
+      1_000_000,
+    ),
+  );
+  assert(form.get("managed_payments[enabled]") === "false", "Managed Payments を切っていない");
+  assert(form.get("payment_method_types[0]") === "card" && !form.has("payment_method_types[1]"), "支払い方法がカードだけでない");
+  assert(form.get("mode") === "payment", "買い切りでない");
+  assert(form.get("line_items[0][price_data][unit_amount]") === "3000", "金額が渡した値でない");
+  assert(form.get("line_items[0][price_data][currency]") === "jpy", "通貨が渡した値でない");
+  assert(form.get("expires_at") === "1001800", "失効の時刻が30分後でない");
+  assert(form.get("metadata[purchase_id]") === "p1" && form.get("client_reference_id") === "p1", "購入の ID が付いていない");
 });
 
 test("課金", "Stripe の API の版が、決め打ちの1つに固定されている", () => {
