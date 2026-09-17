@@ -441,7 +441,8 @@ try {
     const r1 = await postWebhook(created, signFor(created, webhookSecret));
     check("6", "（代わり）refund.created（pending）を受け取った", r1.status === 200, JSON.stringify(r1.body));
     const mid = (await purchaseOf(buyer.id))[0];
-    check("6", "返金が始まっただけでは refund_pending（権限は残る）", mid.status === "refund_pending" && (await entitlementsOf(buyer.id)).every((e) => !e.revoked_at), mid.status);
+    // D201（2026-09-17 改定）: 途中で refund_pending を通ることがある。通ったときは権限を残す
+    check("6", "返金が始まっただけの間は refund_pending（権限は残る）", mid.status === "refund_pending" && (await entitlementsOf(buyer.id)).every((e) => !e.revoked_at), mid.status);
     const updated = localEvent("refund.updated", { id: refundId, object: "refund", payment_intent: pA.pi ?? paymentIntent, status: "succeeded", amount: 3000, currency: "jpy" });
     const r2 = await postWebhook(updated, signFor(updated, webhookSecret));
     check("6", "（代わり）refund.updated（succeeded）を受け取った", r2.status === 200, JSON.stringify(r2.body));
@@ -459,8 +460,8 @@ try {
   if (STRIPE) await sleep(15_000); // refund.updated が遅れて届く場合に備えて待ってから数える
   const refundEvents = await all(`select event_type from public.billing_webhook_events where event_type like 'refund.%'`);
   check("6", "返金の知らせを1件以上受け取った", refundEvents.some((e) => e.event_type === "refund.created"), refundEvents.map((e) => e.event_type).join(","));
-  // D201 の6段目の記載そのもの。テストカードの返金がすぐ成立すると、この2つは起きない（それを事実として残す）
-  check("6", "D201 の記載どおり refund.updated も届いた", refundEvents.some((e) => e.event_type === "refund.updated"), refundEvents.map((e) => e.event_type).join(","));
+  // D201（2026-09-17 改定）: 途中の refund_pending は必須ではない。通った経路は事実として残すだけ
+  console.log(`    （返金の知らせの順: ${refundEvents.map((e) => e.event_type).join(" → ")}）`);
   const entR = await entitlementsOf(buyer.id);
   check("6", "権限2本とも取り消された（行は残る）", entR.length === 2 && entR.every((e) => e.revoked_at), JSON.stringify(entR.map((e) => Boolean(e.revoked_at))));
 
@@ -576,17 +577,55 @@ try {
   /* ---------------- 連打と枠の競合（受け口ごと） ---------------- */
   section("連打と枠の競合（受け口を同時に叩く）");
   if (STRIPE) {
-    const D = await signIn((await makeBuyer("d")).email);
-    const dId = (await one(`select id from auth.users where email like 'billing-d-%' order by created_at desc limit 1`)).id;
-    const [x, y] = await Promise.all([postCheckoutAs(D.ctx), postCheckoutAs(D.ctx)]);
-    const rowsD = await purchaseOf(dId);
-    for (const r of rowsD) if (r.sid) cleanupStripe.sessions.add(r.sid);
-    const cusD = await one(`select stripe_customer_id c from public.billing_customers where profile_id = $1`, [dId]);
-    if (cusD) cleanupStripe.customers.add(cusD.c);
-    check("連打", "同じ人が同時に2回押しても、購入の行は1つ", rowsD.length === 1, `${rowsD.length}行 / 応答 ${x.status}・${y.status}`);
-    check("連打", "少なくとも1回は決済ページの URL が返る", [x, y].some((r) => r.status === 200 && r.body.url), `${x.status} ${x.body.error ?? ""} / ${y.status} ${y.body.error ?? ""}`);
-    const again = await postCheckoutAs(D.ctx);
-    check("連打", "もう一度押すと、同じ決済ページが返る（reused）", again.status === 200 && again.body.reused === true, JSON.stringify({ status: again.status, reused: again.body.reused }));
+    // Stripe の英語のエラー文・内部の合図が、利用者向けの本文に出ていないか
+    const LEAK = /STRIPE_ERROR|idempoten|in-progress|another .*request|Keys for idempotent|想定外の失敗/i;
+    const leakFree = (text) => !LEAK.test(text);
+
+    // 【API】同じ人が同時に3回押す。重なりが起きるまで、別の人で最大5回やり直す
+    let conflictSeen = null;
+    for (let attempt = 1; attempt <= 5 && !conflictSeen; attempt += 1) {
+      const who = await makeBuyer(`d${attempt}`);
+      const D = await signIn(who.email);
+      const answers = await Promise.all([postCheckoutAs(D.ctx), postCheckoutAs(D.ctx), postCheckoutAs(D.ctx)]);
+      const rowsD = await purchaseOf(who.id);
+      check("連打", `（${attempt}回目）同じ人が同時に3回押しても、購入の行は1つ`, rowsD.length === 1, `${rowsD.length}行 / 応答 ${answers.map((a) => a.status).join("・")}`);
+      check("連打", `（${attempt}回目）少なくとも1回は決済ページの URL が返る`, answers.some((a) => a.status === 200 && a.body.url));
+      const others = answers.filter((a) => !(a.status === 200 && a.body.url));
+      for (const a of others) {
+        check("連打", `（${attempt}回目）重なった応答は 409・CHECKOUT_BUSY・日本語の案内だけ`, a.status === 409 && a.body.code === "CHECKOUT_BUSY" && a.body.retry === true && /処理が重なりました/.test(a.body.error ?? "") && leakFree(JSON.stringify(a.body)), `${a.status} ${JSON.stringify(a.body).slice(0, 160)}`);
+      }
+      if (others.length > 0) {
+        conflictSeen = { who, D };
+        const again = await postCheckoutAs(D.ctx);
+        check("連打", "重なったあとにもう一度押すと、同じ決済ページが返る（reused）", again.status === 200 && again.body.reused === true, JSON.stringify({ status: again.status, reused: again.body.reused }));
+        const serverLog = app.logs.join("");
+        check("連打", "Stripe の元のエラーはサーバーの記録にだけ残る", /\[billing\/checkout\] 要求が重なりました（Stripe (409|400) idempotency_/.test(serverLog));
+      }
+    }
+    check("連打", "受け口の重なりを5回以内に再現できた（再現できないと、上の判定は空振り）", Boolean(conflictSeen));
+
+    // 【画面】購入ボタンを押すのと同時に、同じ人の要求を裏で2本送る。ボタン側が重なったときの表示を見る
+    let uiSeen = false;
+    for (let attempt = 1; attempt <= 6 && !uiSeen; attempt += 1) {
+      const who = await makeBuyer(`u${attempt}`);
+      const U = await signIn(who.email);
+      await U.page.goto(`${BASE}/founder`);
+      const btn = U.page.getByRole("button", { name: "Founding Creator を購入する" });
+      const buttonAnswer = U.page.waitForResponse((r) => new URL(r.url()).pathname === "/api/billing/checkout", { timeout: 60_000 });
+      await Promise.all([btn.click(), postCheckoutAs(U.ctx), postCheckoutAs(U.ctx)]);
+      const res = await buttonAnswer;
+      if (res.status() !== 409) continue;
+      uiSeen = true;
+      await U.page.getByText("処理が重なりました").waitFor({ timeout: 30_000 });
+      const shown = await U.page.locator("main").innerText();
+      check("連打", "画面: ボタン側が重なると「処理が重なりました。…もう一度お試しください。」が出る", /処理が重なりました/.test(shown) && /もう一度お試しください/.test(shown));
+      check("連打", "画面: Stripe の英語のエラー文も内部の合図も出ていない", leakFree(shown), shown.replace(/\s+/g, " ").slice(0, 160));
+      await btn.click();
+      await U.page.waitForURL(/checkout\.stripe\.com/, { timeout: 60_000 });
+      check("連打", "画面: もう一度押すと決済ページへ移る", /checkout\.stripe\.com/.test(U.page.url()));
+      check("連打", "画面: この人の購入の行は1つ", (await purchaseOf(who.id)).length === 1);
+    }
+    check("連打", "画面でボタン側の重なりを6回以内に再現できた", uiSeen);
 
     // 残り1枠を作り、2人が同時に押す
     const used = (await offerStatus()).used;

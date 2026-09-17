@@ -20,6 +20,11 @@ import {
   CHECKOUT_EXPIRES_IN_SECONDS,
   FOUNDER_OFFER_CODE,
 } from "@/features/billing/types";
+import {
+  CHECKOUT_BUSY_CODE,
+  CHECKOUT_BUSY_MESSAGE,
+  isStripeRequestConflict,
+} from "@/features/billing/conflict";
 
 /**
  * /api/billing/checkout ／ 決済ページを1つ用意して、その入口を返す。
@@ -206,6 +211,17 @@ export async function POST(request: Request) {
 
     return json({ url: session.url, reused: false });
   } catch (e) {
+    // 【同じ人の要求が重なった】（2つのタブから同時に押したなど）
+    //   Stripe の英語のエラー文は利用者へ出さない。元の情報はサーバーの記録にだけ残す。
+    //   購入の行は DB が1つに抑えているので、もう一度押せば同じ決済ページが返る。
+    if (isStripeRequestConflict(e)) {
+      const s = e as { status: number; stripeCode: string; message: string };
+      console.warn(
+        `[billing/checkout] 要求が重なりました（Stripe ${s.status} ${s.stripeCode}）: ${s.message}`,
+      );
+      return json({ error: CHECKOUT_BUSY_MESSAGE, code: CHECKOUT_BUSY_CODE, retry: true }, 409);
+    }
+
     const err = billingError(e);
 
     const status =

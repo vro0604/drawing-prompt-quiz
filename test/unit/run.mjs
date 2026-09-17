@@ -100,6 +100,11 @@ import {
   verifyStripeSignature,
 } from "../../src/features/billing/signature.ts";
 import { STRIPE_API_VERSION, isBillingNotInstalled } from "../../src/features/billing/types.ts";
+import {
+  CHECKOUT_BUSY_CODE,
+  CHECKOUT_BUSY_MESSAGE,
+  isStripeRequestConflict,
+} from "../../src/features/billing/conflict.ts";
 import { recordCount } from "../counts.mjs";
 
 const results = [];
@@ -1199,6 +1204,45 @@ test("課金", "決済ページの要求は Managed Payments を切り、カー�
   assert(form.get("line_items[0][price_data][currency]") === "jpy", "通貨が渡した値でない");
   assert(form.get("expires_at") === "1001800", "失効の時刻が30分後でない");
   assert(form.get("metadata[purchase_id]") === "p1" && form.get("client_reference_id") === "p1", "購入の ID が付いていない");
+});
+
+/** stripe.ts の StripeError と同じ形を作る（stripe.ts は @/ の別名を読むので、ここからは import できない） */
+function fakeStripeError(status, stripeCode, message) {
+  const e = new Error(`STRIPE_ERROR: ${message}`);
+  e.name = "StripeError";
+  e.status = status;
+  e.stripeCode = stripeCode;
+  return e;
+}
+
+test("課金", "購入の要求が重なったときの Stripe の失敗だけを『重なり』と見なす", () => {
+  // 2026-09-17 にテストモードで実測した2つの形
+  const inProgress = fakeStripeError(
+    409,
+    "idempotency_key_in_use",
+    "There is currently another in-progress request using this Idempotent Key (that probably means you submitted twice, and the other request is still going through): customer-x. Please try again later.",
+  );
+  const mismatch = fakeStripeError(
+    400,
+    "idempotency_error",
+    "Keys for idempotent requests can only be used with the same parameters they were first used with.",
+  );
+  assert(isStripeRequestConflict(inProgress) === true, "処理中の重なり（409）を見逃した");
+  assert(isStripeRequestConflict(mismatch) === true, "同じ鍵で中身が違う重なり（400）を見逃した");
+
+  // ほかの失敗は、これまでどおりの扱いに回す
+  assert(isStripeRequestConflict(fakeStripeError(402, "card_declined", "Your card was declined.")) === false, "カードの拒否を重なりと見なした");
+  assert(isStripeRequestConflict(fakeStripeError(409, "resource_already_exists", "exists")) === false, "別の 409 を重なりと見なした");
+  assert(isStripeRequestConflict(fakeStripeError(500, "idempotency_key_in_use", "x")) === false, "想定外の状態コードを重なりと見なした");
+  assert(isStripeRequestConflict(new Error("SOLD_OUT: 販売枠が埋まりました（30 / 30）。")) === false, "DB の売り切れを重なりと見なした");
+  assert(isStripeRequestConflict({ status: 409, stripeCode: "idempotency_key_in_use" }) === false, "StripeError でない物を重なりと見なした");
+  assert(isStripeRequestConflict(null) === false && isStripeRequestConflict("x") === false, "空や文字列を重なりと見なした");
+});
+
+test("課金", "重なったときに利用者へ出す文に、Stripe の英語も内部の合図も入っていない", () => {
+  assert(CHECKOUT_BUSY_MESSAGE.includes("処理が重なりました") && CHECKOUT_BUSY_MESSAGE.includes("もう一度お試しください"), `案内の文が違う: ${CHECKOUT_BUSY_MESSAGE}`);
+  assert(!/[A-Za-z]/.test(CHECKOUT_BUSY_MESSAGE), `英字が入っている: ${CHECKOUT_BUSY_MESSAGE}`);
+  assert(CHECKOUT_BUSY_CODE === "CHECKOUT_BUSY", "API の合図が違う");
 });
 
 test("課金", "Stripe の API の版が、決め打ちの1つに固定されている", () => {
