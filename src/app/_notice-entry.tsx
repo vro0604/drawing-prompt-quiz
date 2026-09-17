@@ -4,8 +4,23 @@ import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { useEffect, useRef, useState } from "react";
 
-/** ヘッダーを静的に配るため、未確認の有無だけを描画後に読み込む。 */
-export function NoticeEntry() {
+/**
+ * ヘッダーを静的に配るため、未確認の有無だけを描画後に読み込む。
+ *
+ * 【見た目と場所は呼ぶ側が決める（2026-09-18）】
+ *   狭い画面ではヘッダーのメニューの中に、広い画面では横並びの中に置く。
+ *   同じ部品が2通りの場所に出るので、**位置と大きさの指定は className で
+ *   受け取る。**ここが持つのは「未確認があるかどうかで太さと濃さが変わる」
+ *   ことだけで、読み込み方（D192）は1文字も変えていない。
+ *   onNavigate は、押したときに呼ぶ側が閉じるためのもの。
+ */
+export function NoticeEntry({
+  className = "",
+  onNavigate,
+}: {
+  className?: string;
+  onNavigate?: () => void;
+}) {
   const pathname = usePathname();
   const [hasUnseen, setHasUnseen] = useState(false);
   const [loaded, setLoaded] = useState(false);
@@ -67,9 +82,8 @@ export function NoticeEntry() {
       aria-label={
         hasUnseen ? "知らせ。未確認の回答があります" : "知らせ。未確認の回答はありません"
       }
-      className={`ml-auto inline-flex min-h-11 items-center text-sm hover:underline ${
-        hasUnseen ? "font-bold text-ink" : "text-muted"
-      }`}
+      onClick={onNavigate}
+      className={`${className} ${hasUnseen ? "font-bold text-ink" : "text-muted"}`}
     >
       知らせ
     </Link>

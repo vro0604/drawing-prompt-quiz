@@ -1644,6 +1644,172 @@ async function main() {
    * G. スマホ幅
    * ===================================================================== */
 
+  /* --- ヘッダーを1段に畳む（2026-09-18。docs/header-mobile.md）---------------
+   *
+   * 行き先が5つあり、横に並べると 536px より狭い画面で折り返していた
+   * （実測: 320px で3段・157px）。狭いときは名前とボタンだけの1段にして、
+   * 行き先はボタンを押したときに開く。**開くまでの高さが1段ぶんであること**と、
+   * **開いたら5つとも押せて、正しい場所へ行くこと**を見る。 */
+  await test("G", "いちばん狭い画面で、ヘッダーが1段になり、メニューに5つ揃う", async (t) => {
+    const ctx = await browser.newContext({
+      viewport: { width: 320, height: 568 },
+      isMobile: true,
+      hasTouch: true,
+    });
+    try {
+      const p = await ctx.newPage();
+      t.stage("トップを開く");
+      await p.goto(`${base}/`, { waitUntil: "domcontentloaded" });
+      await p.waitForSelector('[data-testid="menu-button"]', { timeout: 20000 });
+
+      t.stage("閉じているときは1段");
+      const shut = await p.evaluate(() => {
+        const header = document.querySelector("header[data-site-nav]");
+        const ops = [...header.querySelectorAll("a, button")].filter(
+          (el) => el.getBoundingClientRect().height > 0,
+        );
+        return {
+          rows: new Set(ops.map((el) => Math.round(el.getBoundingClientRect().y))).size,
+          height: Math.round(header.getBoundingClientRect().height),
+          visible: ops.map((el) => (el.textContent ?? "").trim() || "メニュー"),
+          overflow: document.documentElement.scrollWidth - document.documentElement.clientWidth,
+        };
+      });
+      assert(shut.rows === 1, `閉じているのに ${shut.rows} 段（1段のはず）`);
+      assert(shut.height <= 70, `ヘッダーが ${shut.height}px（1段ぶんのはず）`);
+      assert(shut.visible.length === 2, `閉じているのに ${shut.visible.join("・")} が出ている`);
+      assert(shut.overflow <= 1, `横に ${shut.overflow}px はみ出している`);
+
+      t.stage("メニューを開く");
+      const btn = p.locator('[data-testid="menu-button"]');
+      assert((await btn.getAttribute("aria-expanded")) === "false", "閉じているのに開いていることになっている");
+      await btn.click();
+      await p.waitForSelector('[data-site-menu-panel="open"]', { timeout: 10000 });
+      assert((await btn.getAttribute("aria-expanded")) === "true", "開いたのに伝わっていない");
+
+      const items = await p.$$eval("[data-site-menu-panel] a", (as) =>
+        as.map((a) => {
+          const r = a.getBoundingClientRect();
+          return { t: (a.textContent ?? "").trim(), href: a.getAttribute("href"), w: Math.round(r.width), h: Math.round(r.height) };
+        }),
+      );
+      assert(
+        JSON.stringify(items.map((x) => `${x.t}=${x.href}`)) ===
+          JSON.stringify([
+            "お題を引く=/play",
+            "作品=/works",
+            "ランキング=/rankings",
+            "知らせ=/notices",
+            "アカウント=/account",
+          ]),
+        `メニューの中身が違う: ${JSON.stringify(items)}`,
+      );
+      assert(items.every((x) => x.h >= 44), `押す場所が狭い: ${JSON.stringify(items)}`);
+
+      const panel = await p.evaluate(() => {
+        const n = document.querySelector("[data-site-menu-panel]").getBoundingClientRect();
+        return {
+          x: Math.round(n.x),
+          right: Math.round(n.right),
+          overflow: document.documentElement.scrollWidth - document.documentElement.clientWidth,
+          win: window.innerWidth,
+        };
+      });
+      assert(panel.x <= 0 && panel.right >= panel.win, `板が画面の幅いっぱいでない: ${JSON.stringify(panel)}`);
+      assert(panel.overflow <= 1, `開いたら横に ${panel.overflow}px はみ出した`);
+
+      t.stage("行き先を押すと、閉じて移る");
+      await clickSafely(p.getByRole("link", { name: "ランキング", exact: true }));
+      await p.waitForURL("**/rankings", { timeout: 20000 });
+      await p.waitForSelector('[data-site-menu-panel="closed"]', {
+        state: "attached",
+        timeout: 10000,
+      });
+    } finally {
+      await ctx.close();
+    }
+  });
+
+  await test("G", "メニューは、同じボタン・Escape・外側のどれでも閉じる", async (t) => {
+    const ctx = await browser.newContext({
+      viewport: { width: 390, height: 780 },
+      isMobile: true,
+      hasTouch: true,
+    });
+    try {
+      const p = await ctx.newPage();
+      await p.goto(`${base}/works`, { waitUntil: "domcontentloaded" });
+      const btn = p.locator('[data-testid="menu-button"]');
+      await btn.waitFor({ state: "visible", timeout: 20000 });
+
+      t.stage("同じボタンでもう一度押すと閉じる");
+      await btn.click();
+      await p.waitForSelector('[data-site-menu-panel="open"]', { timeout: 10000 });
+      await btn.click();
+      await p.waitForSelector('[data-site-menu-panel="closed"]', {
+        state: "attached",
+        timeout: 10000,
+      });
+
+      t.stage("Escape で閉じ、押していたボタンへ戻る");
+      await btn.click();
+      await p.waitForSelector('[data-site-menu-panel="open"]', { timeout: 10000 });
+      await p.keyboard.press("Escape");
+      await p.waitForSelector('[data-site-menu-panel="closed"]', {
+        state: "attached",
+        timeout: 10000,
+      });
+      const focused = await p.evaluate(
+        () => document.activeElement?.getAttribute("data-testid") ?? "",
+      );
+      assert(focused === "menu-button", `閉じたあとの焦点が ${focused}（ボタンのはず）`);
+
+      t.stage("メニューの外を押しても閉じる");
+      await btn.click();
+      await p.waitForSelector('[data-site-menu-panel="open"]', { timeout: 10000 });
+      await p.mouse.click(195, 700);
+      await p.waitForSelector('[data-site-menu-panel="closed"]', {
+        state: "attached",
+        timeout: 10000,
+      });
+    } finally {
+      await ctx.close();
+    }
+  });
+
+  await test("G", "広い画面では、5つの行き先が横1列のまま出る", async (t) => {
+    const ctx = await browser.newContext({ viewport: { width: 1280, height: 900 } });
+    try {
+      const p = await ctx.newPage();
+      t.stage("パソコン幅でトップを開く");
+      await p.goto(`${base}/`, { waitUntil: "domcontentloaded" });
+      await p.waitForSelector("[data-site-menu-panel]", { timeout: 20000 });
+
+      const wide = await p.evaluate(() => {
+        const header = document.querySelector("header[data-site-nav]");
+        const ops = [...header.querySelectorAll("a, button")].filter(
+          (el) => el.getBoundingClientRect().height > 0,
+        );
+        const btn = document.querySelector('[data-testid="menu-button"]');
+        return {
+          rows: new Set(ops.map((el) => Math.round(el.getBoundingClientRect().y))).size,
+          height: Math.round(header.getBoundingClientRect().height),
+          labels: ops.map((el) => (el.textContent ?? "").trim()),
+          menuShown: btn.getBoundingClientRect().height > 0,
+        };
+      });
+      assert(!wide.menuShown, "広い画面にメニューのボタンが出ている");
+      assert(wide.rows === 1, `広い画面で ${wide.rows} 段になっている`);
+      assert(
+        JSON.stringify(wide.labels) ===
+          JSON.stringify(["つたわるかな", "お題を引く", "作品", "ランキング", "知らせ", "アカウント"]),
+        `並びが変わっている: ${wide.labels.join("・")}`,
+      );
+    } finally {
+      await ctx.close();
+    }
+  });
+
   await test("G", "スマホ幅で、帯が本文に重ならず横スクロールも出ない", async () => {
     const phone = await browser.newContext({
       viewport: { width: 375, height: 667 },

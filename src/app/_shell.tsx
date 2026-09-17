@@ -1,6 +1,6 @@
 import Link from "next/link";
 
-import { NoticeEntry } from "@/app/_notice-entry";
+import { SiteNav } from "@/app/_site-nav";
 
 /**
  * 全ページの上と下に付く枠（ヘッダーとフッター）。
@@ -38,18 +38,21 @@ import { NoticeEntry } from "@/app/_notice-entry";
  *   このサービスの入口はゲストで（spec 11-1）、登録を先に見せると
  *   いちばん人数の多い「とりあえず来た人」が引き返す。
  *
+ * 【2026-09-18：狭い画面では行き先をメニューへ畳んだ】
+ *   5つの行き先を横に並べると、**536px より狭い画面で折り返していた**
+ *   （実測: 320px と 375px で3段・高さ 157px、390px と 430px で2段・109px）。
+ *   スマホの最初の画面の上 96px ぶんが移動手段で埋まり、D207 で作り直した
+ *   トップの見出しと3つの手順が下へ押し出されていた。
+ *   狭いときは「つたわるかな」とメニューのボタンだけを1行で出し、
+ *   行き先はボタンを押したときにヘッダーの直下へ開く。
+ *   **広い画面の横並びは変えていない。**
+ *   中身は _site-nav.tsx が持つ。ここは置く場所と、いちばん左の名前だけ。
+ *
  * 【変えるとき】
- *   行き先と並びはこのファイルを直せば全ページに効く。
+ *   行き先と並びは _site-nav.tsx を直せば全ページに効く。
  *   知らせの読み込み方は _notice-entry.tsx に置いている。
  *   枠ごとやめるなら layout.tsx から2行消す。
  */
-
-/** ヘッダーの行き先。ゲストで使えるものから並べる */
-const NAV = [
-  { href: "/play", label: "お題を引く" },
-  { href: "/works", label: "作品" },
-  { href: "/rankings", label: "ランキング" },
-];
 
 export function SiteHeader() {
   return (
@@ -64,37 +67,13 @@ export function SiteHeader() {
         スマホで指が届く下限に届いていなかった（実測 20px）。
         文字の大きさは変えず、押せる高さだけを確保している。
       */}
-      <div className="mx-auto flex w-full max-w-5xl flex-wrap items-center gap-x-6 gap-y-1 px-6 py-2 sm:px-10">
+      <div className="mx-auto flex w-full max-w-5xl flex-wrap items-center gap-x-6 px-6 py-2 sm:px-10">
         <Link href="/" className="inline-flex min-h-11 items-center text-base font-bold">
           つたわるかな
         </Link>
 
-        <nav aria-label="サイト内の移動" className="flex flex-wrap items-center gap-x-5">
-          {NAV.map((n) => (
-            <Link
-              key={n.href}
-              href={n.href}
-              className="inline-flex min-h-11 items-center text-sm hover:underline"
-            >
-              {n.label}
-            </Link>
-          ))}
-        </nav>
-
-        {/*
-          知らせ（D192）。行き先は常に同じで、**出ているかどうかは変わらない。**
-          変わるのは太さだけ。丸も数字も付けない。
-          読み上げには「未確認の回答があります」と伝わるようにしてある。
-        */}
-        <NoticeEntry />
-
-        {/* アカウントは右端へ。ゲストのままでも押せるが、主動線ではない */}
-        <Link
-          href="/account"
-          className="inline-flex min-h-11 items-center text-sm text-muted hover:underline"
-        >
-          アカウント
-        </Link>
+        {/* メニューのボタンと5つの行き先。狭い画面では畳む（_site-nav.tsx） */}
+        <SiteNav />
       </div>
     </header>
   );
