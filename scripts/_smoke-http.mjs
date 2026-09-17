@@ -1095,12 +1095,20 @@ export function hasQuizForm(html) {
  *   集計の面（data-author-analysis / data-answerer-analysis）は取り除かない。
  *   あそこには正解が出るが、出る相手は作者と回答済みの本人だけ。
  *   取り除くと、**間違った相手に出たときに気づけなくなる。**
+ *
+ * 【サイト共通のフッターも取り除く（2026-09-17）】
+ *   フッターの「特定商取引法に基づく表示」に「取引」が含まれる。お題に「取引」が
+ *   引かれると、作品と関係の無い固定の文言を答えの漏れと数えて落ちていた
+ *   （本番の smoke:work で実測）。ブラウザ試験は D205 で同じ理由で外している
+ *   （test/e2e/browser.mjs の footer[data-site-nav]）。フッターは作品ごとに変わらないので、
+ *   外しても漏れの見落としにはならない。
  */
 export function textOutsideQuiz(html) {
   return textOf(
     clean(html)
       .replace(/<section[^>]*\sdata-answer-flow[\s\S]*?<\/section>/g, "")
-      .replace(/<fieldset[^>]*\sdata-question[\s\S]*?<\/fieldset>/g, ""),
+      .replace(/<fieldset[^>]*\sdata-question[\s\S]*?<\/fieldset>/g, "")
+      .replace(/<footer[^>]*\sdata-site-nav[\s\S]*?<\/footer>/g, ""),
   );
 }
 

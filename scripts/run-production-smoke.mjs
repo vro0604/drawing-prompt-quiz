@@ -36,7 +36,8 @@ if (!name) {
       "  npm run smoke:prod -- answer",
       "",
       "使える名前: draft / play / work / answer / social / ranking /",
-      "            profile / report / account / race / anon",
+      "            profile / report / account / race / anon /",
+      "            journey（ブラウザで画面を1周する）",
       "",
     ].join("\n"),
   );
