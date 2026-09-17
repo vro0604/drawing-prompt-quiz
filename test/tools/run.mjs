@@ -34,6 +34,19 @@ import {
   createRunLedger,
   describeCleanup,
 } from "../../scripts/_smoke-own-rows.mjs";
+import {
+  actorFromCookies,
+  cleanupActors,
+  cleanupFailed,
+  createActorLedger,
+  describeActor,
+  maskId,
+} from "../../scripts/_smoke-actors.mjs";
+import {
+  BASELINE_TABLES,
+  baselineDrift,
+  diffBaseline,
+} from "../../scripts/_smoke-baseline.mjs";
 import { asRole, createTestDb } from "../db/harness.mjs";
 import { FUNNEL_SQL, ratio } from "../../scripts/funnel-query.mjs";
 import { collectFunnel } from "../../scripts/db-funnel.mjs";
@@ -890,7 +903,221 @@ await test("ファネル", "読むだけ。SQL に書き込みの語が1つも�
   assert(/^\s*with/i.test(FUNNEL_SQL), "select 以外から始まっている");
 });
 
+
+// **この試験は funnelDb の場面を壊すので、ファネルの試験の最後に置く。**
+// ゲストを1人消し、関係する行がどうなるかを実際に見る（推測しない）
+await test("片づけ", "ゲストを消すと、何が消えて何が残るかを実測する", async () => {
+  await funnelQuery(
+    `insert into public.usage_events (event_key, user_id, work_id) values ('next_work_opened', $1, $2)`,
+    [scene.c, scene.aWork],
+  );
+
+  const before = await funnel("all");
+  const countOf = async (sql, params) => Number((await funnelQuery(sql, params)).rows[0].n);
+
+  const answersBefore = await countOf(`select count(*) n from public.answers where user_id = $1`, [scene.c]);
+  assert(answersBefore === 3, `前提が違う（ゲストの回答が3件でない）: ${answersBefore}`);
+
+  await funnelQuery(`delete from auth.users where id = $1`, [scene.c]);
+
+  // 消えるもの
+  const profileLeft = await countOf(`select count(*) n from public.profiles where id = $1`, [scene.c]);
+  assert(profileLeft === 0, "人の行（profiles）が残っている");
+
+  // 残るもの。**持ち主だけが外れる**
+  const answersLeft = await countOf(`select count(*) n from public.answers where user_id is null and work_id = $1`, [scene.aWork]);
+  assert(answersLeft === 1, `回答が残っていない（作品側の集計が過去に遡って減る）: ${answersLeft}`);
+  const eventsLeft = await countOf(`select count(*) n from public.usage_events where user_id is null`, []);
+  assert(eventsLeft === 1, `利用の記録が残っていない: ${eventsLeft}`);
+
+  // ファネルは人から数えるので、消えた人はどの段からも外れる
+  const after = await funnel("all");
+  assert(after.actors.total === before.actors.total - 1, `人数が1人減っていない: ${before.actors.total} → ${after.actors.total}`);
+  assert(
+    after.answerer.a1 === before.answerer.a1 - 1,
+    `答えた人の段から外れていない: ${before.answerer.a1} → ${after.answerer.a1}`,
+  );
+});
+
 await funnelDb.close();
+
+// ── スモークの後片づけ（この実行が作った人を、自分で消す） ─────────────
+//
+// 【何を確かめるか】
+//   本番のスモークが匿名ゲストを残していた（2026-09-17 に2人）。
+//   直したのは「作られたその場で ID を拾い、finally でその ID だけを消す」形。
+//   ここでは本物の本番へ触らずに、その形が守られるかだけを試す。
+
+const GUEST_ID = "11111111-2222-3333-4444-555555555555";
+const B_ID = "66666666-7777-8888-9999-aaaaaaaaaaaa";
+
+function b64url(obj) {
+  return Buffer.from(JSON.stringify(obj), "utf8").toString("base64url");
+}
+
+/** 本物と同じ形のセッション Cookie を組み立てる */
+function sessionCookie(name, { sub, isAnonymous = true, encode = "base64", split = false }) {
+  const token = `${b64url({ alg: "HS256", typ: "JWT" })}.${b64url({ sub, is_anonymous: isAnonymous })}.sig`;
+  const json = JSON.stringify({ access_token: token, token_type: "bearer", user: { id: sub } });
+  const value = encode === "base64" ? `base64-${Buffer.from(json, "utf8").toString("base64url")}` : json;
+  if (!split) return [{ name, value }];
+  const half = Math.ceil(value.length / 2);
+  return [
+    { name: `${name}.0`, value: value.slice(0, half) },
+    { name: `${name}.1`, value: value.slice(half) },
+  ];
+}
+
+await test("片づけ", "ゲストの ID を、ブラウザの Cookie から読める", () => {
+  const got = actorFromCookies(sessionCookie("sb-abc123-auth-token", { sub: GUEST_ID }));
+  assert(got?.id === GUEST_ID, `ID を読めていない: ${JSON.stringify(got)}`);
+  assert(got.isAnonymous === true, "匿名の別を読めていない");
+});
+
+await test("片づけ", "割られた Cookie（.0 .1）をつなげて読める", () => {
+  const cookies = sessionCookie("sb-abc123-auth-token", { sub: GUEST_ID, split: true });
+  assert(cookies.length === 2, "割れていない");
+  const got = actorFromCookies(cookies);
+  assert(got?.id === GUEST_ID, `割られた Cookie を読めていない: ${JSON.stringify(got)}`);
+});
+
+await test("片づけ", "base64 を使わない版の Cookie でも読める", () => {
+  const got = actorFromCookies(sessionCookie("sb-abc123-auth-token", { sub: B_ID, isAnonymous: false, encode: "plain" }));
+  assert(got?.id === B_ID, "素の JSON を読めていない");
+  assert(got.isAnonymous === false, "登録者を匿名と読んでいる");
+});
+
+await test("片づけ", "関係ない Cookie や壊れた Cookie では、当て推量をしない", () => {
+  assert(actorFromCookies([]) === null, "空で null を返していない");
+  assert(actorFromCookies([{ name: "session", value: "x" }]) === null, "無関係な Cookie を読んでいる");
+  assert(actorFromCookies([{ name: "sb-abc-auth-token", value: "base64-@@@" }]) === null, "壊れた値で null を返していない");
+  assert(
+    actorFromCookies([{ name: "sb-abc-auth-token-code-verifier", value: "zzz" }]) === null,
+    "セッション以外の Cookie を読んでいる",
+  );
+});
+
+await test("片づけ", "帳面は、同じ人を二重に持たず、形の違う ID を受け付けない", () => {
+  const led = createActorLedger();
+  assert(led.add(GUEST_ID, { role: "ゲスト", how: "Cookie" }) === true, "1人目を積めていない");
+  assert(led.add(GUEST_ID, { role: "ゲスト", how: "回答行" }) === false, "同じ人を二重に積んでいる");
+  assert(led.size === 1, `帳面の人数が違う: ${led.size}`);
+  assert(led.list()[0].how.includes("Cookie") && led.list()[0].how.includes("回答行"), "見つけかたを両方残していない");
+  assert(led.add("guest-1") === false, "ID の形を見ていない");
+  assert(led.add(null) === false, "空を積んでいる");
+  assert(led.size === 1, "不正な ID が入っている");
+});
+
+await test("片づけ", "A: 一周が成功したとき、作った人が全員消える", async () => {
+  const led = createActorLedger();
+  led.add(GUEST_ID, { role: "ゲスト", anonymous: true, how: "Cookie" });
+  led.add(B_ID, { role: "登録者B", how: "Admin API" });
+  const asked = [];
+  const report = await cleanupActors(led.list(), async (id) => {
+    asked.push(id);
+    return { error: null };
+  });
+  assert(report.length === 2 && report.every((r) => r.ok), "全員ぶんが合格になっていない");
+  assert(cleanupFailed(report) === false, "失敗として返っている");
+  assert(asked.length === 2 && asked.includes(GUEST_ID), "頼んだ相手が違う");
+});
+
+await test("片づけ", "B/C: 途中で止まっても、そこまでに作った人は帳面に残る", async () => {
+  const led = createActorLedger();
+  led.add(B_ID, { role: "作者", how: "Admin API" });
+  try {
+    led.add(GUEST_ID, { role: "ゲスト", anonymous: true, how: "Cookie" });
+    throw new Error("[故障試験] ここで止める");
+  } catch {
+    // finally 相当。**止まった後でも帳面を使って消せること**が要点
+  }
+  const report = await cleanupActors(led.list(), async () => ({ error: null }));
+  assert(report.length === 2, `止まった後に消せる人数が違う: ${report.length}`);
+  assert(report.some((r) => r.role === "ゲスト"), "ゲストが帳面から落ちている");
+});
+
+await test("片づけ", "D: 片づけを2回呼んでも安全（2回目は「すでに居ない」）", async () => {
+  const led = createActorLedger();
+  led.add(GUEST_ID, { role: "ゲスト", anonymous: true, how: "Cookie" });
+  const alive = new Set([GUEST_ID]);
+  const remove = async (id) => {
+    if (!alive.has(id)) return { error: "User not found" };
+    alive.delete(id);
+    return { error: null };
+  };
+  const first = await cleanupActors(led.list(), remove);
+  const second = await cleanupActors(led.list(), remove);
+  assert(!cleanupFailed(first), "1回目が失敗している");
+  assert(!cleanupFailed(second), "2回目を失敗扱いにしている");
+  assert(second[0].gone === true, "2回目を「すでに居ない」と読めていない");
+});
+
+await test("片づけ", "E: 相手がもう居なくても失敗にしない", async () => {
+  const report = await cleanupActors([{ id: GUEST_ID, role: "ゲスト", anonymous: true, how: "Cookie" }], async () => {
+    throw new Error("user_not_found");
+  });
+  assert(report[0].ok === true, "すでに居ない相手を失敗にしている");
+  assert(/すでに居ません/.test(describeActor(report[0])), `説明が違う: ${describeActor(report[0])}`);
+});
+
+await test("片づけ", "消せなかったら、黙って合格にしない", async () => {
+  const report = await cleanupActors([{ id: GUEST_ID, role: "ゲスト", anonymous: true, how: "Cookie" }], async () => ({
+    error: "permission denied for table users",
+  }));
+  assert(report[0].ok === false, "失敗を合格にしている");
+  assert(cleanupFailed(report) === true, "呼び出し側が失敗に気づけない");
+  assert(/消せませんでした/.test(describeActor(report[0])), "理由が読めない");
+});
+
+await test("片づけ", "通常の出力に、生の利用者 ID を出さない", async () => {
+  const report = await cleanupActors([{ id: GUEST_ID, role: "ゲスト", anonymous: true, how: "Cookie" }], async () => ({
+    error: null,
+  }));
+  const line = describeActor(report[0]);
+  assert(!line.includes(GUEST_ID), `生の ID が出ている: ${line}`);
+  assert(line.includes(maskId(GUEST_ID)), "短縮した ID すら出ていない");
+});
+
+await test("片づけ", "頼んだ ID 以外には触らない（実利用者を巻き込まない）", async () => {
+  const REAL = "deadbeef-0000-0000-0000-000000000000";
+  const led = createActorLedger();
+  led.add(GUEST_ID, { role: "ゲスト", anonymous: true, how: "Cookie" });
+  const asked = [];
+  await cleanupActors(led.list(), async (id) => {
+    asked.push(id);
+    return { error: null };
+  });
+  assert(asked.length === 1 && asked[0] === GUEST_ID, `頼んだ相手が違う: ${asked.join(",")}`);
+  assert(!asked.includes(REAL), "帳面に無い人へ触っている");
+});
+
+await test("片づけ", "一周のスクリプトは、帳面を通してしか人を消さない", () => {
+  const src = fs.readFileSync(path.join(ROOT, "scripts", "smoke-journey.mjs"), "utf8");
+  assert(/cleanupActors\(/.test(src), "片づけを呼んでいない");
+  assert(/captureGuest\(/.test(src), "ゲストの ID を拾っていない");
+  const direct = src.match(/admin\.auth\.admin\.deleteUser\(/g) ?? [];
+  assert(direct.length === 0, `帳面を通さずに人を消している箇所が ${direct.length} か所ある`);
+  assert(!/created_at.*(gte|gt|lt)/.test(src), "時刻の範囲で消そうとしている");
+  assert(/} finally {/.test(src), "finally で片づけていない");
+});
+
+await test("片づけ", "前後の件数は、1件でも違えば取りこぼさず出る", () => {
+  const keys = ["auth_users", ...BASELINE_TABLES];
+  const before = Object.fromEntries(keys.map((k) => [k, 10]));
+  const same = diffBaseline(before, { ...before });
+  assert(same.length === keys.length, `見ている項目が足りない: ${same.length}/${keys.length}`);
+  assert(baselineDrift(same).length === 0, "同じなのに差が出ている");
+
+  const after = { ...before, profiles: 11, answers: 12 };
+  const drift = baselineDrift(diffBaseline(before, after));
+  assert(drift.length === 2, `増えた項目を拾えていない: ${drift.length}`);
+  assert(drift.find((r) => r.key === "profiles").delta === 1, "人の増分が違う");
+  assert(drift.find((r) => r.key === "answers").delta === 2, "回答の増分が違う");
+
+  const missing = baselineDrift(diffBaseline(before, null));
+  assert(missing.length === keys.length, "数えられなかったときに、同じと読んでいる");
+});
+
 
 const passed = results.filter((r) => r.ok).length;
 const failed = results.filter((r) => !r.ok);

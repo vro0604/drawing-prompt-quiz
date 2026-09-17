@@ -16,14 +16,25 @@
  *   登録者B（スマホ幅）  : 回答 → 保存 → お気に入り → 通報の画面 → 回答の履歴
  *   作者                 : 結果を開く → 知らせ → プロフィール → 削除 → サインアウト
  *
- * 【本番に何を残すか】
- *   使い捨ての登録者2人（dpq-fixture-…@dpq-smoke.invalid）、ゲスト1人、作品1件、回答2件。
- *   作品は最後に画面から削除する（行は残り、公開から外れて画像が消える）。
- *   登録者2人は最後に Admin API で消す（この実行で作った ID だけ）。
- *   ゲストは掃除 Cron が拾う。本物の作品には答えない（次の作品へ移っても答えない）。
+ * 【本番に何を残すか】＝ 何も残さない（2026-09-18 に作り直した）
+ *   この一周は、登録者2人・ゲスト1人・作品1件・お題1件・回答2件・利用の記録・
+ *   同意の記録を本番に作る。**作った物はすべて、この実行が自分で消す。**
+ *
+ *   以前はゲストだけが消せなかった。ゲストはサーバー側が勝手に作るので、
+ *   スモークは自分が誰を作ったのか知らず、既存の片づけはメールの形で
+ *   見分けるため匿名ゲストに当たらなかった。掃除 Cron は拾うが30日後で、
+ *   その間ずっと本番の利用者数と初回利用ファネル（D209）に混ざっていた。
+ *   実測: 2026-09-17 の2回でゲストが2人残った。
+ *
+ *   いまは ID を作られたその場で2つの経路から拾う（scripts/_smoke-actors.mjs）。
+ *   片づけは finally で行うので、途中で失敗しても走る。
+ *   消し終えたあと件数を数え直し、**開始前と1件でも違えば不合格にする**
+ *   （scripts/_smoke-baseline.mjs）。
  *
  * 【使い方】
  *   SMOKE_BASE_URL=https://<本番> npm run smoke:prod -- journey
+ *
+ *   JOURNEY_FAIL_AFTER=guest|next-work … その地点でわざと止める（片づけの故障試験）
  */
 
 import { mkdirSync } from "node:fs";
@@ -40,6 +51,27 @@ import {
   targetEnv,
   throwawaySession,
 } from "./_smoke-http.mjs";
+import {
+  actorFromCookies,
+  cleanupActors,
+  cleanupFailed,
+  createActorLedger,
+  describeActor,
+  maskId,
+  supabaseActorRemover,
+} from "./_smoke-actors.mjs";
+import {
+  cleanupRunRows,
+  createRunLedger,
+  describeCleanup,
+  supabaseRemover,
+} from "./_smoke-own-rows.mjs";
+import {
+  describeBaselineRow,
+  diffBaseline,
+  baselineDrift,
+  takeBaseline,
+} from "./_smoke-baseline.mjs";
 
 const SHOTS = process.env.JOURNEY_SHOTS ?? "/tmp/dpq-journey";
 mkdirSync(SHOTS, { recursive: true });
@@ -49,9 +81,76 @@ const admin = createClient(env.NEXT_PUBLIC_SUPABASE_URL, env.SUPABASE_SECRET_KEY
   auth: { autoRefreshToken: false, persistSession: false },
 });
 
-/** この実行で作った登録者。最後にこの ID だけを消す */
-const createdUserIds = [];
+/**
+ * この実行で作った人。**最後にこの ID だけを消す。**
+ * 入るのは「作ったその場で分かった ID」だけで、一覧や時刻から拾った ID は入れない。
+ */
+const actors = createActorLedger();
+/** この実行で作った行（作品・お題・ドラフト）。同じく ID で名指しして消す */
+const ownRows = createRunLedger();
 const REAL_WORK_IDS = new Set();
+
+/** 開始前の件数。片づけたあと、ここへ戻ったかを数えて確かめる */
+let baselineBefore = null;
+
+/** 片づけの故障試験。指定した地点でわざと止める */
+const FAIL_AFTER = process.env.JOURNEY_FAIL_AFTER ?? "";
+function failIfAsked(point) {
+  if (FAIL_AFTER !== point) return;
+  throw new Error(`[故障試験] ${point} の直後で意図的に止めました（JOURNEY_FAIL_AFTER）`);
+}
+
+/**
+ * ゲストの ID を、作られたその場で拾う。**2つの独立した経路を両方使う。**
+ *
+ *   経路1 … ブラウザの入れ物のセッション Cookie を復号して sub を読む
+ *   経路2 … **この実行が作った作品**への回答行の user_id を読む
+ *
+ * どちらも「この実行が作った物」しか見ていない。
+ * 2つとも取れて食い違ったら、両方を帳面に入れて報告する（消し漏らすより良い）。
+ */
+async function captureGuest(ctx, ownWorkId) {
+  const found = [];
+
+  const fromCookie = actorFromCookies(await ctx.cookies().catch(() => []));
+  if (fromCookie?.id) {
+    actors.add(fromCookie.id, { role: "ゲスト", anonymous: fromCookie.isAnonymous, how: "Cookie" });
+    found.push(`Cookie=${maskId(fromCookie.id)}`);
+  }
+
+  if (ownWorkId) {
+    const { data } = await admin.from("answers").select("user_id").eq("work_id", ownWorkId);
+    for (const row of data ?? []) {
+      if (!row.user_id) continue;
+      // すでに帳面にいる登録者（作者・登録者B）は、役割を上書きしない
+      if (actors.has(row.user_id) && row.user_id !== fromCookie?.id) continue;
+      actors.add(row.user_id, { role: "ゲスト", anonymous: true, how: "自分の作品への回答" });
+      found.push(`回答行=${maskId(row.user_id)}`);
+    }
+  }
+  // 拾えた ID が本当に匿名かを、認証の口へ聞いて確かめる（登録者を巻き込まないため）
+  for (const a of actors.list()) {
+    if (a.role !== "ゲスト") continue;
+    const { data } = await admin.auth.admin.getUserById(a.id).catch(() => ({ data: null }));
+    const anon = data?.user?.is_anonymous ?? null;
+    if (anon !== null) a.anonymous = anon;
+    must(anon !== false, "拾ったゲストの ID が匿名である", "登録者の ID を拾っていました");
+  }
+
+  must(found.length > 0, "ゲストの ID を、作られたその場で拾えた", "どちらの経路でも取れませんでした");
+  console.log(`      ゲストの見つけかた: ${found.join(" / ") || "取れず"}`);
+  return fromCookie?.id ?? null;
+}
+
+// **一周を始める前に数える。**片づけたあと、ここへ戻ったかで片づけを判定する
+try {
+  baselineBefore = await takeBaseline(admin);
+  console.log("");
+  console.log("[開始前の件数]");
+  for (const [k, v] of Object.entries(baselineBefore)) console.log(`   ${k.padEnd(18)} ${v}`);
+} catch (e) {
+  must(false, "開始前の件数を数えられた", String(e?.message ?? e).slice(0, 160));
+}
 
 const browser = await chromium.launch();
 const tag = `${Date.now() % 1e8}`;
@@ -179,7 +278,7 @@ try {
   section("1. 作者: 確認メールのリンク → 同意 → ID");
   // ══════════════════════════════════════════════════════
   const signup = await generateSignupConfirm(`journey-author`);
-  createdUserIds.push(signup.userId);
+  actors.add(signup.userId, { role: "作者", anonymous: false, how: "Admin API" });
 
   const authorCtx = await browser.newContext(PC);
   const a = await authorCtx.newPage();
@@ -239,6 +338,12 @@ try {
   await a.waitForURL("**/prompt/**", { timeout: 30000 });
   const promptId = /\/prompt\/([0-9a-f-]{36})/.exec(a.url())?.[1];
   must(!!promptId, "お題を確定するとお題の画面へ移る");
+  ownRows.add("prompts", promptId);
+  {
+    // ドラフトの ID は、確定したお題が持っている。**この実行が作ったお題からしか辿らない**
+    const { data } = await admin.from("prompts").select("draft_session_id").eq("id", promptId).maybeSingle();
+    ownRows.add("draft_sessions", data?.draft_session_id ?? null);
+  }
   {
     const { data } = await admin.from("prompt_cards").select("tag_id, tags(label)").eq("prompt_id", promptId);
     promptWords = (data ?? []).map((r) => r.tags?.label).filter(Boolean);
@@ -256,6 +361,7 @@ try {
   await a.waitForURL(/\/works\/[0-9a-f-]{36}/, { timeout: 60000 });
   workId = /\/works\/([0-9a-f-]{36})/.exec(a.url())?.[1];
   must(!!workId, "投稿すると作品ページへ移る");
+  ownRows.add("works", workId);
   t = await bodyText(a);
   await shot(a, "05-own-work-pc");
   must(/自分の作品には回答できません/.test(t), "自分の作品には回答できないと出る");
@@ -306,6 +412,11 @@ try {
   await g.goto(`${BASE}/works/${workId}`, { waitUntil: "domcontentloaded" });
   const n = await answerAll(g, "07-quiz-sp");
   must(n > 0, "長押しで全セクションに答えて送れる", `${n}問`);
+
+  // **ここでゲストが生まれている。**回答の送信が ensureUserId() を呼ぶため。
+  // 作られたその場で ID を拾う。あとから時刻や行動の形で当てない
+  await captureGuest(guestCtx, workId);
+  failIfAsked("guest");
   t = await bodyText(g);
   await shot(g, "08-result-sp");
   must(/次の作品に答える/.test(t), "回答後に「次の作品に答える」が出る");
@@ -321,12 +432,13 @@ try {
   must(nextId !== workId, "次の作品は、いま答えた作品ではない", nextPath);
   console.log(`      次の作品の行き先: ${nextId ? (REAL_WORK_IDS.has(nextId) ? "本物の公開作品（答えない）" : "検査用の作品") : nextPath}`);
   await shot(g, "09-next-sp");
+  failIfAsked("next-work");
 
   // ══════════════════════════════════════════════════════
   section("5. 登録者B（スマホ幅）: 回答 → 保存 → お気に入り → 通報の画面 → 履歴");
   // ══════════════════════════════════════════════════════
   const b = await throwawaySession("journey-b");
-  createdUserIds.push(b.id);
+  actors.add(b.id, { role: "登録者B", anonymous: false, how: "Admin API" });
   const bCtx = await contextWithCookies(SP, b.session.cookies());
   const bp = await bCtx.newPage();
   watch(bp, "登録者B");
@@ -428,13 +540,82 @@ try {
 } catch (e) {
   must(false, "一周が途中で止まった", String(e?.message ?? e).split("\n")[0].slice(0, 200));
 } finally {
-  // 片づけ: 作品が残っていれば管理の口から論理削除はしない（画面の削除が本題なので、残りは報告する）
-  if (workId) console.log(`\n[片づけ] 作品 ${workId} が残っています`);
-  for (const id of createdUserIds) {
-    const { error } = await admin.auth.admin.deleteUser(id);
-    console.log(`[片づけ] 検査用の登録者を消す: ${error ? "失敗 " + error.message : "済"}`);
-  }
   await browser.close();
+
+  // ══════════════════════════════════════════════════════
+  section("8. 片づけ: この実行が作った物だけを、ID で名指しして消す");
+  // ══════════════════════════════════════════════════════
+  //
+  // **成功しても、途中で止まっても、必ずここを通る。**
+  // 消す相手は帳面（actors / ownRows）に載っている ID だけ。
+  // 「最近作られたゲスト」「回答が1件だけの人」のような広い条件では消さない。
+
+  const actorIds = actors.list().map((a) => a.id);
+
+  // ① 画像。**作品の行より先に消す。**行を消すと置き場の手がかりが無くなる
+  let imageNote = ownRows.ids("works").length === 0 ? "作品を作っていません" : "";
+  for (const id of ownRows.ids("works")) {
+    const { data } = await admin.from("works").select("image_path").eq("id", id).maybeSingle();
+    const path = data?.image_path;
+    if (!path) {
+      imageNote = "置き場所が分かりません（作品の行がもうありません）";
+      continue;
+    }
+    const { error } = await admin.storage.from("works").remove([path]);
+    imageNote = error ? `失敗: ${error.message}` : "消しました";
+    must(!error, "片づけ: 作品の画像を消せた", error?.message ?? "");
+  }
+  console.log(`   作品の画像: ${imageNote}`);
+
+  // ② 人に結び付く記録。**人より先に消す。**
+  // 人を消すと user_id が null になり（on delete set null）、誰のものか辿れなくなる
+  for (const table of ["usage_events", "terms_agreements"]) {
+    if (actorIds.length === 0) break;
+    const { data, error } = await admin.from(table).delete().in("user_id", actorIds).select("id");
+    console.log(`   ${table}: ${error ? `失敗 ${error.message}` : `${(data ?? []).length}件`}`);
+    must(!error, `片づけ: ${table} をこの実行のぶんだけ消せた`, error?.message ?? "");
+  }
+
+  // ③ 作った行。作品 → お題 → ドラフトの順（外部キーの向き）
+  const rowReport = await cleanupRunRows(ownRows, supabaseRemover(admin));
+  for (const r of rowReport) {
+    if (r.expected === 0) continue;
+    console.log(`   ${r.table}: ${describeCleanup(r)}`);
+    must(r.ok, `片づけ: ${r.table} をこの実行のぶんだけ消せた`, describeCleanup(r));
+  }
+
+  // ④ 人。登録者もゲストも同じ扱い。profiles はここで cascade で消える
+  const actorReport = await cleanupActors(actors.list(), supabaseActorRemover(admin));
+  for (const r of actorReport) console.log(`   ${describeActor(r)}`);
+  must(
+    !cleanupFailed(actorReport),
+    "片づけ: この実行が作った人を全員消せた",
+    actorReport.filter((r) => !r.ok).map((r) => `${r.role} ${maskId(r.id)}: ${r.error}`).join(" ／ "),
+  );
+
+  // ⑤ 件数が開始前へ戻ったか。**これだけが「残っていない」ことの証拠になる**
+  let baselineAfter = null;
+  try {
+    baselineAfter = await takeBaseline(admin);
+  } catch (e) {
+    must(false, "片づけ後の件数を数えられた", String(e?.message ?? e).slice(0, 160));
+  }
+
+  if (baselineBefore && baselineAfter) {
+    const rows = diffBaseline(baselineBefore, baselineAfter);
+    console.log("");
+    console.log("   [開始前 → 片づけ後]");
+    for (const r of rows) console.log(`   ${describeBaselineRow(r)}`);
+    const drift = baselineDrift(rows);
+    must(
+      drift.length === 0,
+      "本番の件数が、一周の前とすべて同じに戻った",
+      drift.map((r) => `${r.label} ${r.delta > 0 ? "+" : ""}${r.delta}`).join(" ／ "),
+    );
+  } else {
+    must(false, "件数を一周の前後で比べられた", "どちらかを数えられませんでした");
+  }
+
   console.log(`\n画面の記録: ${SHOTS}`);
   console.log(`ブラウザで拾った異常: ${problems.length}件`);
   for (const p of problems.slice(0, 30)) console.log(`   ${p}`);
