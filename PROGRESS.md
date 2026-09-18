@@ -78,6 +78,27 @@ DBを先に当て、そのあと画面を差し替えた。適用した migratio
 戻ったときの位置の復帰は本番で動かせていない。**どちらも手元のブラウザ試験では通っている。
 iOS の Safari 実機も確かめていない。
 
+### 画面と機能の対応表（Notion）
+
+CLAUDE.md の決まりに従って更新した。ページはここ:
+https://app.notion.com/p/3d558e61e66e81ec8d20c4a2f2e93cc0
+
+- `/works ｜ 作品一覧` の節を書き直した。説明（絵だけが出ること・列の数・読み足しと復帰）と、
+  押せるものの表（情報子タブの4行・長押しのいいね・行き先が2つに分かれること・0件のときの見本）
+- 逆引きの表に「共有」「興味なし」「作品を押してクイズを始める」「答えた作品を見返す」を足し、
+  「いいね」と「お気に入り保存」を一覧からの操作に書き直した
+- `/works/[id]` の節に、一覧から来たとき（?q=1）はクイズが先に出ることを書いた
+- 冒頭の最終更新と、更新履歴に1行
+- 一覧の新しい写真（パソコン幅・手のひらの端末幅）を2枚入れた
+
+残っている手作業が1つある。**作り替える前の古い写真2枚が、同じ節に残っている。**
+私の持っている道具に Notion のブロックを消す手段が無い。どれが古いかは、
+その場に置いた灰色の囲みに書いてある（「すぐ下に続く2枚は古い写真です。消してかまいません」）。
+
+写真を撮る道具（`scripts/capture-screens.mjs` / `summarize-screens.mjs`）は、いまも本流に入っていない。
+別の作業木に未コミットで置かれているものを、この回だけ一時的に持ち込んで走らせ、
+出力（`docs/screens/2026-09-18/` の36画面と `controls.md`）だけを残した。道具そのものは持ち込んでいない。
+
 ### 触ったファイル
 
 新規: `src/features/feed/`（types / layout / press / rpc / present）、`src/app/works/(list)/_masonry.tsx`、`src/app/works/(list)/actions.ts`、`supabase/migrations/20260918120000_feed_masonry.sql`、`public/sample-art/`（10枚）、`scripts/make-sample-art.mjs`、`test/e2e/png.mjs`、`docs/RESEARCH/2026-09-18_pinterest-masonry.md`。
