@@ -1150,13 +1150,27 @@ export function hasQuizForm(html) {
  *   （本番の smoke:work で実測）。ブラウザ試験は D205 で同じ理由で外している
  *   （test/e2e/browser.mjs の footer[data-site-nav]）。フッターは作品ごとに変わらないので、
  *   外しても漏れの見落としにはならない。
+ *
+ * 【作者の文章を作る面も取り除く（2026-09-18）】
+ *   フッターと同じ形の取りこぼし。作者が自分の作品に文章を付ける面
+ *   （section[data-flavor-composer]）には「語を探す」という見出しと、
+ *   文章に使える語の一覧が出る。**その語彙とお題のタグに同じ語がある。**
+ *   実測: お題に「探す」が引かれた回で、見出しの「語を探す」と
+ *   語彙の「探す」の両方が漏れとして数えられ、smoke:work が落ちた
+ *   （supabase/migrations/20260904091000 が action の語に「探す」を、
+ *     20260909120000 が文章の語彙にも「探す」を入れている）。
+ *
+ *   この面が出るのは**自分の作品を見ている作者だけ**で、
+ *   その人は自分のお題をもとから知っている。外しても、
+ *   「知らない相手に答えが出た」を見落とすことにはならない。
  */
 export function textOutsideQuiz(html) {
   return textOf(
     clean(html)
       .replace(/<section[^>]*\sdata-answer-flow[\s\S]*?<\/section>/g, "")
       .replace(/<fieldset[^>]*\sdata-question[\s\S]*?<\/fieldset>/g, "")
-      .replace(/<footer[^>]*\sdata-site-nav[\s\S]*?<\/footer>/g, ""),
+      .replace(/<footer[^>]*\sdata-site-nav[\s\S]*?<\/footer>/g, "")
+      .replace(/<section[^>]*\sdata-flavor-composer[\s\S]*?<\/section>/g, ""),
   );
 }
 

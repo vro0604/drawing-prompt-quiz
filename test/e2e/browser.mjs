@@ -7662,9 +7662,18 @@ async function main() {
 
       t.stage("共有記録が1件だけ増えている");
       const sid = new URL(url).searchParams.get("sid");
-      const row = await db.query(
-        `select work_id, question_id, channel, sharer_user_id, card_revision_id
-           from public.share_events where id = $1`, [sid]);
+      // **記録はコピーのあとに追いかけて届く。**共有そのものを待たせない作りなので
+      // （押した操作の中でコピーを済ませ、記録はそのあとに送る）、
+      // ここでは行が入るまで少し待つ。待たずに読むと、混んでいる回だけ0件になる
+      // （実測: 一括実行のときだけ落ちた）
+      let row;
+      for (let i = 0; i < 40; i += 1) {
+        row = await db.query(
+          `select work_id, question_id, channel, sharer_user_id, card_revision_id
+             from public.share_events where id = $1`, [sid]);
+        if (row.rows.length === 1) break;
+        await p.waitForTimeout(250);
+      }
       assert(row.rows.length === 1, `${row.rows.length} 件`);
       assert(row.rows[0].channel === "copy", row.rows[0].channel);
       assert(row.rows[0].work_id === w.workId, row.rows[0].work_id);
@@ -7884,7 +7893,7 @@ async function main() {
     }
   });
 
-  await test("SH", "共有カード: 問いが無いときは、いままでの作品カードのまま", async (t) => {
+  await test("SH", "共有カード: 問いが無いときは、いままでの作品カードのまま", async () => {
     const w = await shareWork("sh-e2e-nometa");
     await g.goto(`${base}/works/${w.workId}`, { waitUntil: "domcontentloaded" });
     const meta = await g.evaluate(() => ({
@@ -7963,7 +7972,7 @@ async function main() {
     }
   });
 
-  await test("SH", "共有流入: 消えた問いを指しても、通常の作品ページへ落ちる", async (t) => {
+  await test("SH", "共有流入: 消えた問いを指しても、通常の作品ページへ落ちる", async () => {
     const w = await shareWork("sh-e2e-goneq");
     const ctx = await browser.newContext({ viewport: { width: 1280, height: 900 } });
     try {

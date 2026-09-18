@@ -153,7 +153,7 @@
 src/app/          画面（Server Components が既定）
 src/features/     機能ごとの RPC 呼び出しと型
 src/lib/supabase/ クライアント4種（ブラウザ／サーバー／ルート／管理）
-supabase/migrations/  68本<!--count:migration-->。スキーマと関数の全部
+supabase/migrations/  69本<!--count:migration-->。スキーマと関数の全部
                       （67本すべて本番へ入っている。課金 v0 の2本
                       20260917090000 / 100000 は 2026-09-17T07:22Z に db:deploy で適用。
                       D194・D195・D196（20260912110000 / 120000 / 130000）は 2026-09-16、
