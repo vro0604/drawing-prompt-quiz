@@ -53,6 +53,7 @@ const SOURCES = {
   },
   "柵の自己試験": { how: "npm run test:guard" },
   "作業木の柵の自己試験": { how: "npm run test:preflight" },
+  "main push の柵の自己試験": { how: "npm run test:preflight:hook" },
   "道具の自己試験": { how: "npm run test:tools" },
   "縦断試験": { how: "npm run test:db" },
   "アップグレード試験": { how: "npm run test:db:upgrade" },
@@ -80,7 +81,10 @@ for (const [key, src] of Object.entries(SOURCES)) {
   measured[key] = src.measure ? src.measure() : (counts[key]?.value ?? null);
 }
 
-const MARK = /(\d[\d,]*)\s*(?:項目|件|本|語|個|組)?\s*<!--\s*count:([^\s>]+?)\s*-->/g;
+// 印の名前に空白が入ることもある（例: count:main push の柵の自己試験）。
+// 以前は名前に空白を許していなかったため、**そういう印は1件も照合されず、
+// 食い違っていても黙って通っていた。**2026-09-18 に実際に踏んだので広げた。
+const MARK = /(\d[\d,]*)\s*(?:項目|件|本|語|個|組)?\s*<!--\s*count:([^>]+?)\s*-->/g;
 
 const problems = [];
 const okLines = [];

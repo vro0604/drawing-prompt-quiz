@@ -4,6 +4,65 @@
 `/next` はここを起点に「現在地と次の一手」を出し、`/progress` がここへ追記します。
 日時は JST。全体が400行を超えたら、一番下（最も古いもの）から削ります。
 
+## 2026-09-19 01:20 main への push を hook で捕まえるようにした
+
+### 終えたこと
+
+- 前回作った柵を origin/main へ着地させた（`npm run deploy:main -- --apply` を使用。
+  手で push はしていない）。origin/main は f7ce5c9 → 6398d8a。src/ と supabase/ は0ファイル。
+- 残っていた最大の穴（手で `git push origin <枝>:main` と打つ道）を閉じた。
+  共有の Git フォルダに pre-push hook を置き、**送り先が refs/heads/main と完全一致する
+  push だけ**を確認に通す。ほかの枝への push は1文字も邪魔しない。
+- 判定は既存の `scripts/_preflight.mjs` を呼ぶ。hook 側には ref の読み分けだけを書いた。
+  送るものが HEAD と違う push（`git push origin 別の枝:main`）と、main を消す push は
+  それだけで止める。確認できないとき（道具が無い・壊れている・node が無い・遠くの main が
+  引けない）も止める。外す環境変数や引数は作っていない。
+- 入れる・見る・外すを npm script にした。`guard:hooks:install` / `guard:hooks:status` /
+  `guard:hooks:remove`。他人の pre-push があれば何も書かずに止まり、`--chain` を付ければ
+  元のものを先に走らせる形で共存する（外すと元のものが戻る）。
+- 本番へ書ける入口を数え直したら、前回の10本に加えて11本目が見つかった。
+  `node scripts/db-history-0909.mjs fix --yes`（履歴表の1行を直す）。npm script が無いため
+  前回の棚卸しで漏れていた。柵を通すようにした。
+- weave の2パス（統合.md ／ 統合サムネイル/）の例外を、承認どおり完全一致だけに直した。
+  統合.md.bak は例外にならない。例外があること自体を毎回出力に書くようにした。
+- 実測（本物の GitHub へは1バイトも送らずに）:
+  古い主作業木（86コミット遅れ・未コミット181件・道具なし）から使い捨ての受け先の main へ
+  早送りできる形で push を試して、hook が止めた（終了コード1・受け先の main は不動）。
+  同じ作業木から main 以外の枝への push は通った。道具を持つ作業木からの main への push では
+  node の経路が動き、未コミット14件で止まった。
+- 自己試験: hook 54件（`npm run test:preflight:hook`。使い捨ての repo へ実際に push する。
+  作業木3つへの効きかたも実測）、作業木の柵 35件、本番接続の柵 27件、道具 67件、単体 164件、
+  型検査・ESLint エラー0。
+- `check:docs` の印の名前に空白が入ると、その印が1件も照合されず黙って通っていた。
+  2026-09-18 に自分で踏んだので、印を読む式を広げた（照合 17件 → 19件）。
+
+### 引き換えたもの
+
+- main への push のたびに `git fetch` と `git ls-remote` が走る。網が無いと main へ push できない。
+- hook は Git では配られない。別の計算機へクローンしたら、そこで1回
+  `npm run guard:hooks:install` が要る。入っているかは `guard:hooks:status` で分かる。
+- `npx supabase db push` ／ `migration repair` を手で打つ道は、まだ塞いでいない
+  （OSの側で禁じるには shell か binary の差し替えに踏み込むため。文書で禁じるところまで）。
+
+### 次の一手
+
+- 主作業木の未コミット181件と、版番号の重複2組（20260909180000 / 20260909200000）は
+  そのまま。柵があるので、畳まないまま置いても事故にはならない。判断は未了。
+- 別の計算機や新しいクローンで作業するときは、最初に `guard:hooks:install`。
+
+### 触ったファイル
+
+- `scripts/preflight-pre-push.mjs`（新規・hook の中身）、
+  `scripts/guard-hooks.mjs`（新規・入れる／見る／外す）、
+  `test/preflight/hook-selftest.mjs`（新規・54件）
+- `scripts/_preflight.mjs`（push 用の判定と、例外を完全一致に）、
+  `scripts/db-history-0909.mjs`（11本目の入口を柵に通した）、
+  `scripts/check-doc-counts.mjs`、`scripts/run-all-checks.mjs`、`package.json`
+- `test/preflight/selftest.mjs`（例外の試験を2件足した）
+- `CLAUDE.md`、`README.md`、`docs/prod-runbook.md`、`docs/db-workflow.md`、`docs/test-layers.md`
+- 作業木: `../dpq-hook`（origin/main 6398d8a から新規。枝 `guard/pre-push-hook`）
+
+
 ## 2026-09-18 23:40 古い作業木から本番を変えられなくした
 
 ### 終えたこと
@@ -311,56 +370,5 @@ https://app.notion.com/p/3d558e61e66e81ec8d20c4a2f2e93cc0
 
 新規: `src/features/feed/`（types / layout / press / rpc / present）、`src/app/works/(list)/_masonry.tsx`、`src/app/works/(list)/actions.ts`、`supabase/migrations/20260918120000_feed_masonry.sql`、`public/sample-art/`（10枚）、`scripts/make-sample-art.mjs`、`test/e2e/png.mjs`、`docs/RESEARCH/2026-09-18_pinterest-masonry.md`。
 変更: `src/app/works/(list)/page.tsx`、`src/app/works/[id]/page.tsx`（`?q=1` のときクイズを先に出す）、`src/features/work/types.ts`、`src/app/globals.css`、`next.config.ts`、`scripts/db-checks.mjs`、`test/`（unit / db / e2e）、本番スモーク4本と `scripts/verify-launch.mjs`、`docs/decisions.md`（D211）。
-
----
-## 2026-09-18 本番スモークが、自分の作った匿名ゲストを自分で消すようにした（D210）
-
-### 何ができるようになったか
-
-本番で画面を1周する検査（`npm run smoke:prod -- journey`）を何回走らせても、終わったあとの本番に痕跡が残らなくなった。
-以前は1回走るごとに匿名のゲストが1人ずつ本番に残り、利用者数にも初回利用ファネルにも混ざっていた（実測: 2026-09-17 の2回で40人→42人）。
-残った理由は、ゲストを作っているのがスモークではなくサーバー側で、スモークが自分の作った相手を知らなかったこと。
-既存の片づけは電子メールの形で検査用を見分けるので、電子メールを持たない匿名ゲストには当たらなかった。
-いまはゲストの ID を、作られたその場で2つの経路（ブラウザのセッション Cookie の復号／この実行が投稿した作品への回答行）から拾い、最後にその ID だけを消す。
-本番で3回実証した（最後まで成功・ゲスト作成直後に強制停止・次の作品の直後に強制停止）。3回とも8つの表の件数が開始前と完全に一致した。
-すでに残っていた2人も、18項目の指紋を照合して全部一致したうえで削除した。本番の人は 42人 → 40人。
-
-### 何を引き換えにしたか
-
-スモークが不合格になる条件が1つ増えた。片づけに失敗すると、一周そのものが成功でもスモーク全体が不合格になり終了コード1で終わる。
-これは意図した引き換えで、「片づけの失敗は握りつぶす」（D85）を人を作る経路にだけ適用しないことにした。
-`kill -9` や端末ごとの強制終了で `finally` が走らない場合は、これまでどおり残る（30日後に定期の掃除が拾う）。
-アプリのコードは1行も変えていないので、画面の見え方は変わらない。
-
-### 何が何を呼ぶか
-
-`npm run smoke:prod -- journey` → `scripts/smoke-journey.mjs`。
-一周を始める前に `scripts/_smoke-baseline.mjs` が8つの表を数える。
-ゲストが生まれる地点（回答の送信）の直後に `scripts/_smoke-actors.mjs` の `actorFromCookies()` がブラウザの Cookie を復号し、同時に自分の作品への回答行も読んで、ID を帳面に積む。
-`finally` で、画像 → 利用の記録・同意の記録 → 作品・お題・ドラフト（`scripts/_smoke-own-rows.mjs`）→ 人（`_smoke-actors.mjs`）の順に消し、最後にもう一度8つを数えて開始前と突き合わせる。
-1件でも違えば不合格。`JOURNEY_FAIL_AFTER=guest|next-work` を付けると途中でわざと止められる（片づけの故障試験用）。
-
-### 次の一手
-
-限定公開を広げて実利用者が入ったら、同じ `npm run db:funnel` で測り直し、検査の痕跡だけだった時期の数字と比べる。
-閲覧・押下の記録を足すかどうかはそのあとで決める（今回も1つも足していない）。
-
-### 同じ穴が journey 以外にもあった
-
-`scripts/smoke-anon.mjs` も本番でゲストを残す作り（同ファイル44行目に明記）。
-1本ずつ直すのをやめ、すべてのスモークが使う共通の入口（`scripts/_smoke-http.mjs` の `finish()`）で、開いた入れ物の Cookie から人を拾って消すようにした。
-本番で `smoke:prod -- anon` を1回流し、匿名ゲスト3人が消えることを実測した。
-固定の検査用利用者（`dpq-fixture-`）だけは使い回す前提なので消さない。本番で流したあとは `npm run smoke:fixtures:purge` を別に流す必要がある。
-
-### 本番の出発点を作り直した
-
-承認を得て、確認で残った固定の検査用利用者2人を本番向けの入口から削除した（消す前に8項目で独立に照合。対象ちょうど2人・残す40人は1人も含まない）。
-本番の人は 42人 → 40人、登録済みは 6人 → 4人。検査用の利用者は0人になった。
-既存の purge は利用者を消すだけなので、この2人のドラフト2件は道連れで消え、お題2件・作品2件（どちらも削除済み・非公開）・同意4件は持ち主が外れて残った。持ち主の外れた行はファネルのどの段にも入らない。
-この時点の数字を「スモーク自己片づけ導入後の基準値」として docs/smoke-selfclean.md 10節に置いた。以後の増減はここから測る。
-
-### 触ったもの
-
-`scripts/_smoke-actors.mjs`（新規）、`scripts/_smoke-baseline.mjs`（新規）、`scripts/smoke-journey.mjs`、`scripts/_smoke-http.mjs`、`scripts/_smoke-users.mjs`、`test/tools/run.mjs`（片づけの試験20件を追加。46→67）、`docs/smoke-selfclean.md`（新規）、`docs/funnel-v0.md`、`docs/decisions.md`（D210）、`README.md`。
 
 ---

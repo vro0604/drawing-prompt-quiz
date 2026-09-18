@@ -31,16 +31,62 @@ npm run deploy:main -- --apply   # 画面を出す（push 直前にもう一度�
 
 ## 手で打ち忘れても止まる
 
-本番を変えるスクリプトは、外へ送る直前に同じ判定を通る。満たさなければ
-非0で終わり、接続もしない。通るのは次の道具である。
+本番を変える入口は、外へ送る直前に同じ判定を通る。満たさなければ非0で終わり、
+接続もしない。通るのは次の11本である。
 
-`db:deploy` ／ `db:baseline` ／ `db:apply:one` ／ `db:apply:many` ／
-`smoke:prod` ／ `cleanup:testdata --apply` ／ `setup:domain --apply` ／
-`setup:auth --apply` ／ `setup:protection --apply` ／ `deploy:main --apply`
+`deploy:main --apply` ／ `db:deploy` ／ `db:baseline` ／ `db:apply:one` ／
+`db:apply:many` ／ `smoke:prod` ／ `cleanup:testdata --apply` ／
+`setup:domain --apply` ／ `setup:auth --apply` ／ `setup:protection --apply` ／
+`node scripts/db-history-0909.mjs fix --yes`（履歴表を直す。npm script になっていない）
+
+入口を数えるとき、**npm script の一覧だけを見ない。**
+11本目は npm script が無いので、2026-09-18 の最初の棚卸しで見落とした。
+
+## 画面を本番へ出す道は2つで守る
+
+1つは `npm run deploy:main`。もう1つは、共有の Git フォルダに置いた pre-push hook。
+hook は Git そのものの通り道にあるので、**手で `git push origin <枝>:main` と
+打っても通る。**送り先が `refs/heads/main` と完全に一致する push だけを確かめ、
+それ以外の枝への push は1文字も邪魔しない。
+
+```bash
+npm run guard:hooks:status    # 入っているかを見る
+npm run guard:hooks:install   # 入れる（作業木が何個あっても1回でよい）
+npm run guard:hooks:remove    # 外す
+```
+
+hook は作業木ごとではなく、共有の Git フォルダに1つだけ置く。だから作業木を
+新しく作っても入れ直さなくてよい（作業木3つで実測。`npm run test:preflight:hook`）。
+ただし hook は Git では配られないので、**リポジトリを別の計算機へクローンしたら
+そこで1回入れる。**
+
+## 本番のデータベースは npm script から触る
+
+`npx supabase db push` や `npx supabase migration repair` を手で打たない。
+打てば柵を通らない（OSの側で禁じる仕組みは作っていない）。
+当てるときは `db:deploy` ／ `db:apply:one` ／ `db:apply:many`、
+履歴を直すときは `scripts/db-history-0909.mjs`、
+「適用済み」の登録は `db:baseline` を使う。
+
+## 古い作業木は残してよい。本番の操作だけを禁じる
+
+`origin/main` から遅れた作業木も、未コミットが溜まった作業木も、
+保管・調査用として置いたままでよい。消さない・畳まない。
+そこから本番を変える操作だけが止まる。
 
 判定の中身と、止まったときの直しかたは `docs/db-workflow.md` と
 `docs/prod-runbook.md` にある。**この柵は自分では merge も rebase も reset も
 stash も commit もしない。**古い作業木や未コミットの変更は、そのまま残す。
+
+## 未コミット判定から外す2つのパス
+
+`統合.md` と `統合サムネイル/` の2つだけは、未コミットでも数えない。
+常駐ジョブ `com.kazushi.weave` が作り直すもので、人の手が入らない。
+
+出所: ユーザー承認（2026-09-18）。同じ発言で条件も決まっている。
+完全一致のパスだけ（`統合.md.bak` は例外にならない）。親フォルダの中身をまとめて
+許すことはしない。migration の判定と、出すコミットの中身には使わない。
+例外があること自体を毎回出力に書く。
 
 ---
 

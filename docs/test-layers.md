@@ -18,7 +18,7 @@
 
 | 層 | 何を確かめるか | いま何で確かめているか | 本物か |
 |---|---|---|---|
-| 0. 検査そのもの | 落ちたときに原因が残る・重い検査が同時に走らない・柵が効く | `npm run test:e2e:selftest` / `npm run test:guard`（30項目<!--count:柵の自己試験-->） / `npm run test:preflight`（32項目<!--count:作業木の柵の自己試験-->） | 本物（わざと落として確かめる） |
+| 0. 検査そのもの | 落ちたときに原因が残る・重い検査が同時に走らない・柵が効く | `npm run test:e2e:selftest` / `npm run test:guard`（30項目<!--count:柵の自己試験-->） / `npm run test:preflight`（35項目<!--count:作業木の柵の自己試験-->） / `npm run test:preflight:hook`（54項目<!--count:main push の柵の自己試験-->） | 本物（わざと落として確かめる） |
 | 1. UI・ブラウザ動作 | 画面が出る・押せる・スマホ幅で崩れない | `npm run test:e2e`（Playwright ＋ next dev） | 本物のブラウザと本物のアプリ |
 | 2. SQL・migration | migration が当たる・表と制約ができる・既存データが壊れない | `npm run test:db` / `npm run test:db:upgrade` / `npm run db:verify:local` | **本物の PostgreSQL**（PGlite は Postgres 本体を WebAssembly にしたもの） |
 | 3. PostgREST 互換 | HTTP で RPC を呼べる・引数と戻り値の形が合う | **自作の擬似 API**（`test/e2e/supabase-mock.mjs`） | 偽物 |
@@ -38,7 +38,7 @@
 どちらも「アプリが正しいか」ではなく「検査が信用できるか」の話である。
 そこが崩れていると、上の1〜5がいくら通っても意味がない。**先にここを見る。**
 
-ここで確かめているのは4つ。
+ここで確かめているのは5つ。
 
 1. **落ちたら、どの1件がなぜ落ちたかが残る。**
    本物のブラウザ試験をわざと1件落とし、試験名・落ちた段・そのときのURL・
@@ -53,6 +53,16 @@
    1コミット遅れ・73コミット遅れ・未コミットの変更・版番号の食い違い・
    確認の途中で遠くの main が進む、の5つをその場で作って、
    **止まることを見る。**本物の GitHub にも本番DBにも触れない。
+5. **手で `git push origin <枝>:main` と打っても止まる**
+   （`npm run test:preflight:hook`）。判定が正しいことと、`git push` が
+   実際に止まることは別の話なので、**使い捨ての置き場へ本当に push して見る。**
+   1／73／86コミット遅れ・未コミット・weave の2パスだけ・weave＋ほかに1件・
+   migration の欠落・版番号の重複・枝への push（邪魔しない）・枝から main への
+   push・取り出していない枝を main へ・main を消す push・確認の途中で main が
+   進む・判定の道具が壊れている、の13の場面を作る。
+   さらに**作業木3つ**を作って、共有の Git フォルダに置いた hook が
+   どの作業木からの push にも効くことを確かめる
+   （「`.git/hooks` だから共有されるはず」で済ませない）。
 
 記録は合格した回にも書く。合格の記録が無いと「前は何秒だったか」も比べられない。
 

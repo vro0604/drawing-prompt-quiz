@@ -25,6 +25,12 @@
 - 「Vercel へデプロイ」の実体は `git push origin <枝>:main` である。
   Vercel が GitHub の `main` を見ていて、`main` が進むとビルドが始まる。
   押した瞬間に利用者へ届く。`npm run deploy:main` がこの1行を包んでいる。
+- 出す道は2つで守る。`npm run deploy:main` と、共有の Git フォルダに置いた
+  pre-push hook。hook があるので、**手で `git push origin <枝>:main` と打っても
+  同じ確認を通る。**送り先が `refs/heads/main` と完全一致する push だけが対象で、
+  ほかの枝への push は素通りする。入っているかは `npm run guard:hooks:status`。
+- 本番のデータベースは npm script から触る。`npx supabase db push` や
+  `npx supabase migration repair` を手で打つと柵を通らない。
 
 ---
 
@@ -63,6 +69,7 @@
 | # | 実行するもの | 期待する結果 | 止める条件 | 戻す先 |
 |---|---|---|---|---|
 | 9 | `npm run deploy:main -- --apply` | 出るコミットが並び、`origin/main` が進む。Vercel のビルドが始まる | 確認で止まる／ビルド失敗 | **3-A** |
+| 9-b | `npm run guard:hooks:status` | 「入っています」 | 入っていない／別のものが入っている | 同上（出す前に入れる） |
 | 10 | `curl -sI https://<本番>/` ほか主要5経路 | すべて 200 か 3xx | 5xx | **3-A** |
 
 ### 第4部 動きを確かめる（新しい画面）

@@ -34,22 +34,30 @@ import { existsSync, readdirSync } from "node:fs";
 import path from "node:path";
 
 /**
- * 自動で書き換わるので、未コミットでも「身に覚えのある変更」として数えるもの。
+ * 未コミットでも数えない2つのパス。**この2つだけ。完全一致だけ。**
  *
- * 出所: ユーザーの常駐ジョブ ~/Library/LaunchAgents/com.kazushi.weave.plist が、
- * フォルダごとに 統合.md を作り直し 統合サムネイル/ を足す。
- * 2026-09-18 に、この作業木を作った直後の git status で実際に2件とも出た。
+ * 出所: ユーザー承認（2026-09-18）「統合.md と 統合サムネイル/ の2パスだけは
+ * com.kazushi.weave が継続的に生成するため、dirty stop 条件から除外してよい」。
+ * 条件も同じ発言で指定されている。
+ *   ・完全一致のパスだけ
+ *   ・類似名や親ディレクトリ全体を許可しない
+ *   ・migration の判定には影響させない
+ *   ・出す対象ファイルの判定には使わない
+ *   ・この例外があることを出力に明示する
  *
- * **ここに足すのは、人の手が入らないファイルだけ。**
- * 迷ったら足さない。足さなければ止まるだけで、事故にはならない。
+ * だから前方一致も部分一致もしない。`統合.md.bak` も `統合サムネイル/1.png` も
+ * 例外にならず、ふつうの未コミットとして数える（＝止まる）。
+ * migration の欠落と版番号の重複は別の場所（collectMigrations）で数えていて、
+ * この一覧を一度も見ない。出すコミットの中身もこの一覧を見ない。
  */
 export const AUTO_NOISE = ["統合.md", "統合サムネイル/"];
 
-/** 判定の種類。核はどちらにも入っている */
+/** 判定の種類。核はどれにも入っている */
 export const MODES = {
   core: "共通（本番を変える操作すべて）",
   deploy: "画面を本番へ出す（origin の main を進める）",
   db: "本番のデータベースへ書く",
+  push: "main を更新する push（pre-push hook から）",
 };
 
 /* ------------------------------------------------------------------ *
@@ -190,13 +198,17 @@ export function collectFacts({
   return facts;
 }
 
-/** 自動生成のたぐいか（AUTO_NOISE の項目そのもの、またはその下） */
+/**
+ * AUTO_NOISE の2つと**完全に同じ綴りか。**
+ *
+ * 前方一致にしない。`統合サムネイル/1.png` のように中の1件が別々に出てきたら、
+ * それは例外にせず、ふつうの未コミットとして数える。
+ * git status は、中に追跡済みのファイルが無いフォルダを `統合サムネイル/` の
+ * 1行にまとめて出す（-z で引用もしない）。ふだん出るのはこの形である。
+ */
 export function isAutoNoise(file) {
   const clean = file.replace(/^"|"$/g, "");
-  return AUTO_NOISE.some((n) => {
-    const base = n.endsWith("/") ? n.slice(0, -1) : n;
-    return clean === base || clean === n || clean.startsWith(`${base}/`);
-  });
+  return AUTO_NOISE.includes(clean);
 }
 
 /**
@@ -272,7 +284,7 @@ export function collectMigrations({ cwd = process.cwd(), root, target } = {}) {
  * 戻り値 { ok, blockers, notes }。blockers が1つでもあれば ok は false で、
  * 呼び出し側は終了コード 1 で止まる。
  */
-export function judge(facts, { mode = "core" } = {}) {
+export function judge(facts, { mode = "core", push = null } = {}) {
   const blockers = [];
   const notes = [];
   const add = (code, title, detail, todo) => blockers.push({ code, title, detail, todo });
@@ -350,14 +362,20 @@ export function judge(facts, { mode = "core" } = {}) {
         "（この道具は commit も stash も reset もしません）",
     );
   }
-  if (facts.dirty.noise.length > 0) {
-    notes.push({
-      title: `自動で書き換わるファイル ${facts.dirty.noise.length} 件は数えていない`,
-      detail:
-        facts.dirty.noise.map((d) => `${d.code} ${d.path}`).join(" / ") +
-        "（常駐ジョブ com.kazushi.weave が作り直すもの）",
-    });
-  }
+  // 例外があること自体を、当たっていてもいなくても毎回書く。
+  // 出所: ユーザー承認（2026-09-18）「この例外があることを出力に明示」。
+  notes.push({
+    title:
+      facts.dirty.noise.length > 0
+        ? `未コミットから外した例外 ${facts.dirty.noise.length} 件（完全一致の2パスのみ）`
+        : "未コミットから外す例外は、完全一致の2パスのみ（今回は該当なし）",
+    detail:
+      (facts.dirty.noise.length > 0
+        ? `${facts.dirty.noise.map((d) => `${d.code} ${d.path}`).join(" / ")}。`
+        : "") +
+      `例外は ${AUTO_NOISE.join(" と ")} だけ（常駐ジョブ com.kazushi.weave が作り直す）。` +
+      "前方一致も部分一致もしない。migration の判定と、出すコミットの中身には使わない。",
+  });
 
   // --- 4. 進みぶんの申告 ----------------------------------------------
   if (facts.ahead !== null) {
@@ -374,10 +392,63 @@ export function judge(facts, { mode = "core" } = {}) {
   }
 
   // --- 5. 種類ごとの追加条件 ------------------------------------------
-  if (mode === "deploy") judgeDeploy(facts, notes);
-  if (mode === "db") judgeDb(facts, add, notes);
+  if (mode === "deploy" || mode === "push") judgeDeploy(facts, notes);
+  if (mode === "db" || mode === "push") judgeDb(facts, add, notes);
+  if (mode === "push") judgePushedRef(facts, push, add, notes);
 
   return { ok: blockers.length === 0, mode, blockers, notes };
+}
+
+/**
+ * pre-push hook から呼ばれたときだけの追加条件。
+ *
+ * 【なぜ HEAD だけでは足りないか】
+ *   `git push origin feature/foo:main` は、いま取り出している内容と関係なく、
+ *   別の枝の先端を main へ送れる。上の判定は**この作業木の HEAD**を測っているので、
+ *   送るものが HEAD でなければ、測ったものと送るものが別になる。
+ *   測っていないものは通さない。
+ *
+ * 【消す push】
+ *   `git push origin :main` は main そのものを消す。本番の枝が無くなる。
+ *   遅れも汚れも関係なく、常に止める。
+ */
+function judgePushedRef(facts, push, add, notes) {
+  if (!push) {
+    add(
+      "P0",
+      "送るものが分からない",
+      "pre-push が渡す ref の行を読めませんでした。",
+      "この形の push は通しません。`npm run deploy:main -- --apply` を使ってください。",
+    );
+    return;
+  }
+
+  notes.push({
+    title: "送り先は main",
+    detail: `${push.localRef || "(削除)"} → ${push.remoteRef}`,
+  });
+
+  if (push.deleting) {
+    add(
+      "P1",
+      "main を消す push である",
+      "本番の枝そのものを消す操作です。確かめようがありません。",
+      "main を消す必要が本当にあるなら、この柵を外すのではなく、手順を相談してください。",
+    );
+    return;
+  }
+
+  if (push.localSha && facts.head && push.localSha !== facts.head) {
+    add(
+      "P2",
+      "送るものが、この作業木の内容ではない",
+      `送ろうとしているのは ${short(push.localSha)}（${push.localRef || "?"}）ですが、` +
+        `この作業木が取り出しているのは ${short(facts.head)} です。` +
+        "上の遅れ・汚れ・migration の判定は、取り出している側を測ったものなので、" +
+        "送るものについては何も確かめられていません。",
+      "送りたい内容を取り出している作業木へ移ってから、もう一度 push してください。",
+    );
+  }
 }
 
 /** 画面を本番へ出すときの追加条件 */

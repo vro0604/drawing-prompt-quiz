@@ -261,6 +261,8 @@ npm run db:verify
 | 禁止 | 理由 |
 |---|---|
 | 長く使っている作業木から本番へ当てる | `origin/main` より遅れている作業木には、本番に当たっているはずの SQL が無い。<br>**当てると本番の履歴とファイルの対応が崩れる。**`npm run preflight:db` が止める |
+| `npx supabase db push` を手で打つ | 柵を通らない。`npm run db:deploy` から打つ（中で `preflight:db` を通る） |
+| `npx supabase migration repair` を手で打つ | 同じ。履歴表は本番の状態なので、当てていないものを「適用済み」にすると嘘が残る。<br>「適用済み」の登録は `npm run db:baseline`、`20260909180000` の1行は `scripts/db-history-0909.mjs` |
 | `supabase db reset --linked` | リモートDBを作り直す。**データが全部消える** |
 | `db push --include-all` | `applied/` を戻した場合などに古いSQLを巻き込む |
 | `applied/` `rollback/` のファイルを `migrations/` へ移す | 再実行されて反映が止まる |

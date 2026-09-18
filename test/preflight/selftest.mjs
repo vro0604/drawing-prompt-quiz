@@ -33,7 +33,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { judge } from "../../scripts/_preflight.mjs";
+import { AUTO_NOISE, judge } from "../../scripts/_preflight.mjs";
 import { recordCount } from "../counts.mjs";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
@@ -169,7 +169,21 @@ console.log("");
   fs.writeFileSync(path.join(w.work, "統合サムネイル", "1.png"), "x");
   const r = runPreflight(w.work);
   check("D' 常駐ジョブが作るファイルだけなら止まらない", r.code === 0, `終了コード ${r.code}`);
-  check("D' それでも件数は申告する", /自動で書き換わるファイル/.test(r.out), "");
+  check(
+    "D' 例外が2パスだけであることを出力に明示する",
+    /未コミットから外した例外 2 件（完全一致の2パスのみ）/.test(r.out) && /前方一致も部分一致もしない/.test(r.out),
+    "",
+  );
+  check("D' 例外の一覧は 統合.md と 統合サムネイル/ の2つだけ", AUTO_NOISE.length === 2 && AUTO_NOISE.join(",") === "統合.md,統合サムネイル/", AUTO_NOISE.join(" / "));
+}
+
+/* ── D'' 似た名前は例外にしない ───────────────────────── */
+{
+  const w = newWorld("Dy");
+  fs.writeFileSync(path.join(w.work, "統合.md.bak"), "似ているが weave のものではない\n");
+  const r = runPreflight(w.work);
+  check("D'' 統合.md.bak は例外にならず止まる", r.code === 1, `終了コード ${r.code}`);
+  check("D'' その名前を出す", /統合\.md\.bak/.test(r.out), "");
 }
 
 /* ── E 確認の途中で遠くの main が進む ─────────────────── */

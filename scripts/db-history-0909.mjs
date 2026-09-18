@@ -70,6 +70,15 @@ if (!["check", "fix", "rollback"].includes(mode)) {
   process.exit(1);
 }
 
+// ── 本番へ書く前に、作業木そのものを見る ────────────────────────
+// check は読むだけなので通さない。fix / rollback --yes だけが本番の履歴表へ書く。
+// この入口は npm script になっていないので、2026-09-18 の最初の棚卸しで
+// 見落としていた。**入口の数え方を「npm script の一覧」に頼らない。**
+if (mode !== "check" && YES) {
+  const { requireSafeWorktree } = await import("./_preflight.mjs");
+  requireSafeWorktree({ mode: "db", label: `履歴表の ${mode}` });
+}
+
 const sha256 = (p) => crypto.createHash("sha256").update(fs.readFileSync(p)).digest("hex");
 const stop = (msg) => {
   console.log(`\n✗ 止めました: ${msg}`);
