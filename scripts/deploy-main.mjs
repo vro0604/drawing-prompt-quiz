@@ -27,7 +27,7 @@
  *   force しない。merge も rebase もしない。早送りにならないなら、ただ止まる。
  */
 
-import { execFileSync } from "node:child_process";
+import { spawnSync } from "node:child_process";
 import { collectFacts, judge, formatReport, readRemoteMain, runGit } from "./_preflight.mjs";
 
 const argv = process.argv.slice(2);
@@ -116,16 +116,25 @@ console.log("  → 変わっていません。早送りで送ります。");
 
 /* ── 送る ─────────────────────────────────────────────── */
 
+// push そのものの出力は、成功しても全部出す。
+//
+// git は経過も pre-push hook の出力も標準エラーへ書く。成功したときに
+// 標準出力だけを見せると、**hook が何を言ったかが消える。**
+// 「確認したのに何も見えない」状態を作らない。
 console.log("");
 try {
-  const out = execFileSync("git", ["push", remote, `${src}:refs/heads/${branch}`], {
+  const r = spawnSync("git", ["push", remote, `${src}:refs/heads/${branch}`], {
     cwd,
     encoding: "utf8",
-    stdio: ["ignore", "pipe", "pipe"],
   });
-  console.log(out || "");
+  if (r.stdout) console.log(r.stdout);
+  if (r.stderr) console.log(r.stderr);
+  if (r.status !== 0) {
+    console.error("✗ push に失敗しました。本番は変わっていません。");
+    process.exit(1);
+  }
 } catch (e) {
-  console.error((e.stderr || "").toString());
+  console.error(e.message);
   console.error("✗ push に失敗しました。本番は変わっていません。");
   process.exit(1);
 }
