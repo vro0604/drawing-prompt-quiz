@@ -4,6 +4,57 @@
 `/next` はここを起点に「現在地と次の一手」を出し、`/progress` がここへ追記します。
 日時は JST。全体が400行を超えたら、一番下（最も古いもの）から削ります。
 
+## 2026-09-18 23:40 古い作業木から本番を変えられなくした
+
+### 終えたこと
+
+- 本番を変えられる道具を、推測せずに origin/main から列挙した。10本ある。
+  画面を出すもの（`git push origin <枝>:main`。Vercel が main を見てビルドする）、
+  本番DBへ書くもの（`db:deploy` / `db:baseline` / `db:apply:one` / `db:apply:many`）、
+  外部サービスの設定を書き換えるもの（`setup:domain` / `setup:auth` / `setup:protection` の --apply）、
+  本番に行を増やすもの（`smoke:prod` / `cleanup:testdata --apply`）。
+- その10本すべてが、外へ送る直前に同じ確認を通るようにした。満たさなければ非0で終わり、接続もしない。
+  確認するのは5つ。遠くの main の現在値を取り直せたか（控えを信じない）／控えと一致しているか／
+  この作業木がその main を含んでいるか／身に覚えのない未コミットが無いか／
+  migration に欠落と版番号の重複が無いか。
+- 画面を出す道は `npm run deploy:main` に一本化した。既定は下見。`--apply` を付けたときだけ送る。
+  送る直前に遠くの main をもう一度引き直し、確認したときから進んでいたら止まる。force はしない。
+- 主作業木で実際に測った。86コミット遅れ・未コミット179件・origin/main にある migration を14本持たない・
+  版番号の重複2組（`20260909180000` と `20260909200000`。2026-09-09 の事故そのもの）。
+  4件の条件違反として止まり、終了コード 1。
+- 自己試験32件（`npm run test:preflight`）。使い捨ての置き場に遠くの origin 役と手元の作業木役を作り、
+  1コミット遅れ・73コミット遅れ・未コミット・版番号の食い違い・origin/main の migration を持たない・
+  確認の途中で main が進む、を実際に作って止まることを見る。本物の GitHub にも本番DBにも触れていない。
+- 主作業木の未コミット181件は1バイトも動かしていない（前後で件数・HEAD・遅れの数が同じ）。
+  この柵は merge / rebase / reset / stash / commit を自分では行わない。
+
+### 引き換えたもの
+
+- 本番を変える操作のたびに `git ls-remote` が1〜2回走る。網が無いと**本番を変える操作ができない。**
+  外す口は作っていない（環境変数でも外れない）。網が無いときの逃げ道は未決。
+- 下見（`--apply` なし）は柵を通らない。外へ1バイトも出ないため。
+
+### 次の一手
+
+- この枝 `guard/worktree-preflight` を `origin/main` へ出すかどうかの判断。
+  出すなら `cd ../dpq-preflight && npm run deploy:main -- --apply`。
+- 主作業木の未コミット181件をどう畳むかは、依然として未判断のまま。
+  柵が入ったので、畳まないまま置いておいても事故にはならない。
+- 版番号の重複2組（`20260909180000` / `20260909200000`）は主作業木の中にだけある。
+  出す予定があるなら番号の付け替えが要る。
+
+### 触ったファイル
+
+- `scripts/_preflight.mjs`（新規・判定の本体）、`scripts/preflight.mjs`（新規・手で打つ入口）、
+  `scripts/deploy-main.mjs`（新規・画面を出す入口）、`test/preflight/selftest.mjs`（新規・自己試験32件）
+- 柵を通すようにしたもの: `scripts/_setup-common.mjs`（setup 3本と cleanup がここを通る）、
+  `scripts/db-deploy.sh`、`scripts/db-baseline.sh`、`scripts/db-apply-one.mjs`、
+  `scripts/db-apply-many.mjs`、`scripts/run-production-smoke.mjs`
+- `package.json`、`scripts/run-all-checks.mjs`、`scripts/check-doc-counts.mjs`
+- `CLAUDE.md`、`README.md`、`docs/prod-runbook.md`、`docs/db-workflow.md`、`docs/test-layers.md`
+- 作業木: `../dpq-preflight`（`origin/main` から新規。枝 `guard/worktree-preflight`）
+
+
 ## 2026-09-18 21:52
 
 ### 終えたこと
@@ -313,82 +364,3 @@ https://app.notion.com/p/3d558e61e66e81ec8d20c4a2f2e93cc0
 `scripts/_smoke-actors.mjs`（新規）、`scripts/_smoke-baseline.mjs`（新規）、`scripts/smoke-journey.mjs`、`scripts/_smoke-http.mjs`、`scripts/_smoke-users.mjs`、`test/tools/run.mjs`（片づけの試験20件を追加。46→67）、`docs/smoke-selfclean.md`（新規）、`docs/funnel-v0.md`、`docs/decisions.md`（D210）、`README.md`。
 
 ---
-
-## 2026-09-18 初回利用の進みぐあいを、いまの表だけから数える道具を作った（D209）
-
-### 何ができるようになったか
-
-`npm run db:funnel` と打つと、本番を読むだけで「来た人がどこまで進んだか」が人数と率で出る。
-過去24時間・7日・30日・全期間の4つ。中身は4つの流れで、作る側（お題が先／絵が先）・答える側・登録。
-新しい記録の仕組み（解析サービス・追跡の cookie・閲覧の記録）は1つも足していない。DB の migration も無い。
-分母は「DB に現れた人」＝初めて何かを書き込んだ人で、トップを見た人ではない。
-このサービスは書き込みの直前まで利用者の行を作らないので、「トップ閲覧者の何％」は作れない。道具自身がそれを毎回出力する。
-
-### 何を引き換えにしたか
-
-引き換えは無い（読むだけで、本番の行は1つも変わらない。前後で7つの表の件数が同じことを確認した）。
-ただし数字の使い道には限界がある。匿名のゲストは電子メールを持たないので、検査（スモーク）が作ったゲストと本物を見分けられない。
-いまの24時間・7日の数字は、ほぼ検査の痕跡。
-
-### 何が何を呼ぶか
-
-`npm run db:funnel` → `scripts/db-funnel.sh`（キーチェーンから接続文字列を組み立てる。既存の db:audit:prod と同じ作法）
-→ `scripts/db-funnel.mjs`（`begin transaction read only` を張ってから読み、rollback で閉じる）
-→ 数え方は `scripts/funnel-query.mjs` の SQL 1本。
-その同じ SQL を `test/tools/run.mjs` が使い捨ての DB（PGlite）へ流し、人数が分かっている場で期待どおりかを確かめる。
-本番用と試験用に別の SQL を書くと、試験が通っても本番で違う数を出すので、1本に絞ってある。
-
-### どこまでで、どこからが未着手か
-
-済み: 指標の定義、何が正確／近似／分からないかの一覧、本番の基準値4期間、9件の数え方の試験、
-2026-09-17 にゲストが2人増えた件の読み取り監査（両方とも本番スモークの痕跡と確認）。
-未着手: 閲覧・押下の記録（今回は実装しない方針）。実利用者が入るまで、率は解釈しない。
-
-### 触ったファイル
-
-- `scripts/funnel-query.mjs`（新規）、`scripts/db-funnel.mjs`（新規）、`scripts/db-funnel.sh`（新規）、`package.json`
-- `test/tools/run.mjs`（ファネル9件）、`README.md`（道具の自己試験 37 → 46）
-- `docs/funnel-v0.md`（新規）、`docs/decisions.md`（D209）、`PROGRESS.md`
-
-### 次の一手
-
-- 限定公開を広げて実利用者が入ったら、同じ道具で測り直して検査の痕跡と比べる
-
-## 2026-09-18 スマホ幅のヘッダーを1段に畳んだ（D208）
-
-### 何ができるようになったか
-
-スマホでどのページを開いても、いちばん上の枠が1段になった。左に「つたわるかな」、右にメニューのボタン1つだけ。
-行き先5つ（お題を引く・作品・ランキング・知らせ・アカウント）はボタンを押したときに、枠のすぐ下へ画面幅いっぱいの板として開く。
-これまでは5つを横に並べていて、幅 536px より狭いと折り返していた（実測: 320px と 375px で3段・高さ157px、390px と 430px で2段・109px）。
-その結果、320px ではトップの見出しが上から 181px の所に出ていたのが 85px になり、96px ぶん早く見えるようになった。
-開け閉ては、同じボタン・Escape・メニューの外を押す・行き先を押す・別のページへ移る、のどれでも閉じる。
-
-### 何を引き換えにしたか
-
-狭い画面では、行き先が1回押さないと見えない（これまでは常に見えていた）。
-未確認の知らせがあるときの太字も、メニューを開くまで見えない。ボタン側に印を付ければ見えるが、D112（数字も丸も出さない）に触れるので付けていない。
-枠の中身がブラウザ側で動く部品になったぶん、全ページに小さな JavaScript が1つ増えた（トップは静的なまま。build の出力で確認）。
-
-### 何が何を呼ぶか
-
-`layout.tsx` が `SiteHeader`（`_shell.tsx`）を置き、`SiteHeader` は左の名前だけを持って、残りを `SiteNav`（`_site-nav.tsx`・新規）へ渡す。
-`SiteNav` は開いているかどうかを自分で覚え、同じ `<nav>` を狭いときは板・広いときは横並びとして出す（行き先は1組しか書かない）。
-「知らせ」は従来どおり `NoticeEntry`（`_notice-entry.tsx`）で、未確認の有無だけを `/api/notices/unseen` から読む。
-位置と大きさの指定だけ `SiteNav` から className で渡す形に変えた（読み込み方＝D192 は1文字も変えていない）。
-
-### どこまでで、どこからが未着手か
-
-済み: 320/375/390/430/640/768/1280px の実測、暗い地、Escape と外側と遷移での閉じ方、ブラウザ試験3件の追加、本番反映。
-広い画面は座標まで同じ（768px と 1280px で前後一致）。お題・クイズ・回答・分析・課金・DB は触っていない。
-未着手: 現在のページを示す印（もともと無い）。Notion の対応表の写真の撮り直し（撮影の道具が origin/main に無い）。
-
-### 触ったファイル
-
-- `src/app/_site-nav.tsx`（新規）、`src/app/_shell.tsx`、`src/app/_notice-entry.tsx`
-- `test/e2e/browser.mjs`（G 群に3件）、`README.md`・`docs/test-layers.md`（ブラウザ試験の件数）
-- `docs/header-mobile.md`（新規）、`docs/decisions.md`（D208）、`PROGRESS.md`
-
-### 次の一手
-
-- 実機（iPhone / Android）で1回開いて、ボタンの押しやすさを確かめる
