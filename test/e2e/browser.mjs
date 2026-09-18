@@ -7771,12 +7771,23 @@ async function main() {
     assert((await count()) === 0, "問いを選び直しただけで共有記録ができた");
 
     t.stage("そのかわり、開いた・選んだは数に残っている");
-    const ev = await db.query(
-      `select event_key, count(*)::int as n from public.usage_events
-        where work_id = $1 group by event_key`, [w.workId]);
-    const byKey = Object.fromEntries(ev.rows.map((r) => [r.event_key, r.n]));
+    // **記録は操作のあとに追いかけて届く。**共有そのものを待たせない作りなので、
+    // 押した直後に読むと、混んでいる回だけ0件になる（実測: 一括実行で落ちた）。
+    // ここでは「作られない」ほうを先に確かめてあるので、待っても意味が逆転しない
+    let byKey = {};
+    for (let i = 0; i < 40; i += 1) {
+      const ev = await db.query(
+        `select event_key, count(*)::int as n from public.usage_events
+          where work_id = $1 group by event_key`, [w.workId]);
+      byKey = Object.fromEntries(ev.rows.map((r) => [r.event_key, r.n]));
+      if ((byKey.share_modal_open ?? 0) >= 1 && (byKey.share_question_select ?? 0) >= 1) break;
+      await g.waitForTimeout(250);
+    }
     assert((byKey.share_modal_open ?? 0) >= 1, "開いたことが数に無い");
     assert((byKey.share_question_select ?? 0) >= 1, "選んだことが数に無い");
+
+    t.stage("待ったあとでも、共有記録はまだ0件のまま");
+    assert((await count()) === 0, "待っているあいだに共有記録ができた");
   });
 
   await test("SH", "共有: 同じ人が2回共有すると、共有IDは別になる", async (t) => {
