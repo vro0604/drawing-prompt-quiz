@@ -137,7 +137,17 @@ function QuestionBlock({ question }: { question: QuizQuestion }) {
 }
 
 /** まだ答えていない人に出す回答フォーム */
-export function QuizForm({ quiz }: { quiz: WorkQuiz }) {
+export function QuizForm({
+  quiz,
+  extraFields = null,
+}: {
+  quiz: WorkQuiz;
+  /**
+   * 送信に一緒に載せる隠しの入力（共有から来たことの印）。
+   * **回答の中身には関わらない**（利用者の指示 19 / 22）。
+   */
+  extraFields?: React.ReactNode;
+}) {
   if (quiz.questions.length === 0) {
     return (
       <div className={surface}>
@@ -149,6 +159,7 @@ export function QuizForm({ quiz }: { quiz: WorkQuiz }) {
   return (
     <form action={submitAnswerAction} className={`${surface} space-y-6`}>
       <input type="hidden" name="workId" value={quiz.work_id} />
+      {extraFields}
 
       <div className="space-y-2">
         <h2 className="text-sm font-bold">この絵のお題を当てる</h2>

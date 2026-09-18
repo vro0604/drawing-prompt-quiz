@@ -131,6 +131,32 @@ import {
   gapFor,
   isClipped,
 } from "../../src/features/feed/layout.ts";
+import {
+  AI_BADGE_TEXT,
+  BRAND_TEXT,
+  CARD_HEIGHT,
+  CARD_PAD_X,
+  CARD_RADIUS,
+  CARD_WIDTH,
+  CTA_FONT_SIZE,
+  CTA_TEXT,
+  QUESTION_FONT_SIZE,
+  SENSITIVE_CTA_TEXT,
+  SENSITIVE_TEXT,
+  SHARE_OG_DESCRIPTION,
+  TEXT_AREA_HEIGHT,
+  UNAVAILABLE_TEXT,
+  blueskyIntentUrl,
+  cardObjectPosition,
+  isCrawlerUserAgent,
+  measureText,
+  questionText,
+  shareCardImageUrl,
+  shareOgTitle,
+  shareUrl,
+  wrapQuestion,
+  xIntentUrl,
+} from "../../src/features/share/card.ts";
 import { recordCount } from "../counts.mjs";
 
 const results = [];
@@ -1553,6 +1579,185 @@ test("段の組み方", "列の高さが大きく偏らない（いちばん高�
   const spread = Math.max(...heights) - Math.min(...heights);
   // 1枚ぶんの高さ（最大2.6）より小さければ、見た目の段差は1枚以内に収まる
   assert(spread <= MAX_RATIO, `列の高さの差が ${spread.toFixed(2)}（1枚ぶん以内のはず）`);
+});
+
+/* ===========================================================================
+ * 共有カードの決まり（src/features/share/card.ts）
+ * ===========================================================================
+ *
+ * ここで見ているのは「カードの決まりが動いていないこと」。
+ * 絵そのものは目で見るしかないが、**寸法・文言・行の分け方・URLの形**は
+ * 数えられるので、数える。
+ */
+
+console.log("\n共有カードの寸法と文言");
+
+test("共有カード", "1200×630 である", () => {
+  assert(CARD_WIDTH === 1200, `幅が ${CARD_WIDTH}`);
+  assert(CARD_HEIGHT === 630, `高さが ${CARD_HEIGHT}`);
+});
+
+test("共有カード", "文字領域はカード下部の25%", () => {
+  assert(TEXT_AREA_HEIGHT === Math.round(630 * 0.25), `${TEXT_AREA_HEIGHT}px`);
+});
+
+test("共有カード", "角の丸みは既存の面と同じ 16px（rounded-2xl）", () => {
+  assert(CARD_RADIUS === 16, `${CARD_RADIUS}px`);
+});
+
+test("共有カード", "CTA は問題文より明確に小さい", () => {
+  assert(CTA_FONT_SIZE < QUESTION_FONT_SIZE, `${CTA_FONT_SIZE} vs ${QUESTION_FONT_SIZE}`);
+});
+
+test("共有カード", "文言が決まった1組である", () => {
+  assert(BRAND_TEXT === "つたわるかな", BRAND_TEXT);
+  assert(CTA_TEXT === "タップして答える", CTA_TEXT);
+  assert(AI_BADGE_TEXT === "AI", AI_BADGE_TEXT);
+  assert(UNAVAILABLE_TEXT === "この作品は現在公開されていません", UNAVAILABLE_TEXT);
+  assert(SENSITIVE_TEXT === "センシティブな作品が含まれています", SENSITIVE_TEXT);
+  assert(SENSITIVE_CTA_TEXT === "タップして表示・回答", SENSITIVE_CTA_TEXT);
+});
+
+test("共有カード", "問いの文は回答画面と同じ言い回し", () => {
+  assert(questionText("モーフ") === "モーフ はどれ？", questionText("モーフ"));
+});
+
+console.log("\n共有カードの行の分け方");
+
+test("共有カード", "短い問いは1行に収まる", () => {
+  const lines = wrapQuestion("モーフ はどれ？");
+  assert(lines.length === 1, `${lines.length} 行`);
+  assert(lines[0] === "モーフ はどれ？", lines[0]);
+});
+
+test("共有カード", "長い問いでも2行を超えない", () => {
+  const lines = wrapQuestion("あ".repeat(200));
+  assert(lines.length === 2, `${lines.length} 行`);
+});
+
+test("共有カード", "2行に入り切らないときは末尾が「…」になる", () => {
+  const lines = wrapQuestion("あ".repeat(200));
+  assert(lines[1].endsWith("…"), lines[1]);
+});
+
+test("共有カード", "省略しても各行は文字領域の幅に収まる（字を小さくしない）", () => {
+  const max = CARD_WIDTH - CARD_PAD_X * 2;
+  for (const src of ["あ".repeat(200), "A".repeat(400), "モーフ はどれ？"]) {
+    for (const line of wrapQuestion(src)) {
+      const w = measureText(line, QUESTION_FONT_SIZE);
+      assert(w <= max, `「${line}」が ${w.toFixed(0)}px（上限 ${max}px）`);
+    }
+  }
+});
+
+test("共有カード", "半角の連なりの途中では折らない", () => {
+  const lines = wrapQuestion("これは verylongenglishword です");
+  const joined = lines.join("");
+  assert(joined.includes("verylongenglishword") || lines.length === 2, joined);
+});
+
+test("共有カード", "空の問いは0行", () => {
+  assert(wrapQuestion("").length === 0, "空でないものが返った");
+  assert(wrapQuestion("   ").length === 0, "空白だけでも0行のはず");
+});
+
+console.log("\n共有カードの切り取り方");
+
+test("共有カード", "カードより縦長の絵は上端から見せる（既存の一覧と同じ決まり）", () => {
+  assert(cardObjectPosition(800, 1600) === "top", cardObjectPosition(800, 1600));
+});
+
+test("共有カード", "カードより横長の絵は中央に寄せる", () => {
+  assert(cardObjectPosition(2000, 600) === "center", cardObjectPosition(2000, 600));
+});
+
+test("共有カード", "大きさが分からない絵は中央に寄せる", () => {
+  assert(cardObjectPosition(0, 0) === "center", cardObjectPosition(0, 0));
+});
+
+console.log("\n共有URLと共有先");
+
+test("共有URL", "問い・流入元・共有IDが載る", () => {
+  const u = shareUrl("https://example.test", "w-1", 42, "s-1");
+  assert(u === "https://example.test/works/w-1?question=42&src=share&sid=s-1", u);
+});
+
+test("共有URL", "問いが無くても共有できる（通常の作品共有へ落ちる）", () => {
+  const u = shareUrl("https://example.test", "w-1", null, "s-1");
+  assert(u === "https://example.test/works/w-1?src=share&sid=s-1", u);
+});
+
+test("共有URL", "共有カードの絵は問いと共有IDで変わる", () => {
+  assert(shareCardImageUrl("w", null, null) === "/api/og/work/w", "1");
+  assert(shareCardImageUrl("w", 7, null) === "/api/og/work/w?q=7", "2");
+  assert(shareCardImageUrl("w", 7, "s") === "/api/og/work/w?q=7&sid=s", "3");
+});
+
+test("共有先", "X は公式の入口（x.com/intent/tweet）を使う", () => {
+  const u = xIntentUrl("モーフ はどれ？", "https://example.test/works/w?question=1");
+  assert(u.startsWith("https://x.com/intent/tweet?"), u);
+});
+
+test("共有先", "SNS へ渡すのは問題文とURLだけ（紹介文もハッシュタグも足さない）", () => {
+  const u = xIntentUrl("モーフ はどれ？", "https://example.test/w");
+  const text = decodeURIComponent(new URL(u).searchParams.get("text"));
+  assert(text === "モーフ はどれ？", text);
+  assert(!u.includes("hashtags"), "ハッシュタグの欄が付いている");
+  assert(!u.includes("via="), "via が付いている");
+});
+
+test("共有先", "Bluesky は text しか受け取れないので本文にURLを入れる", () => {
+  const u = blueskyIntentUrl("モーフ はどれ？", "https://example.test/w");
+  assert(u.startsWith("https://bsky.app/intent/compose?text="), u);
+  const text = decodeURIComponent(new URL(u).searchParams.get("text"));
+  assert(text === "モーフ はどれ？\nhttps://example.test/w", JSON.stringify(text));
+});
+
+console.log("\n共有の見出しと説明");
+
+test("共有OG", "問い付きは「{問題文}｜つたわるかな」", () => {
+  assert(shareOgTitle("モーフ はどれ？") === "モーフ はどれ？｜つたわるかな", "1");
+});
+
+test("共有OG", "問いが無ければ差し替えない（null を返す）", () => {
+  assert(shareOgTitle(null) === null, "null のはず");
+  assert(shareOgTitle("   ") === null, "空白だけでも null のはず");
+});
+
+test("共有OG", "説明文は「タップして答える」", () => {
+  assert(SHARE_OG_DESCRIPTION === "タップして答える", SHARE_OG_DESCRIPTION);
+});
+
+console.log("\nクローラーの見分け");
+
+test("クローラー", "主なSNSの名乗りを拾う", () => {
+  for (const ua of [
+    "Twitterbot/1.0",
+    "facebookexternalhit/1.1 (+http://www.facebook.com/externalhit_uatext.php)",
+    "Slackbot-LinkExpanding 1.0 (+https://api.slack.com/robots)",
+    "Mozilla/5.0 (compatible; Discordbot/2.0; +https://discordapp.com)",
+    "Mozilla/5.0 AppleWebKit/537.36 (KHTML, like Gecko; compatible; Bluesky Cardyb/1.1; +mailto:support@bsky.app)",
+    "Mastodon/4.2.1",
+    "TelegramBot (like TwitterBot)",
+    "facebookexternalhit/1.1;line-poker/1.0",
+    "meta-externalagent/1.1",
+  ]) {
+    assert(isCrawlerUserAgent(ua), `拾えていない: ${ua}`);
+  }
+});
+
+test("クローラー", "ふつうのブラウザは人として扱う", () => {
+  for (const ua of [
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.0 Mobile/15E148 Safari/604.1",
+  ]) {
+    assert(!isCrawlerUserAgent(ua), `クローラー扱いになった: ${ua}`);
+  }
+});
+
+test("クローラー", "名乗りが無いときは人として扱う（見せる判断には使わない）", () => {
+  assert(!isCrawlerUserAgent(null), "null");
+  assert(!isCrawlerUserAgent(""), "空文字");
 });
 
 const passed = results.filter((r) => r.ok).length;

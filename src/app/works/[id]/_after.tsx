@@ -136,15 +136,20 @@ export function NextSteps({ workId }: { workId: string }) {
     <section className={`${surface} space-y-4`}>
       <h2 className="text-sm font-bold">つづける</h2>
 
+      {/*
+        data-share-continue は**計測の印だけ**（利用者の指示 32 の share_continue）。
+        押したときの動きも行き先も変わらない。共有から来た人の画面にだけ
+        置かれる部品（_share.tsx の ShareTracker）が、この印を拾って数える。
+      */}
       <div className="flex flex-wrap gap-3">
-        <form action={nextWorkAction}>
+        <form action={nextWorkAction} data-share-continue>
           <input type="hidden" name="workId" value={workId} />
           <SubmitButton pendingLabel="探しています…" className={btnPrimary}>
             次の作品に答える
           </SubmitButton>
         </form>
 
-        <Link href="/play" className={`${btnSecondary} inline-block`}>
+        <Link href="/play" className={`${btnSecondary} inline-block`} data-share-continue>
           自分も描く（お題を引く）
         </Link>
       </div>

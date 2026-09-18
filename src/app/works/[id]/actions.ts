@@ -24,6 +24,7 @@ import {
   type SavedElements,
 } from "@/features/carry/types";
 import { fetchNextWorkId, recordUsageEvent } from "@/features/discover/rpc";
+import { recordShareEvent } from "@/features/share/rpc";
 import {
   callOpenFlavorHint,
   callPostFlavorReply,
@@ -195,6 +196,14 @@ export async function submitAnswerAction(form: FormData): Promise<void> {
     );
   }
 
+  // 共有から来た人かどうか。**回答の決まりには一切関わらない**
+  // （利用者の指示 19 / 22）。採点も、2回目を断る判定も、
+  // 誰として数えるかも、今までどおり DB が決める。
+  // ここで拾うのは「どの共有から来た人の回答か」という印だけ
+  const shareId = str(form, "sid");
+  const shareQuestion = Number.parseInt(str(form, "shareQuestionId"), 10);
+  const fromShare = str(form, "src") === "share";
+
   try {
     // ここが「最初の書き込み」。必要ならこの瞬間にゲストが発行される
     await ensureUserId();
@@ -203,7 +212,27 @@ export async function submitAnswerAction(form: FormData): Promise<void> {
     backWithError(workId, e);
   }
 
+  if (fromShare) {
+    await recordShareEvent("share_answer_submit", {
+      workId: workId || null,
+      questionId: Number.isFinite(shareQuestion) ? shareQuestion : null,
+      shareId: shareId || null,
+    });
+  }
+
   revalidatePath(`/works/${workId}`);
+
+  // 共有から来た人は、結果の画面でも共有の印を保つ。
+  // **共有専用の結果画面は作らない**（利用者の指示 21）。行き先は同じ作品ページで、
+  // 印が付いているぶんだけ「結果を見た」「次へ進んだ」を数えられる
+  if (fromShare) {
+    const params = new URLSearchParams();
+    if (Number.isFinite(shareQuestion)) params.set("question", String(shareQuestion));
+    params.set("src", "share");
+    if (shareId) params.set("sid", shareId);
+    redirect(`/works/${workId}?${params.toString()}`);
+  }
+
   redirect(`/works/${workId}`);
 }
 

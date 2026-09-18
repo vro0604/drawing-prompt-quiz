@@ -518,11 +518,20 @@ function Confirm({
   picked,
   onEdit,
   onBack,
+  extraFields,
 }: {
   quiz: WorkQuiz;
   picked: PickedMap;
   onEdit: (index: number) => void;
   onBack: () => void;
+  /**
+   * 送信に一緒に載せる隠しの入力。
+   *
+   * いまは共有から来たことを示す印だけが入る。
+   * **回答の中身には一切関わらない。**採点も、2回目を断る判定も、
+   * 今までどおり DB が決める（利用者の指示 19 / 22）。
+   */
+  extraFields?: React.ReactNode;
 }) {
   const labelOf = (question: QuizQuestion, tagId: number) =>
     question.choices.find((c) => c.tag_id === tagId)?.label ?? String(tagId);
@@ -541,6 +550,7 @@ function Confirm({
     */
     <form action={submitAnswerAction} data-confirm-stage className="space-y-4">
       <input type="hidden" name="workId" value={quiz.work_id} />
+      {extraFields}
 
       <div className="space-y-1">
         <h3 className="text-base font-bold">この内容で送ります</h3>
@@ -639,6 +649,8 @@ export function AnswerFlow({
   imageWidth,
   imageHeight,
   title,
+  startQuestionId = null,
+  extraFields = null,
 }: {
   quiz: WorkQuiz;
   /**
@@ -652,10 +664,27 @@ export function AnswerFlow({
   imageWidth: number;
   imageHeight: number;
   title: string;
+  /**
+   * 最初に出すセクションの問のID（共有URLから来たとき。利用者の指示 20）。
+   *
+   * **途中まで答えかけている人には効かない。**このタブに預けてある
+   * 途中経過があれば、そちらの位置が勝つ（下の復元の効果が上書きする）。
+   * 共有から来たからといって、書きかけを捨てさせない。
+   */
+  startQuestionId?: number | null;
+  /** 送信に一緒に載せる隠しの入力。Confirm へそのまま渡す */
+  extraFields?: React.ReactNode;
 }) {
   const total = quiz.questions.length;
 
-  const [index, setIndex] = useState(0);
+  // 共有された問いがあれば、そこから始める。無ければ今までどおり先頭から
+  const startIndex = (() => {
+    if (startQuestionId === null) return 0;
+    const i = quiz.questions.findIndex((q) => q.question_id === startQuestionId);
+    return i < 0 ? 0 : i;
+  })();
+
+  const [index, setIndex] = useState(startIndex);
   const [stage, setStage] = useState<"sections" | "confirm">("sections");
   const [picked, setPicked] = useState<PickedMap>({});
   const [modes, setModes] = useState<Record<number, AnswerMode>>({});
@@ -694,12 +723,29 @@ export function AnswerFlow({
           描いたあとで1回だけ読み込んで入れ直している。
           読むのは最初の1回だけなので、描き直しが連鎖することはない。
         */
+        /*
+          預かりの位置を使うのは、**本当に書きかけがあるときだけ。**
+
+          預かりは状態が動くたびに書かれるので、ただ開いて閉じただけの
+          作品にも「0問目にいる」という中身の無い控えが残る。それを
+          そのまま使うと、あとから共有リンク（どの問いから始めるかを
+          指定して来る）で開いても、いつも先頭に戻ってしまう
+          （実測: 一度ふつうに開いた作品では ?question=3 が効かなかった）。
+
+          1問でも確定しているか、最終確認まで進んでいれば書きかけ。
+          そうでなければ位置は指定された側（startIndex）を残す。
+        */
+        const hasProgress =
+          Object.keys(kept).length > 0 || saved.stage === "confirm";
+
         /* eslint-disable react-hooks/set-state-in-effect */
         setPicked(kept);
         setModes(saved.modes ?? {});
         setTentative(saved.tentative ?? {});
-        setIndex(Math.min(saved.index ?? 0, Math.max(0, total - 1)));
-        setStage(saved.stage === "confirm" ? "confirm" : "sections");
+        if (hasProgress) {
+          setIndex(Math.min(saved.index ?? 0, Math.max(0, total - 1)));
+          setStage(saved.stage === "confirm" ? "confirm" : "sections");
+        }
         /* eslint-enable react-hooks/set-state-in-effect */
       }
     } catch {
@@ -894,6 +940,7 @@ export function AnswerFlow({
               setStage("sections");
             }}
             onBack={() => setStage("sections")}
+            extraFields={extraFields}
           />
         )}
       </div>

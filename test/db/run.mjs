@@ -11025,6 +11025,384 @@ async function main() {
       `search_path が ${JSON.stringify(r.rows[0].proconfig)}`);
     assert(r.rows[0].res === "jsonb", `戻り値が ${r.rows[0].res}`);
   });
+
+  /* =========================================================================
+   * SH ／ 共有カードと共有記録（2026-09-18）
+   * =========================================================================
+   *
+   * 見るのは4つ。
+   *   1. 共有できる作品・できない作品の線引き
+   *   2. 控え（同じ中身は使い回す／中身が変われば別になる）
+   *   3. 共有したあとに中身が変わっても、過去の共有は当時のまま。
+   *      ただし**非公開になったら現況が勝つ**
+   *   4. 誰が何を呼べるか（shareId は見る権利ではない）
+   */
+
+  console.log("");
+
+  /** 共有できる公開作品を1件と、その問いを1つ作る */
+  async function shareFixture(db, handle) {
+    const uid = await makeMember(db, handle);
+    const p = await drawPrompt(db, uid);
+    const workId = await postWork(db, uid, p.prompt_id, "共有の検査");
+    const quiz = await value(db, ANON, `select public.get_work_quiz($1)`, [workId]);
+    return { uid, promptId: p.prompt_id, workId, quiz };
+  }
+
+  await test("SH", "公開作品は、未サインインでも共有できる", async () => {
+    const f = await shareFixture(db, "sh-anon");
+    const r = await value(db, ANON,
+      `select public.create_share($1, $2, 'x', null)`,
+      [f.workId, f.quiz.questions[0].question_id]);
+    assert(r.share_id, "shareId が返らない");
+    assert(r.revision_id, "控えができていない");
+    assert(String(r.question_id) === String(f.quiz.questions[0].question_id),
+      `問いが ${r.question_id}`);
+  });
+
+  await test("SH", "共有した人が未サインインなら sharer_user_id は null で残る", async () => {
+    const f = await shareFixture(db, "sh-nulluser");
+    const r = await value(db, ANON,
+      `select public.create_share($1, null, 'copy', null)`, [f.workId]);
+    const row = await db.query(
+      `select sharer_user_id, is_guest, channel from public.share_events where id = $1`,
+      [r.share_id]);
+    assert(row.rows[0].sharer_user_id === null, "利用者IDが入っている");
+    assert(row.rows[0].is_guest === true, "ゲスト扱いになっていない");
+    assert(row.rows[0].channel === "copy", row.rows[0].channel);
+  });
+
+  await test("SH", "下書きの作品は共有できない（shareId も作られない）", async () => {
+    const f = await shareFixture(db, "sh-draft");
+    await asRole(db, asMember(f.uid), async (c) => {
+      await c.query(
+        `select public.update_work($1, null, null, null, null, null, false)`, [f.workId]);
+    });
+    // **遮断表なので、数えるときだけ役を抜ける。**アプリにこの経路は無い
+    const count = async () =>
+      (await db.query(`select count(*)::int as n from public.share_events`)).rows[0].n;
+    const before = await count();
+    await expectFailure(
+      () => value(db, ANON, `select public.create_share($1, null, 'x', null)`, [f.workId]),
+      "WORK_NOT_SHAREABLE");
+    assert(before === (await count()), "共有記録が増えた");
+  });
+
+  await test("SH", "削除した作品は共有できない", async () => {
+    const f = await shareFixture(db, "sh-deleted");
+    await asRole(db, asMember(f.uid), async (c) => {
+      await c.query(`select public.delete_work($1)`, [f.workId]);
+    });
+    await expectFailure(
+      () => value(db, ANON, `select public.create_share($1, null, 'x', null)`, [f.workId]),
+      "WORK_NOT_SHAREABLE");
+  });
+
+  await test("SH", "共有先は4つだけ。知らない値は断る", async () => {
+    const f = await shareFixture(db, "sh-channel");
+    for (const c of ["x", "bluesky", "native", "copy"]) {
+      const r = await value(db, ANON,
+        `select public.create_share($1, null, $2, null)`, [f.workId, c]);
+      assert(r.share_id, `${c} が通らない`);
+    }
+    await expectFailure(
+      () => value(db, ANON, `select public.create_share($1, null, 'mastodon', null)`, [f.workId]),
+      "BAD_CHANNEL");
+  });
+
+  await test("SH", "同じ人が同じ作品・同じ問い・同じ共有先へ2回出すと、shareId は別になる", async () => {
+    const f = await shareFixture(db, "sh-twice");
+    const q = f.quiz.questions[0].question_id;
+    const a = await value(db, asMember(f.uid),
+      `select public.create_share($1, $2, 'x', null)`, [f.workId, q]);
+    const b = await value(db, asMember(f.uid),
+      `select public.create_share($1, $2, 'x', null)`, [f.workId, q]);
+    assert(a.share_id !== b.share_id, "同じ shareId が返った");
+    // **控えは同じ中身なので使い回される**
+    assert(a.revision_id === b.revision_id, "同じ中身なのに控えが2つできた");
+  });
+
+  await test("SH", "ブラウザが作った共有IDを受け取る。同じ値の2回目は断る", async () => {
+    const f = await shareFixture(db, "sh-givenid");
+    const given = await value(db, ANON, `select gen_random_uuid()`);
+    const r = await value(db, ANON,
+      `select public.create_share($1, null, 'native', $2)`, [f.workId, given]);
+    assert(r.share_id === given, `${r.share_id} vs ${given}`);
+    await expectFailure(
+      () => value(db, ANON, `select public.create_share($1, null, 'native', $2)`, [f.workId, given]),
+      "SHARE_ID_TAKEN");
+  });
+
+  await test("SH", "その作品の問いでない値は、問い無しの共有として扱う", async () => {
+    const a = await shareFixture(db, "sh-otherq-a");
+    const b = await shareFixture(db, "sh-otherq-b");
+    const r = await value(db, ANON,
+      `select public.create_share($1, $2, 'copy', null)`,
+      [a.workId, b.quiz.questions[0].question_id]);
+    assert(r.question_id === null, `問いが ${r.question_id} のまま残った`);
+  });
+
+  await test("SH", "カードの材料に、答えも回答数も伝達率も入っていない", async () => {
+    const f = await shareFixture(db, "sh-nosecret");
+    const card = await value(db, ANON,
+      `select public.get_share_card($1, $2, null)`,
+      [f.workId, f.quiz.questions[0].question_id]);
+    const keys = Object.keys(card).sort();
+    assert(card.state === "ok", card.state);
+    for (const banned of [
+      "is_correct", "correct_label", "answers_count", "accuracy",
+      "slot_stats", "choices", "title", "flavor",
+    ]) {
+      assert(!keys.includes(banned), `${banned} が入っている`);
+    }
+    assert(JSON.stringify(card).indexOf("choices") < 0, "選択肢が混ざっている");
+  });
+
+  await test("SH", "カードの問いの文は、回答画面と同じ言い回し", async () => {
+    const f = await shareFixture(db, "sh-text");
+    const q = f.quiz.questions[0];
+    const card = await value(db, ANON,
+      `select public.get_share_card($1, $2, null)`, [f.workId, q.question_id]);
+    assert(card.question_text === `${q.card_slot_label} はどれ？`, card.question_text);
+  });
+
+  await test("SH", "問いを指定しなければ、問いの無いカードになる", async () => {
+    const f = await shareFixture(db, "sh-noq");
+    const card = await value(db, ANON, `select public.get_share_card($1, null, null)`, [f.workId]);
+    assert(card.state === "ok", card.state);
+    assert(card.question_id === null, `${card.question_id}`);
+    assert(card.question_text === null, `${card.question_text}`);
+  });
+
+  await test("SH", "AI部門の作品には AI の印が立つ", async () => {
+    const uid = await makeMember(db, "sh-ai");
+    const p = await drawPrompt(db, uid);
+    const workId = await postWork(db, uid, p.prompt_id, "AIの検査", { division: "ai" });
+    const card = await value(db, ANON, `select public.get_share_card($1, null, null)`, [workId]);
+    assert(card.ai === true, "AI の印が立っていない");
+  });
+
+  await test("SH", "作者を伏せる状態はいまのサービスに無い（常に名前が出て、匿名は false）", async () => {
+    const f = await shareFixture(db, "sh-author");
+    const card = await value(db, ANON, `select public.get_share_card($1, null, null)`, [f.workId]);
+    assert(card.anonymous === false, "匿名になっている");
+    assert(typeof card.author_name === "string" && card.author_name.length > 0,
+      `表示名が ${card.author_name}`);
+  });
+
+  await test("SH", "問いの文を変えると、新しい共有は新しい文になる", async () => {
+    const f = await shareFixture(db, "sh-rev-text");
+    const q = f.quiz.questions[0];
+    const old = await value(db, ANON,
+      `select public.create_share($1, $2, 'x', null)`, [f.workId, q.question_id]);
+
+    // 枠の呼び名を変える＝問いの文が変わる
+    await db.query(`update public.card_slots set label = $2 where card_slot_key = $1`,
+      [q.card_slot_key, "変えた呼び名"]);
+
+    const fresh = await value(db, ANON,
+      `select public.get_share_card($1, $2, null)`, [f.workId, q.question_id]);
+    assert(fresh.question_text === "変えた呼び名 はどれ？", fresh.question_text);
+
+    // **過去の共有は当時のまま**
+    const past = await value(db, ANON,
+      `select public.get_share_card($1, $2, $3)`, [f.workId, q.question_id, old.share_id]);
+    assert(past.question_text === `${q.card_slot_label} はどれ？`, past.question_text);
+
+    await db.query(`update public.card_slots set label = $2 where card_slot_key = $1`,
+      [q.card_slot_key, q.card_slot_label]);
+  });
+
+  await test("SH", "作者の表示名を変えても、過去の共有は当時の名前のまま", async () => {
+    const f = await shareFixture(db, "sh-rev-name");
+    const before = await value(db, ANON,
+      `select public.create_share($1, null, 'x', null)`, [f.workId]);
+    const wasName = (await value(db, ANON,
+      `select public.get_share_card($1, null, $2)`, [f.workId, before.share_id])).author_name;
+
+    await asRole(db, asMember(f.uid), async (c) => {
+      await c.query(
+        `select public.update_my_profile(null, $1, null, null)`, ["あたらしい名前"]);
+    });
+
+    const fresh = await value(db, ANON, `select public.get_share_card($1, null, null)`, [f.workId]);
+    assert(fresh.author_name === "あたらしい名前", fresh.author_name);
+    const past = await value(db, ANON,
+      `select public.get_share_card($1, null, $2)`, [f.workId, before.share_id]);
+    assert(past.author_name === wasName, `${past.author_name} vs ${wasName}`);
+  });
+
+  await test("SH", "画像を差し替えても、過去の共有は当時の絵のまま", async () => {
+    const f = await shareFixture(db, "sh-rev-image");
+    const before = await value(db, ANON,
+      `select public.create_share($1, null, 'x', null)`, [f.workId]);
+    const wasPath = (await value(db, ANON,
+      `select public.get_share_card($1, null, $2)`, [f.workId, before.share_id])).image_path;
+
+    await db.query(
+      `update public.works set image_path = $2, image_width = 1600, image_height = 900 where id = $1`,
+      [f.workId, `${f.uid}/replaced.png`]);
+
+    const fresh = await value(db, ANON, `select public.get_share_card($1, null, null)`, [f.workId]);
+    assert(fresh.image_path.endsWith("replaced.png"), fresh.image_path);
+    assert(fresh.image_width === 1600 && fresh.image_height === 900,
+      `${fresh.image_width}x${fresh.image_height}`);
+
+    const past = await value(db, ANON,
+      `select public.get_share_card($1, null, $2)`, [f.workId, before.share_id]);
+    assert(past.image_path === wasPath, `${past.image_path} vs ${wasPath}`);
+    assert(past.image_width === 800 && past.image_height === 600,
+      `切り取りのもとになる大きさが ${past.image_width}x${past.image_height}`);
+  });
+
+  await test("SH", "同じ中身のまま2回共有しても、控えは増えない", async () => {
+    const f = await shareFixture(db, "sh-rev-reuse");
+    const count = async () =>
+      (await db.query(
+        `select count(*)::int as n from public.share_card_revisions where work_id = $1`,
+        [f.workId])).rows[0].n;
+    const before = await count();
+    for (let i = 0; i < 5; i += 1) {
+      await value(db, ANON, `select public.create_share($1, null, 'copy', null)`, [f.workId]);
+    }
+    const after = await count();
+    assert(after - before === 1, `控えが ${after - before} 件増えた（1のはず）`);
+  });
+
+  await test("SH", "非公開にすると、古い共有IDからも中身が出ない（現況が勝つ）", async () => {
+    const f = await shareFixture(db, "sh-unpublish");
+    const s = await value(db, ANON,
+      `select public.create_share($1, $2, 'x', null)`,
+      [f.workId, f.quiz.questions[0].question_id]);
+
+    const before = await value(db, ANON,
+      `select public.get_share_card($1, null, $2)`, [f.workId, s.share_id]);
+    assert(before.state === "ok", before.state);
+
+    await asRole(db, asMember(f.uid), async (c) => {
+      await c.query(
+        `select public.update_work($1, null, null, null, null, null, false)`, [f.workId]);
+    });
+
+    const after = await value(db, ANON,
+      `select public.get_share_card($1, null, $2)`, [f.workId, s.share_id]);
+    assert(after.state === "unavailable", JSON.stringify(after));
+    assert(Object.keys(after).length === 1, `ほかの欄が残っている: ${Object.keys(after)}`);
+  });
+
+  await test("SH", "運営が伏せた作品も、古い共有IDから中身が出ない", async () => {
+    const f = await shareFixture(db, "sh-hidden");
+    const s = await value(db, ANON, `select public.create_share($1, null, 'x', null)`, [f.workId]);
+    await db.query(`update public.works set review_status = 'hidden' where id = $1`, [f.workId]);
+    const after = await value(db, ANON,
+      `select public.get_share_card($1, null, $2)`, [f.workId, s.share_id]);
+    assert(after.state === "unavailable", JSON.stringify(after));
+  });
+
+  await test("SH", "共有IDは見る権利ではない（他人の非公開作品を開く鍵にならない）", async () => {
+    const f = await shareFixture(db, "sh-nokey");
+    const s = await value(db, ANON, `select public.create_share($1, null, 'x', null)`, [f.workId]);
+    await asRole(db, asMember(f.uid), async (c) => {
+      await c.query(
+        `select public.update_work($1, null, null, null, null, null, false)`, [f.workId]);
+    });
+    // 作品そのものの経路も、共有IDを知っていても開かない
+    const detail = await value(db, ANON, `select public.get_work_detail($1)`, [f.workId]);
+    assert(detail === null, "非公開の作品が返った");
+    const quiz = await value(db, ANON, `select public.get_work_quiz($1)`, [f.workId]);
+    assert(quiz === null, "非公開の作品の出題が返った");
+    assert(s.share_id, "準備の失敗");
+  });
+
+  await test("SH", "共有の道すじ6種だけが記録できる", async () => {
+    const f = await shareFixture(db, "sh-events");
+    const s = await value(db, ANON, `select public.create_share($1, null, 'x', null)`, [f.workId]);
+    for (const k of [
+      "share_modal_open", "share_question_select", "share_landing",
+      "share_answer_submit", "share_result_view", "share_continue",
+    ]) {
+      await value(db, ANON,
+        `select public.record_share_event($1, $2, null, $3, 'x')`, [k, f.workId, s.share_id]);
+    }
+    const n = (await db.query(
+      `select count(*)::int as n from public.usage_events where share_id = $1`,
+      [s.share_id])).rows[0].n;
+    assert(n === 6, `${n} 件`);
+    await expectFailure(
+      () => value(db, ANON, `select public.record_share_event('share_action', $1, null, null, null)`,
+        [f.workId]),
+      "BAD_EVENT_KEY");
+  });
+
+  await test("SH", "既存の2種類は今までどおり記録できる", async () => {
+    const f = await shareFixture(db, "sh-oldevents");
+    await value(db, ANON, `select public.record_usage_event('share_opened', $1)`, [f.workId]);
+    await value(db, ANON, `select public.record_usage_event('next_work_opened', $1)`, [f.workId]);
+    const n = (await db.query(
+      `select count(*)::int as n from public.usage_events
+        where work_id = $1 and event_key in ('share_opened','next_work_opened')`,
+      [f.workId])).rows[0].n;
+    assert(n === 2, `${n} 件`);
+  });
+
+  await test("SH", "知らない共有IDが来ても、記録は落として続ける", async () => {
+    const f = await shareFixture(db, "sh-badsid");
+    const ghost = await value(db, ANON, `select gen_random_uuid()`);
+    await value(db, ANON,
+      `select public.record_share_event('share_landing', $1, null, $2, null)`, [f.workId, ghost]);
+    const n = (await db.query(
+      `select count(*)::int as n from public.usage_events
+        where work_id = $1 and event_key = 'share_landing' and share_id is null`,
+      [f.workId])).rows[0].n;
+    assert(n === 1, `${n} 件`);
+  });
+
+  await test("SH", "共有の2表と計測の表は誰も直接読めない", async () => {
+    const u = await makeMember(db, "sh-sealed");
+    for (const t of ["share_card_revisions", "share_events", "usage_events"]) {
+      await expectFailure(
+        () => value(db, ANON, `select count(*) from public.${t}`), "permission denied");
+      await expectFailure(
+        () => value(db, asMember(u), `select count(*) from public.${t}`), "permission denied");
+    }
+  });
+
+  await test("SH", "控えを作る内部の関数は、外から呼べない", async () => {
+    const f = await shareFixture(db, "sh-internal");
+    await expectFailure(
+      () => value(db, ANON, `select public.ensure_share_card_revision($1, null)`, [f.workId]),
+      "permission denied");
+  });
+
+  await test("SH", "共有の集計は運営だけが呼べる", async () => {
+    const u = await makeMember(db, "sh-funnel");
+    await expectFailure(
+      () => value(db, ANON, `select public.get_share_funnel(30)`), "permission denied");
+    await expectFailure(
+      () => value(db, asMember(u), `select public.get_share_funnel(30)`), "permission denied");
+    const r = await db.query(`select public.get_share_funnel(30) as f`);
+    const f = r.rows[0].f;
+    for (const k of ["share_actions", "share_landings", "share_answers",
+                     "share_results", "share_continues", "by_channel", "by_question"]) {
+      assert(k in f, `${k} が無い`);
+    }
+  });
+
+  await test("SH", "共有の関数はどれも security definer ＋ search_path 固定", async () => {
+    for (const sig of [
+      "public.create_share(uuid, bigint, text, uuid)",
+      "public.get_share_card(uuid, bigint, uuid)",
+      "public.record_share_event(text, uuid, bigint, uuid, text)",
+      "public.get_share_funnel(int)",
+      "public.ensure_share_card_revision(uuid, bigint)",
+    ]) {
+      const r = await db.query(
+        `select p.prosecdef, p.proconfig from pg_proc p where p.oid = $1::regprocedure`, [sig]);
+      assert(r.rows[0].prosecdef === true, `${sig} が security definer でない`);
+      assert(JSON.stringify(r.rows[0].proconfig) === JSON.stringify(['search_path=""']),
+        `${sig} の search_path が ${JSON.stringify(r.rows[0].proconfig)}`);
+    }
+  });
 }
 
 // ===========================================================================

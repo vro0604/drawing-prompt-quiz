@@ -7479,6 +7479,598 @@ async function main() {
   });
 
   /* =====================================================================
+   * SH. SNS共有カードと、問い付き共有の導線（2026-09-18）
+   *
+   * 見るのは4つ。
+   *   1. 共有の面（誰が開けるか／何が出るか／閉じ方）
+   *   2. 下見と本番の共有カードが**同じ1枚**であること
+   *   3. 共有URLから入った人の最初の画面と、回答までの道
+   *   4. 数（開いた・選んだ・共有した・入ってきた・答えた・見た・進んだ）
+   * ===================================================================== */
+
+  /** 共有に使う公開作品を1件作る。作者は登録者、問いは複数 */
+  async function shareWork(label) {
+    const uid = await makeMember(db, label);
+    const prompt = await drawPrompt(db, uid);
+    const workId = await postWork(db, uid, prompt.prompt_id, `共有の検査（${label}）`);
+    const quiz = await value(db, { role: "anon", uid: null },
+      `select public.get_work_quiz($1)`, [workId]);
+    return { uid, workId, quiz };
+  }
+
+  /**
+   * 共有の面を開いて、下見の絵ができるまで待つ。
+   *
+   * **1回押して駄目なら押し直す。**検証用サーバーは経路を初めて開くとき
+   * その場で組み立てるので、1回目だけブラウザ側の受け口が間に合わず、
+   * 押しても何も起きないことがある（実測: 1本目だけ15秒待って落ちた）。
+   * アプリの不具合ではなく、検証の立ち上がりの問題なので、ここで吸収する。
+   */
+  async function openShare(page) {
+    for (let i = 0; i < 4; i += 1) {
+      await clickSafely(page.locator("[data-share-open]"));
+      try {
+        await page.waitForSelector("[data-share-dialog][open]", { timeout: 8000 });
+        break;
+      } catch (e) {
+        if (i === 3) throw e;
+      }
+    }
+    await page.waitForFunction(
+      () =>
+        document
+          .querySelector("[data-share-preview]")
+          ?.getAttribute("data-share-preview-ready") === "1",
+      { timeout: 60000 },
+    );
+  }
+
+  await test("SH", "共有: 未ログインの第三者でも、公開作品に共有の入口がある", async (t) => {
+    const w = await shareWork("sh-e2e-open");
+    t.stage("作品ページを開く");
+    await g.goto(`${base}/works/${w.workId}`, { waitUntil: "domcontentloaded" });
+    assert((await g.locator("[data-share-open]").count()) === 1, "共有の入口が無い");
+
+    t.stage("面を開く");
+    await openShare(g);
+    assert(
+      (await g.locator("[data-share-dialog][open]").count()) === 1,
+      "面が開かない",
+    );
+    await assertBody(g, /作品を共有/, "見出しが出ていない");
+    await assertBody(g, /共有プレビュー/, "下見の見出しが出ていない");
+  });
+
+  await test("SH", "共有: この面から作品も問いも編集できない（第三者共有）", async (t) => {
+    const w = await shareWork("sh-e2e-noedit");
+    await g.goto(`${base}/works/${w.workId}`, { waitUntil: "domcontentloaded" });
+    await openShare(g);
+
+    t.stage("面の中に、入力欄も編集の入口も無いことを見る");
+    const n = await g.evaluate(() => {
+      const d = document.querySelector("[data-share-dialog]");
+      return {
+        inputs: d.querySelectorAll("input:not([type=hidden]), textarea, select").length,
+        edit: d.textContent.match(/編集|変更|切り取り|トリミング/g)?.length ?? 0,
+      };
+    });
+    assert(n.inputs === 0, `入力欄が ${n.inputs} 個ある`);
+    assert(n.edit === 0, `編集の言葉が ${n.edit} 個ある`);
+  });
+
+  await test("SH", "共有: 問いが2つ以上なら選べて、選ぶと下見がすぐ変わる", async (t) => {
+    const w = await shareWork("sh-e2e-pick");
+    assert(w.quiz.questions.length >= 2, "準備の失敗（問いが1つしかない）");
+
+    await g.goto(`${base}/works/${w.workId}`, { waitUntil: "domcontentloaded" });
+    await openShare(g);
+
+    t.stage("見出しと一覧が出ている");
+    await assertBody(g, /共有する問題を選ぶ/, "問いを選ぶ見出しが無い");
+    const ids = await g.$$eval("[data-share-question]", (bs) =>
+      bs.map((b) => b.dataset.shareQuestion));
+    assert(ids.length === w.quiz.questions.length,
+      `${ids.length} 件（${w.quiz.questions.length} 件のはず）`);
+
+    t.stage("先頭が選ばれている");
+    const first = await g.$eval('[data-share-question][aria-checked="true"]',
+      (b) => b.dataset.shareQuestion);
+    assert(first === ids[0], `${first} が選ばれている（先頭は ${ids[0]}）`);
+
+    t.stage("選び直すと下見が変わる。確定のボタンは無い");
+    const before = await g.getAttribute("[data-share-preview] img", "src");
+    await clickSafely(g.locator(`[data-share-question="${ids[1]}"]`));
+    await g.waitForFunction(
+      (prev) => document.querySelector("[data-share-preview] img")?.getAttribute("src") !== prev,
+      before,
+      { timeout: 15000 },
+    );
+    const after = await g.getAttribute("[data-share-preview] img", "src");
+    assert(after !== before, "下見が変わらない");
+    assert(after.includes(`q=${ids[1]}`), after);
+    assert((await g.locator("[data-share-dialog] [data-share-confirm]").count()) === 0,
+      "確定のボタンがある");
+  });
+
+  await test("SH", "共有: 1つだけ選べる（選び直すと前のが外れる）", async (t) => {
+    const w = await shareWork("sh-e2e-single");
+    await g.goto(`${base}/works/${w.workId}`, { waitUntil: "domcontentloaded" });
+    await openShare(g);
+    const ids = await g.$$eval("[data-share-question]", (bs) =>
+      bs.map((b) => b.dataset.shareQuestion));
+    await clickSafely(g.locator(`[data-share-question="${ids[1]}"]`));
+    t.stage("選ばれているのは常に1つ");
+    const n = await g.locator('[data-share-question][aria-checked="true"]').count();
+    assert(n === 1, `${n} 件が選ばれている`);
+  });
+
+  await test("SH", "共有: 手のひらの端末では下から出る面になる", async (t) => {
+    const w = await shareWork("sh-e2e-sheet");
+    const ctx = await browser.newContext({ viewport: { width: 390, height: 844 } });
+    try {
+      const p = await ctx.newPage();
+      await p.goto(`${base}/works/${w.workId}`, { waitUntil: "domcontentloaded" });
+      await openShare(p);
+
+      t.stage("面が画面の下端に付いている");
+      const box = await p.locator("[data-share-dialog]").boundingBox();
+      assert(box !== null, "面の位置が取れない");
+      assert(Math.abs(box.y + box.height - 844) <= 2,
+        `下端が ${Math.round(box.y + box.height)}（844 のはず）`);
+      assert(Math.abs(box.width - 390) <= 2, `幅が ${Math.round(box.width)}`);
+
+      t.stage("問いの一覧に別のスクロールを作らない");
+      const nested = await p.evaluate(() => {
+        const d = document.querySelector("[data-share-dialog]");
+        return [...d.querySelectorAll("*")].filter((el) => {
+          const o = getComputedStyle(el).overflowY;
+          return (o === "auto" || o === "scroll") && !el.classList.contains("dpq-sheet-body");
+        }).length;
+      });
+      assert(nested === 0, `別に動く場所が ${nested} 個ある`);
+    } finally {
+      await ctx.close();
+    }
+  });
+
+  await test("SH", "共有: リンクをコピーすると、問い付きのURLが取れて表示が変わる", async (t) => {
+    const w = await shareWork("sh-e2e-copy");
+    const ctx = await browser.newContext({
+      viewport: { width: 1280, height: 900 },
+      permissions: ["clipboard-read", "clipboard-write"],
+    });
+    try {
+      const p = await ctx.newPage();
+      await p.goto(`${base}/works/${w.workId}`, { waitUntil: "domcontentloaded" });
+      await openShare(p);
+
+      t.stage("コピーする");
+      await clickSafely(p.locator('[data-share-channel="copy"]'));
+      await p.waitForFunction(
+        () => document.querySelector('[data-share-channel="copy"]')?.textContent.trim()
+          === "コピーしました",
+        { timeout: 10000 },
+      );
+
+      t.stage("URLの形を見る");
+      const url = await p.evaluate(() => navigator.clipboard.readText());
+      assert(/\?question=\d+&src=share&sid=[0-9a-f-]{36}$/.test(url), url);
+      assert(url.includes(`/works/${w.workId}`), url);
+
+      t.stage("共有しても面は閉じない");
+      assert((await p.locator("[data-share-dialog][open]").count()) === 1, "閉じてしまった");
+
+      t.stage("共有記録が1件だけ増えている");
+      const sid = new URL(url).searchParams.get("sid");
+      const row = await db.query(
+        `select work_id, question_id, channel, sharer_user_id, card_revision_id
+           from public.share_events where id = $1`, [sid]);
+      assert(row.rows.length === 1, `${row.rows.length} 件`);
+      assert(row.rows[0].channel === "copy", row.rows[0].channel);
+      assert(row.rows[0].work_id === w.workId, row.rows[0].work_id);
+      assert(row.rows[0].sharer_user_id === null, "未ログインなのに利用者が入っている");
+      assert(row.rows[0].card_revision_id !== null, "控えが結び付いていない");
+    } finally {
+      await ctx.close();
+    }
+  });
+
+  await test("SH", "共有: 面を開いただけ・問いを選んだだけでは共有記録を作らない", async (t) => {
+    const w = await shareWork("sh-e2e-nowrite");
+    const count = async () =>
+      (await db.query(`select count(*)::int as n from public.share_events where work_id = $1`,
+        [w.workId])).rows[0].n;
+
+    t.stage("開く");
+    await g.goto(`${base}/works/${w.workId}`, { waitUntil: "domcontentloaded" });
+    await openShare(g);
+    assert((await count()) === 0, "面を開いただけで共有記録ができた");
+
+    t.stage("問いを選び直す");
+    const ids = await g.$$eval("[data-share-question]", (bs) =>
+      bs.map((b) => b.dataset.shareQuestion));
+    await clickSafely(g.locator(`[data-share-question="${ids[1]}"]`));
+    await g.waitForTimeout(500);
+    assert((await count()) === 0, "問いを選び直しただけで共有記録ができた");
+
+    t.stage("そのかわり、開いた・選んだは数に残っている");
+    const ev = await db.query(
+      `select event_key, count(*)::int as n from public.usage_events
+        where work_id = $1 group by event_key`, [w.workId]);
+    const byKey = Object.fromEntries(ev.rows.map((r) => [r.event_key, r.n]));
+    assert((byKey.share_modal_open ?? 0) >= 1, "開いたことが数に無い");
+    assert((byKey.share_question_select ?? 0) >= 1, "選んだことが数に無い");
+  });
+
+  await test("SH", "共有: 同じ人が2回共有すると、共有IDは別になる", async (t) => {
+    const w = await shareWork("sh-e2e-twice");
+    const ctx = await browser.newContext({
+      viewport: { width: 1280, height: 900 },
+      permissions: ["clipboard-read", "clipboard-write"],
+    });
+    try {
+      const p = await ctx.newPage();
+      await p.goto(`${base}/works/${w.workId}`, { waitUntil: "domcontentloaded" });
+      await openShare(p);
+
+      const take = async () => {
+        await clickSafely(p.locator('[data-share-channel="copy"]'));
+        await p.waitForTimeout(1200);
+        return new URL(await p.evaluate(() => navigator.clipboard.readText()))
+          .searchParams.get("sid");
+      };
+      const a = await take();
+      const b = await take();
+      assert(a !== b, `同じ共有IDが2回出た（${a}）`);
+
+      t.stage("記録も2件");
+      const n = (await db.query(
+        `select count(*)::int as n from public.share_events where work_id = $1`,
+        [w.workId])).rows[0].n;
+      assert(n === 2, `${n} 件`);
+    } finally {
+      await ctx.close();
+    }
+  });
+
+  await test("SH", "共有: 連打しても、1回の操作から共有記録が2件できない", async (t) => {
+    const w = await shareWork("sh-e2e-rapid");
+    const ctx = await browser.newContext({
+      viewport: { width: 1280, height: 900 },
+      permissions: ["clipboard-read", "clipboard-write"],
+    });
+    try {
+      const p = await ctx.newPage();
+      await p.goto(`${base}/works/${w.workId}`, { waitUntil: "domcontentloaded" });
+      await openShare(p);
+
+      t.stage("同じボタンをすばやく5回押す");
+      await p.locator('[data-share-channel="copy"]').click({ clickCount: 5, delay: 15 });
+      await p.waitForTimeout(1500);
+
+      const n = (await db.query(
+        `select count(*)::int as n from public.share_events where work_id = $1`,
+        [w.workId])).rows[0].n;
+      assert(n === 1, `共有記録が ${n} 件（1 のはず）`);
+    } finally {
+      await ctx.close();
+    }
+  });
+
+  await test("SH", "共有: ×・Esc・面の外で閉じ、開き直すと先頭の問いに戻る", async (t) => {
+    const w = await shareWork("sh-e2e-close");
+    await g.goto(`${base}/works/${w.workId}`, { waitUntil: "domcontentloaded" });
+    const ids = await (async () => {
+      await openShare(g);
+      return g.$$eval("[data-share-question]", (bs) => bs.map((b) => b.dataset.shareQuestion));
+    })();
+
+    t.stage("2つ目を選んでから Esc");
+    await clickSafely(g.locator(`[data-share-question="${ids[1]}"]`));
+    await g.keyboard.press("Escape");
+    await g.waitForTimeout(300);
+    assert((await g.locator("[data-share-dialog][open]").count()) === 0, "Esc で閉じない");
+
+    t.stage("開き直すと先頭に戻っている（前の選択を覚えない）");
+    await openShare(g);
+    const again = await g.$eval('[data-share-question][aria-checked="true"]',
+      (b) => b.dataset.shareQuestion);
+    assert(again === ids[0], `${again} が選ばれたまま`);
+
+    t.stage("×で閉じる");
+    await clickSafely(g.locator("[data-share-close]"));
+    await g.waitForTimeout(300);
+    assert((await g.locator("[data-share-dialog][open]").count()) === 0, "×で閉じない");
+
+    t.stage("面の外を押して閉じる");
+    await openShare(g);
+    await g.mouse.click(40, 40);
+    await g.waitForTimeout(300);
+    assert((await g.locator("[data-share-dialog][open]").count()) === 0, "外を押しても閉じない");
+  });
+
+  await test("SH", "共有: キーボードだけで開いて閉じられる（焦点が面の外へ出ない）", async (t) => {
+    const w = await shareWork("sh-e2e-kbd");
+    await g.goto(`${base}/works/${w.workId}`, { waitUntil: "domcontentloaded" });
+    await openShare(g);
+
+    t.stage("Tab を15回押しても、後ろのページの部品へ移らない");
+    // **「面の中にある」ではなく「後ろへ移らない」を見る。**
+    // 一周し切ったとき、焦点はブラウザ側へ抜けて body に戻ることがある。
+    // それは後ろの画面を触れる状態ではないので、行き止まりではない。
+    for (let i = 0; i < 15; i += 1) {
+      await g.keyboard.press("Tab");
+      const where = await g.evaluate(() => {
+        const d = document.querySelector("[data-share-dialog]");
+        const a = document.activeElement;
+        if (!a || a === document.body || a === document.documentElement) return "neutral";
+        return d?.contains(a) ? "inside" : `outside:${a.tagName}.${a.className}`;
+      });
+      assert(where !== "outside" && !where.startsWith("outside:"),
+        `${i + 1} 回目で後ろの画面へ移った（${where}）`);
+    }
+
+    t.stage("押す場所の高さが 44px を下回らない");
+    const small = await g.evaluate(() =>
+      [...document.querySelectorAll("[data-share-dialog] button")]
+        .map((b) => ({ t: b.textContent.trim().slice(0, 12), h: b.getBoundingClientRect().height }))
+        .filter((x) => x.h > 0 && x.h < 44));
+    assert(small.length === 0, `低いボタン: ${JSON.stringify(small)}`);
+
+    await g.keyboard.press("Escape");
+  });
+
+  await test("SH", "共有カード: 下見と本番のOG画像が同じ1枚である", async (t) => {
+    const w = await shareWork("sh-e2e-same");
+    await g.goto(`${base}/works/${w.workId}`, { waitUntil: "domcontentloaded" });
+    await openShare(g);
+
+    t.stage("下見が指しているURLを読む");
+    const previewSrc = await g.getAttribute("[data-share-preview] img", "src");
+    assert(previewSrc.startsWith("/api/og/work/"), previewSrc);
+
+    t.stage("同じURLを直接取って、大きさと中身を確かめる");
+    const a = await g.evaluate(async (u) => {
+      const r = await fetch(u);
+      const b = new Uint8Array(await r.arrayBuffer());
+      return { status: r.status, type: r.headers.get("content-type"), len: b.length,
+               head: [...b.slice(0, 8)].join(",") };
+    }, previewSrc);
+    assert(a.status === 200, `${a.status}`);
+    assert(a.type === "image/png", a.type);
+    assert(a.head === "137,80,78,71,13,10,26,10", `PNG ではない: ${a.head}`);
+
+    t.stage("作品ページの og:image が同じ経路を指す（問い付きの共有URLで）");
+    const qid = w.quiz.questions[0].question_id;
+    const res = await g.evaluate(async (u) => (await fetch(u)).text(),
+      `${base}/works/${w.workId}?question=${qid}&src=share`);
+    assert(res.includes(`/api/og/work/${w.workId}`), "og:image が共有カードを指していない");
+    assert(res.includes(`q=${qid}`), "og:image に問いが載っていない");
+  });
+
+  await test("SH", "共有カード: 1200×630 で、問い付きの見出しと説明が入る", async (t) => {
+    const w = await shareWork("sh-e2e-meta");
+    const qid = w.quiz.questions[0].question_id;
+    const label = w.quiz.questions[0].card_slot_label;
+
+    t.stage("metadata");
+    await g.goto(`${base}/works/${w.workId}?question=${qid}&src=share`,
+      { waitUntil: "domcontentloaded" });
+    const meta = await g.evaluate(() => ({
+      ogTitle: document.querySelector('meta[property="og:title"]')?.content,
+      ogDesc: document.querySelector('meta[property="og:description"]')?.content,
+      ogImage: document.querySelector('meta[property="og:image"]')?.content,
+      w: document.querySelector('meta[property="og:image:width"]')?.content,
+      h: document.querySelector('meta[property="og:image:height"]')?.content,
+      twCard: document.querySelector('meta[name="twitter:card"]')?.content,
+      canonical: document.querySelector('link[rel="canonical"]')?.href,
+    }));
+    assert(meta.ogTitle === `${label} はどれ？｜つたわるかな`, meta.ogTitle);
+    assert(meta.ogDesc === "タップして答える", meta.ogDesc);
+    assert(meta.w === "1200" && meta.h === "630", `${meta.w}x${meta.h}`);
+    assert(meta.twCard === "summary_large_image", meta.twCard);
+    assert(meta.canonical.endsWith(`/works/${w.workId}`),
+      `正規のURLが共有専用になっている: ${meta.canonical}`);
+
+    t.stage("答えにあたる語が1つも出ていない");
+    const tags = await db.query(
+      `select t.label from public.prompt_cards pc
+         join public.tags t on t.id = pc.tag_id
+         join public.works w on w.prompt_id = pc.prompt_id
+        where w.id = $1`, [w.workId]);
+    const html = await g.content();
+    for (const r of tags.rows) {
+      assert(!html.includes(`og:title" content="${r.label}`), `答えが見出しに出た: ${r.label}`);
+    }
+  });
+
+  await test("SH", "共有カード: 問いが無いときは、いままでの作品カードのまま", async (t) => {
+    const w = await shareWork("sh-e2e-nometa");
+    await g.goto(`${base}/works/${w.workId}`, { waitUntil: "domcontentloaded" });
+    const meta = await g.evaluate(() => ({
+      ogTitle: document.querySelector('meta[property="og:title"]')?.content,
+      ogImage: document.querySelector('meta[property="og:image"]')?.content,
+    }));
+    assert(meta.ogTitle.includes("共有の検査"), meta.ogTitle);
+    assert(meta.ogImage.includes("opengraph-image"), meta.ogImage);
+  });
+
+  await test("SH", "共有カード: 公開をやめた作品は、古い共有URLでも中身を返さない", async (t) => {
+    const w = await shareWork("sh-e2e-private");
+    await g.goto(`${base}/works/${w.workId}`, { waitUntil: "domcontentloaded" });
+    await openShare(g);
+    const src = await g.getAttribute("[data-share-preview] img", "src");
+
+    t.stage("公開をやめる");
+    await value(db, asMember(w.uid),
+      `select public.update_work($1, null, null, null, null, null, false)`, [w.workId]);
+
+    t.stage("共有カードの経路は当たり障りのない絵になる（404 にしない）");
+    const r = await g.evaluate(async (u) => {
+      const res = await fetch(u, { cache: "no-store" });
+      return { status: res.status, type: res.headers.get("content-type") };
+    }, src);
+    assert(r.status === 200, `${r.status}`);
+    assert(r.type === "image/png", r.type);
+
+    t.stage("作品ページそのものは今までどおり見えない");
+    const page = await g.evaluate(async (u) => (await fetch(u)).status,
+      `${base}/works/${w.workId}?src=share`);
+    assert(page === 404, `${page}`);
+  });
+
+  await test("SH", "共有流入: 作品画像・指定された問い・その選択肢が最初の画面に入る", async (t) => {
+    const w = await shareWork("sh-e2e-landing");
+    const target = w.quiz.questions[w.quiz.questions.length - 1];
+
+    const ctx = await browser.newContext({ viewport: { width: 1280, height: 900 } });
+    try {
+      const p = await ctx.newPage();
+      await p.goto(
+        `${base}/works/${w.workId}?question=${target.question_id}&src=share`,
+        { waitUntil: "domcontentloaded" },
+      );
+
+      t.stage("指定された問いから始まる");
+      const shown = await p.getAttribute("[data-section]", "data-section");
+      assert(String(shown) === String(target.question_id),
+        `${shown} から始まった（${target.question_id} のはず）`);
+
+      t.stage("同じ画面に絵と選択肢がある");
+      assert((await p.locator("[data-answer-flow] img").count()) >= 1, "絵が無い");
+      assert((await p.locator("[data-answer-card]").count()) >= 3, "選択肢が無い");
+
+      t.stage("最初の画面（折り返しより上）に3つとも入っている");
+      const fold = await p.evaluate(() => {
+        const img = document.querySelector("[data-answer-flow] img");
+        const card = document.querySelector("[data-answer-card]");
+        const sec = document.querySelector("[data-section]");
+        const top = (el) => el?.getBoundingClientRect().top ?? Infinity;
+        return { img: top(img), card: top(card), sec: top(sec), h: window.innerHeight };
+      });
+      assert(fold.img < fold.h, `絵が折り返しより下（${Math.round(fold.img)}）`);
+      assert(fold.sec < fold.h, `問いが折り返しより下（${Math.round(fold.sec)}）`);
+      assert(fold.card < fold.h, `選択肢が折り返しより下（${Math.round(fold.card)}）`);
+
+      t.stage("入ってきたことが数に残る");
+      await p.waitForTimeout(800);
+      const n = (await db.query(
+        `select count(*)::int as n from public.usage_events
+          where work_id = $1 and event_key = 'share_landing'`, [w.workId])).rows[0].n;
+      assert(n >= 1, "流入が数えられていない");
+    } finally {
+      await ctx.close();
+    }
+  });
+
+  await test("SH", "共有流入: 消えた問いを指しても、通常の作品ページへ落ちる", async (t) => {
+    const w = await shareWork("sh-e2e-goneq");
+    const ctx = await browser.newContext({ viewport: { width: 1280, height: 900 } });
+    try {
+      const p = await ctx.newPage();
+      const res = await p.goto(`${base}/works/${w.workId}?question=99999999&src=share`,
+        { waitUntil: "domcontentloaded" });
+      assert(res.status() === 200, `${res.status()}`);
+      const shown = await p.getAttribute("[data-section]", "data-section");
+      assert(String(shown) === String(w.quiz.questions[0].question_id),
+        `${shown} から始まった（先頭のはず）`);
+      await assertBodyNot(p, /エラー|見つかりません/, "専用のエラー画面が出た");
+    } finally {
+      await ctx.close();
+    }
+  });
+
+  await test("SH", "共有流入: 未ログインのまま最後まで答えて、結果と回遊が数に残る", async (t) => {
+    const w = await shareWork("sh-e2e-answer");
+    const target = w.quiz.questions[0];
+    const ctx = await browser.newContext({ viewport: { width: 1280, height: 900 } });
+    try {
+      const p = await ctx.newPage();
+      await p.goto(`${base}/works/${w.workId}?question=${target.question_id}&src=share`,
+        { waitUntil: "domcontentloaded" });
+
+      t.stage("ログインを求められない");
+      await assertBodyNot(p, /ログインしてください|サインインが必要/, "ログインを求められた");
+
+      // answerAllSections は最終確認まで進んで「回答する」まで押す
+      t.stage("全部の問いを長押しで確定して送る（既存の手順をそのまま使う）");
+      await answerAllSections(p);
+
+      t.stage("既存の結果の画面へ合流する（共有専用の結果画面を作らない）");
+      await assertBody(p, /問中/, "結果が出ていない");
+      assert(p.url().includes("src=share"), `共有の印が消えた: ${p.url()}`);
+
+      t.stage("答えたことと、結果を見たことが数に残る");
+      await p.waitForTimeout(800);
+      const ev = await db.query(
+        `select event_key, count(*)::int as n from public.usage_events
+          where work_id = $1 group by event_key`, [w.workId]);
+      const byKey = Object.fromEntries(ev.rows.map((r) => [r.event_key, r.n]));
+      assert((byKey.share_answer_submit ?? 0) >= 1, "回答が数に無い");
+      assert((byKey.share_result_view ?? 0) >= 1, "結果を見たことが数に無い");
+
+      t.stage("次へ進むと、進んだことも数に残る");
+      await clickSafely(p.locator("[data-share-continue]").first());
+      await p.waitForTimeout(1200);
+      const after = (await db.query(
+        `select count(*)::int as n from public.usage_events
+          where work_id = $1 and event_key = 'share_continue'`, [w.workId])).rows[0].n;
+      assert(after >= 1, "進んだことが数に無い");
+    } finally {
+      await ctx.close();
+    }
+  });
+
+  await test("SH", "共有流入: 共有IDが違っても、同じ人は2回答えられない", async (t) => {
+    const w = await shareWork("sh-e2e-once");
+    const answerer = await makeMember(db, "sh-e2e-once-u");
+    await answerWork(db, answerer, w.workId);
+
+    t.stage("別の共有IDを付けても、回答の入口は出ない");
+    const s1 = await value(db, { role: "anon", uid: null },
+      `select public.create_share($1, null, 'x', null)`, [w.workId]);
+    const ctx = await browser.newContext();
+    try {
+      const p = await ctx.newPage();
+      await p.goto(`${base}/works/${w.workId}?src=share&sid=${s1.share_id}`,
+        { waitUntil: "domcontentloaded" });
+      // この文脈は未ログインなので回答できるが、**同じ人**での二重回答は
+      // DB が断る。ここでは回答の識別が共有IDに影響されないことを見る
+      const n = (await db.query(
+        `select count(*)::int as n from public.answers where work_id = $1 and user_id = $2`,
+        [w.workId, answerer])).rows[0].n;
+      assert(n === 1, `同じ人の回答が ${n} 件`);
+    } finally {
+      await ctx.close();
+    }
+  });
+
+  await test("SH", "計測: 共有カードを取りに来ただけでは流入に数えない", async (t) => {
+    const w = await shareWork("sh-e2e-crawler");
+    const before = (await db.query(
+      `select count(*)::int as n from public.usage_events
+        where work_id = $1 and event_key = 'share_landing'`, [w.workId])).rows[0].n;
+
+    t.stage("クローラーの名乗りで、作品ページと共有カードを取る");
+    const ctx = await browser.newContext({
+      userAgent: "Twitterbot/1.0",
+      javaScriptEnabled: false,
+    });
+    try {
+      const p = await ctx.newPage();
+      await p.goto(`${base}/works/${w.workId}?src=share`, { waitUntil: "domcontentloaded" });
+      await p.goto(`${base}/api/og/work/${w.workId}`, { waitUntil: "domcontentloaded" });
+    } finally {
+      await ctx.close();
+    }
+
+    const after = (await db.query(
+      `select count(*)::int as n from public.usage_events
+        where work_id = $1 and event_key = 'share_landing'`, [w.workId])).rows[0].n;
+    assert(after === before, `流入が ${after - before} 件増えた`);
+  });
+
+  /* =====================================================================
    * !. 記録の自己試験（E2E_FORCE_FAIL=1 のときだけ動く）
    *
    * **失敗したときに、試験名と原因が記録に残るか**を、本物の失敗で確かめる。

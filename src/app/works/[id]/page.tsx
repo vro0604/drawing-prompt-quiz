@@ -70,7 +70,21 @@ import type {
   WorkFlavor,
   WorkHintResult,
 } from "@/features/flavor/types";
-import { SITE_URL } from "@/lib/env";
+import { SITE_URL, siteUrl } from "@/lib/env";
+import { ShareAnswerFields, ShareDialog, ShareTracker } from "./_share";
+import {
+  CARD_HEIGHT,
+  CARD_WIDTH,
+  SHARE_OG_DESCRIPTION,
+  SHARE_PARAM_QUESTION,
+  SHARE_PARAM_SHARE_ID,
+  SHARE_PARAM_SOURCE,
+  SHARE_SOURCE_VALUE,
+  questionText,
+  shareCardImageUrl,
+  shareOgTitle,
+} from "@/features/share/card";
+import type { ShareQuestionOption } from "@/features/share/types";
 import {
   publishWorkAction,
   setFlavorTextAction,
@@ -128,13 +142,28 @@ import { requireConsent } from "@/features/consent/rpc";
  * 本人が共有したときも下書きのタイトルは外へ出ない。
  *
  * **お題も答えもここには来ない**（D23）。
+ *
+ * 【問い付きの共有かどうかで、2通りに分かれる】（利用者の指示 12）
+ *   ?question= が付いていて、その問いがこの作品に実在するときだけ
+ *   「{問題文}｜つたわるかな」と「タップして答える」に差し替える。
+ *   問いが消えた・別の作品の問いだった場合は、**専用のエラーにせず**
+ *   今までの作品カードへそのまま落ちる（利用者の指示 23）。
+ *
+ * 【絵の指し先】
+ *   問い付きのときは /api/og/work/[id] を指す。sid が付いていれば、
+ *   その共有をした時点の中身で描かれる（利用者の指示 27）。
+ *   問い無しのときは今までどおり Next.js の規約に任せる
+ *   （works/[id]/opengraph-image.tsx）。**既存の共有カードを消していない。**
  */
 export async function generateMetadata({
   params,
+  searchParams,
 }: {
   params: Promise<{ id: string }>;
+  searchParams: Promise<{ [key: string]: string | string[] | undefined }>;
 }) {
   const { id } = await params;
+  const sp = await searchParams;
   const work = await fetchWorkDetail(id);
 
   if (!work) return { title: "作品" };
@@ -145,16 +174,82 @@ export async function generateMetadata({
     `${work.author.display_name} さんの作品。` +
     "絵だけを見て、描き手が引いたお題を4択で当てます。当たった割合が伝達率として残ります。";
 
+  const shared = readShareParams(sp);
+  const quiz = shared.questionId !== null ? await fetchWorkQuiz(id) : null;
+  const question =
+    quiz?.questions.find((q) => q.question_id === shared.questionId) ?? null;
+  const line = question ? questionText(question.card_slot_label) : null;
+  const ogTitle = shareOgTitle(line);
+
+  if (!ogTitle) {
+    return {
+      title: work.title,
+      description,
+      alternates: { canonical: `/works/${work.id}` },
+      openGraph: {
+        type: "article",
+        title: work.title,
+        description,
+        url: `/works/${work.id}`,
+      },
+    };
+  }
+
+  const cardUrl = siteUrl(
+    shareCardImageUrl(work.id, question!.question_id, shared.shareId),
+  );
+
   return {
-    title: work.title,
-    description,
+    title: ogTitle,
+    description: SHARE_OG_DESCRIPTION,
+    // 正規のURLは今までどおり作品ページ。**共有専用のページを作らない**
     alternates: { canonical: `/works/${work.id}` },
     openGraph: {
       type: "article",
-      title: work.title,
-      description,
+      title: ogTitle,
+      description: SHARE_OG_DESCRIPTION,
       url: `/works/${work.id}`,
+      images: [{ url: cardUrl, width: CARD_WIDTH, height: CARD_HEIGHT, alt: line }],
     },
+    twitter: {
+      // 大きい絵のカードにするには、この1行だけは自分で書く必要がある
+      // （og: だけだと小さいカードになる）
+      card: "summary_large_image",
+      title: ogTitle,
+      description: SHARE_OG_DESCRIPTION,
+      images: [cardUrl],
+    },
+  };
+}
+
+/**
+ * 共有URLに載っている3つを読む。
+ *
+ * ?question=<問のID>&src=share&sid=<共有ID>
+ *
+ * **形が違うものは黙って捨てる。**手で書き換えられる場所なので、
+ * 壊れた値で画面が落ちないようにする。
+ */
+function readShareParams(sp: { [key: string]: string | string[] | undefined }): {
+  questionId: number | null;
+  shareId: string | null;
+  fromShare: boolean;
+} {
+  const one = (v: string | string[] | undefined) =>
+    typeof v === "string" ? v : Array.isArray(v) ? (v[0] ?? null) : null;
+
+  const rawQ = one(sp[SHARE_PARAM_QUESTION]);
+  const rawSid = one(sp[SHARE_PARAM_SHARE_ID]);
+  const src = one(sp[SHARE_PARAM_SOURCE]);
+
+  return {
+    questionId: rawQ !== null && /^\d{1,18}$/.test(rawQ) ? Number(rawQ) : null,
+    shareId:
+      rawSid !== null &&
+      /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(rawSid)
+        ? rawSid
+        : null,
+    fromShare: src === SHARE_SOURCE_VALUE,
   };
 }
 
@@ -329,6 +424,8 @@ function PublicView({
   result,
   resultOpen,
   after,
+  shareQuestions,
+  shared,
   quizFirst,
 }: {
   work: WorkDetail;
@@ -338,6 +435,21 @@ function PublicView({
   result: MyWorkResult | null;
   resultOpen: boolean;
   after: AfterAnswerData;
+  /**
+   * 共有モーダルに並べる問いの一覧。**選択肢は含まない。**
+   *
+   * 出どころは get_work_quiz の questions で、そこには正解の印が無い。
+   * ここへ来る時点で、答えは1つも混ざっていない。
+   */
+  shareQuestions: ShareQuestionOption[];
+  /**
+   * 共有URLから来たときの3つ。付いていなければどれも null / false。
+   *
+   * questionId … その問いから答え始める（利用者の指示 20）
+   * shareId    … どの共有からの流入かを数えるためだけ。**見る権利ではない**
+   * fromShare  … クイズを先に出すかどうか（?q=1 と同じ並べ替え）
+   */
+  shared: { questionId: number | null; shareId: string | null; fromShare: boolean };
   /**
    * 一覧のカードから直接来たか（URL に ?q=1 が付いている）。
    *
@@ -382,11 +494,35 @@ function PublicView({
     </>
   );
 
-  // 順番を入れ替えるのは「まだ答えていない、作者でもない人」だけ
-  const askFirst = quizFirst && quiz !== null && !quiz.is_author && myAnswer === null;
+  // 順番を入れ替えるのは「まだ答えていない、作者でもない人」だけ。
+  //
+  // 共有URLから来た人も同じ扱いにする（利用者の指示 20）。
+  // **共有専用の画面を作らず**、いまある並べ替えをそのまま使う。
+  // 絵は回答の部品の中にもう一度あるので、この順番だと
+  // 「絵 ＋ 指定された問い ＋ その選択肢」が最初の画面に入る。
+  const askFirst =
+    (quizFirst || shared.fromShare) && quiz !== null && !quiz.is_author && myAnswer === null;
+
+  // 共有された問いが、いまもこの作品にあるか。
+  // 消えていたら（お題ごと作り直された）null に落とし、通常の作品ページとして出す
+  // （専用のエラー画面を出さない。利用者の指示 23）
+  const sharedQuestionId =
+    shared.questionId !== null &&
+    quiz?.questions.some((q) => q.question_id === shared.questionId)
+      ? shared.questionId
+      : null;
 
   return (
     <>
+      {/* 共有から来た人だけを数える。クローラーはここへ来ない（描いたあとに動くため） */}
+      {shared.fromShare ? (
+        <ShareTracker
+          workId={work.id}
+          questionId={sharedQuestionId}
+          shareId={shared.shareId}
+          phase={myAnswer ? "answered" : "landing"}
+        />
+      ) : null}
       <header className="space-y-2">
         <h1 className="text-2xl font-bold break-words">{work.title}</h1>
         <p className="text-sm text-faint">
@@ -451,6 +587,19 @@ function PublicView({
             imageWidth={work.image_width}
             imageHeight={work.image_height}
             title={work.title}
+            // 共有された問いから始める（利用者の指示 20）。
+            // 途中まで答えかけている人には効かない（下書きが優先される）
+            startQuestionId={sharedQuestionId}
+            // 回答を送るときに、どの共有から来たかを一緒に送る。
+            // **回答の決まりは1つも変わらない**（利用者の指示 19 / 22）
+            extraFields={
+              shared.fromShare ? (
+                <ShareAnswerFields
+                  shareId={shared.shareId}
+                  questionId={sharedQuestionId}
+                />
+              ) : null
+            }
           />
 
           {/*
@@ -462,7 +611,17 @@ function PublicView({
           */}
           <noscript>
             <style>{"[data-answer-flow]{display:none}"}</style>
-            <QuizForm quiz={quiz} />
+            <QuizForm
+              quiz={quiz}
+              extraFields={
+                shared.fromShare ? (
+                  <ShareAnswerFields
+                    shareId={shared.shareId}
+                    questionId={sharedQuestionId}
+                  />
+                ) : null
+              }
+            />
           </noscript>
         </>
       )}
@@ -513,12 +672,45 @@ function PublicView({
         <HintSplitStats result={after.hintResult} />
       ) : null}
 
-      <ShareBox
-        workId={work.id}
-        workTitle={work.title}
-        shareUrl={`${SITE_URL}/works/${work.id}`}
-        open={after.shareOpen}
-      />
+      {/*
+        共有。**入口は1つ、道は2本。**
+
+        JavaScript が動くとき  … 下の面（ShareDialog）が開く。
+                                 問いを選び、下見を見て、共有先を選ぶ
+        動かないとき           … 今までどおり ?share=open の面が出て、
+                                 URLと X の投稿画面への入口だけが出る
+
+        古いほうを消していない。消すと、JavaScript が無効の人から
+        共有する手段そのものが無くなる（この画面は回答も noscript で残している）。
+
+        **回答前でも出る。**作者本人でなくても、まだ答えていなくても出る
+        （利用者の指示 17。第三者も公開作品を共有できる）。
+        この面から編集できるものは1つも無い。
+      */}
+      <div className="space-y-3">
+        <ShareDialog
+          workId={work.id}
+          siteUrl={SITE_URL}
+          questions={shareQuestions}
+        />
+        <noscript>
+          <ShareBox
+            workId={work.id}
+            workTitle={work.title}
+            shareUrl={`${SITE_URL}/works/${work.id}`}
+            open={after.shareOpen}
+          />
+        </noscript>
+      </div>
+
+      {after.shareOpen ? (
+        <ShareBox
+          workId={work.id}
+          workTitle={work.title}
+          shareUrl={`${SITE_URL}/works/${work.id}`}
+          open
+        />
+      ) : null}
 
       {/*
         **他人には項目別の伝達率を出さない**（D112）。
@@ -757,6 +949,7 @@ export default async function WorkPage({
   await requireConsent();
 
   const { id } = await params;
+  const rawSearch = await searchParams;
   const {
     error,
     notice,
@@ -767,7 +960,7 @@ export default async function WorkPage({
     f: rawFilters,
     manage: rawManage,
     q: rawQuizFirst,
-  } = await searchParams;
+  } = rawSearch;
 
   // まず公開の経路で引く。ここで取れたものは誰が見ても同じ。
   const publicWork = await fetchWorkDetail(id);
@@ -915,6 +1108,32 @@ export default async function WorkPage({
     replyOpen: rawReply === "open",
   };
 
+  /* --- 共有 --------------------------------------------------------------
+   *
+   * 問いの一覧は出題（get_work_quiz）から作る。**正解は入っていない**ので、
+   * 共有の面へ渡しても答えは1文字も出ない。
+   *
+   * このサービスの問いは「お題の枠ごとに1問」で、枠ごとの公開・非公開という
+   * 状態を持たない。公開されている作品の問いは全部が公開されている。
+   * だから「公開中の問題」＝ここで取れる全部になる。
+   */
+  const shareQuestionTexts = (quiz?.questions ?? []).map((q) =>
+    questionText(q.card_slot_label),
+  );
+  const shareQuestions: ShareQuestionOption[] = (quiz?.questions ?? []).map((q, i) => {
+    const text = shareQuestionTexts[i];
+    // 同じ文が2つ以上あるときだけ、何問目かを添える。
+    // **カードに載る文字列（text）は変えない。**
+    const duplicated = shareQuestionTexts.filter((t) => t === text).length > 1;
+    return {
+      question_id: q.question_id,
+      text,
+      note: duplicated ? `${q.position + 1}問目` : null,
+    };
+  });
+
+  const shared = readShareParams(rawSearch);
+
   return (
     <main className="mx-auto w-full max-w-3xl space-y-8 p-6 sm:p-10">
       {error ? (
@@ -938,6 +1157,8 @@ export default async function WorkPage({
           result={result}
           resultOpen={resultOpen}
           after={after}
+          shareQuestions={shareQuestions}
+          shared={shared}
           quizFirst={rawQuizFirst === "1"}
         />
       ) : myWork ? (

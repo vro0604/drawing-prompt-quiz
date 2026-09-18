@@ -10,7 +10,7 @@
  *   rpc     … 指定のロールで関数を呼び、成功／権限エラーを判定すること
  */
 
-/** 誰も直接読めない29表 */
+/** 誰も直接読めない32表 */
 export const SEALED_TABLES = [
   "draft_candidates",
   "prompt_cards",
@@ -56,6 +56,13 @@ export const SEALED_TABLES = [
   // 2026-09-18。「興味なし」の記録。誰がどの作品を外したかは
   // 本人以外に見せない（作者に見せると投稿を萎縮させる）
   "work_uninterests",
+  // 2026-09-18。SNS共有の2表。
+  //   share_card_revisions … 共有カードの「そのときの見た目」の控え
+  //   share_events         … 共有操作1回につき1行（id が共有URLの shareId）
+  // どちらも読み書きは RPC を通す。shareId は見る権利ではないので、
+  // 表そのものを配る理由が無い
+  "share_card_revisions",
+  "share_events",
 ];
 
 /** anon / authenticated が列権限を持つ10表 */
@@ -90,6 +97,9 @@ export const PUBLIC_RPCS = [
   "get_saved_works",
   "get_public_answers",
   "get_handle_redirect",
+  // 2026-09-18。共有カードの材料。SNS のクローラーが取りに来る経路なので
+  // 誰でも呼べる。返すのは公開作品の、画面に既に出ている情報だけ
+  "get_share_card",
 ];
 
 /** 本人だけの取得系RPC */
@@ -190,7 +200,12 @@ export const STORAGE_POLICIES = [
 ];
 
 /** 外部へ公開しない内部ヘルパー */
-export const INTERNAL_FUNCS = ["draft_generate_candidates", "draft_state_json"];
+export const INTERNAL_FUNCS = [
+  "draft_generate_candidates",
+  "draft_state_json",
+  // 2026-09-18。共有カードの控えを作る。create_share の中からだけ呼ばれる
+  "ensure_share_card_revision",
+];
 
 /**
  * 検証のための目印を返すだけの関数。
@@ -678,15 +693,19 @@ export const checks = [
     // （当てる前の本番は 64 で、db:verify:keychain はここで食い違っていた）。
     // 2026-09-18 に1表増えた。work_uninterests（「興味なし」の記録 / D211）。
     // 合わせて 70。
-    name: "public スキーマの表が70個",
-    expected: 70,
+    // 2026-09-18 にさらに2表増えた（SNS共有カード）。
+    //   ・share_card_revisions … 共有カードの控え
+    //   ・share_events         … 共有操作の記録
+    // 合わせて 72。
+    name: "public スキーマの表が72個",
+    expected: 72,
     sql: `select count(*)::int from pg_tables where schemaname = 'public'`,
     detailSql: `select tablename from pg_tables
                  where schemaname = 'public' order by tablename`,
   },
   {
     group: "構造",
-    name: "遮断30表がすべて存在する",
+    name: "遮断32表がすべて存在する",
     expected: SEALED_TABLES.length,
     sql: `select count(*)::int from pg_tables
            where schemaname = 'public' and tablename = any($1)`,
@@ -694,8 +713,8 @@ export const checks = [
   },
   {
     group: "構造",
-    name: "70表すべてで RLS が有効",
-    expected: 70,
+    name: "72表すべてで RLS が有効",
+    expected: 72,
     sql: `select count(*)::int from pg_class c
             join pg_namespace n on n.oid = c.relnamespace
            where n.nspname = 'public' and c.relkind = 'r' and c.relrowsecurity`,
@@ -864,7 +883,7 @@ export const checks = [
     // 数えるのは**名前の種類**であって、関数の本数ではない。
     // 互換期間は get_public_works と get_next_work に旧版が並ぶので、
     // 本数で数えると、旧版を足しただけでこの検査が落ちる。
-    name: "公開12本は anon から実行できる",
+    name: "公開13本は anon から実行できる",
     expected: PUBLIC_RPCS.length,
     sql: `select count(distinct p.proname)::int from pg_proc p
             join pg_namespace n on n.oid = p.pronamespace
@@ -3699,6 +3718,59 @@ export const roleProbes = [
     mode: "allowed",
     label: "anon → get_public_profile",
     sql: `select public.get_public_profile('no-such-handle')`,
+  },
+
+  // ── SNS共有（2026-09-18）──
+  //
+  // 見せる側・記録する側は誰でも呼べ、集計と内部ヘルパーは呼べない。
+  // 呼べる3本は、存在しない作品IDで呼んでも**行を1つも作らない**
+  // （create_share は公開条件を満たさない作品を断る）ので、
+  // この試験でデータが増えることはない。
+  {
+    role: "anon",
+    mode: "allowed",
+    label: "anon → get_share_card",
+    sql: `select public.get_share_card(
+            '00000000-0000-0000-0000-000000000000'::uuid, null, null)`,
+  },
+  {
+    role: "authenticated",
+    mode: "allowed",
+    label: "authenticated → get_share_card",
+    sql: `select public.get_share_card(
+            '00000000-0000-0000-0000-000000000000'::uuid, null, null)`,
+  },
+  {
+    role: "anon",
+    mode: "allowed",
+    label: "anon → record_share_event",
+    sql: `select public.record_share_event('share_landing', null, null, null, null)`,
+  },
+  {
+    role: "anon",
+    mode: "denied",
+    label: "anon → get_share_funnel（運営だけ）",
+    sql: `select public.get_share_funnel(30)`,
+  },
+  {
+    role: "authenticated",
+    mode: "denied",
+    label: "authenticated → get_share_funnel（運営だけ）",
+    sql: `select public.get_share_funnel(30)`,
+  },
+  {
+    role: "anon",
+    mode: "denied",
+    label: "anon → ensure_share_card_revision（内部用）",
+    sql: `select public.ensure_share_card_revision(
+            '00000000-0000-0000-0000-000000000000'::uuid, null)`,
+  },
+  {
+    role: "authenticated",
+    mode: "denied",
+    label: "authenticated → ensure_share_card_revision（内部用）",
+    sql: `select public.ensure_share_card_revision(
+            '00000000-0000-0000-0000-000000000000'::uuid, null)`,
   },
   {
     role: "anon",
