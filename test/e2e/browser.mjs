@@ -29,6 +29,7 @@ import { recordCount } from "../counts.mjs";
 import {
   answerWork,
   asMember,
+  buildPromptWithTags,
   drawPrompt,
   makeMember,
   pickTags,
@@ -7590,6 +7591,73 @@ async function main() {
     assert(after.includes(`q=${ids[1]}`), after);
     assert((await g.locator("[data-share-dialog] [data-share-confirm]").count()) === 0,
       "確定のボタンがある");
+  });
+
+  await test("SH", "共有: 問いが1つだけの作品では、問題を選ぶ欄そのものが出ない", async (t) => {
+    // お題の語が1つだけの作品を作る。問いは語数と同じ数だけできる決まりなので、
+    // 語を1つにすると問いも1つになる
+    const uid = await makeMember(db, "sh-e2e-one-q");
+    const promptId = await buildPromptWithTags(db, uid, ["探す"]);
+    const workId = await postWork(db, uid, promptId, "問いが1つの作品");
+    const quiz = await value(db, { role: "anon", uid: null },
+      `select public.get_work_quiz($1)`, [workId]);
+    assert(quiz.questions.length === 1, `準備の失敗（問いが ${quiz.questions.length} 件）`);
+
+    t.stage("共有の面を開く");
+    await g.goto(`${base}/works/${workId}`, { waitUntil: "domcontentloaded" });
+    await openShare(g);
+
+    t.stage("見出しも一覧も出ていない");
+    assert((await g.locator("[data-share-picker-title]").count()) === 0,
+      "「共有する問題を選ぶ」が出ている");
+    assert((await g.locator("[data-share-question]").count()) === 0,
+      "問いの一覧が出ている");
+
+    t.stage("それでも共有はできる（その1問が載る）");
+    const src = await g.getAttribute("[data-share-preview] img", "src");
+    assert(src.includes(`q=${quiz.questions[0].question_id}`), src);
+    assert(!(await g.locator('[data-share-channel="copy"]').isDisabled()), "コピーが押せない");
+  });
+
+  await test("SH", "共有: 端末の共有機能が無いブラウザでは、その項目そのものが出ない", async (t) => {
+    const w = await shareWork("sh-e2e-nonative");
+    const ctx = await browser.newContext({ viewport: { width: 1280, height: 900 } });
+    try {
+      const p = await ctx.newPage();
+
+      t.stage("使える場合は項目が出る");
+      // Chromium の headless には navigator.share が無い。**有る側を自分で作る**
+      await p.addInitScript(() => {
+        Object.defineProperty(navigator, "share", {
+          configurable: true,
+          value: () => Promise.resolve(),
+        });
+      });
+      await p.goto(`${base}/works/${w.workId}`, { waitUntil: "domcontentloaded" });
+      await openShare(p);
+      assert((await p.locator('[data-share-channel="native"]').count()) === 1,
+        "使えるのに「その他のアプリ」が出ていない");
+
+      t.stage("無い場合は項目が消える（押してから断られる形にしない）");
+      const bare = await browser.newContext({ viewport: { width: 1280, height: 900 } });
+      try {
+        const q = await bare.newPage();
+        await q.goto(`${base}/works/${w.workId}`, { waitUntil: "domcontentloaded" });
+        const has = await q.evaluate(() => typeof navigator.share === "function");
+        assert(!has, "このブラウザには navigator.share がある（試験の前提が違う）");
+        await openShare(q);
+        assert((await q.locator('[data-share-channel="native"]').count()) === 0,
+          "使えないのに「その他のアプリ」が出ている");
+        // 残りの3つは出ている
+        for (const c of ["x", "bluesky", "copy"]) {
+          assert((await q.locator(`[data-share-channel="${c}"]`).count()) === 1, `${c} が無い`);
+        }
+      } finally {
+        await bare.close();
+      }
+    } finally {
+      await ctx.close();
+    }
   });
 
   await test("SH", "共有: 1つだけ選べる（選び直すと前のが外れる）", async (t) => {

@@ -141,6 +141,7 @@ import {
   CTA_FONT_SIZE,
   CTA_TEXT,
   QUESTION_FONT_SIZE,
+  SENSITIVE_BLUR_PX,
   SENSITIVE_CTA_TEXT,
   SENSITIVE_TEXT,
   SHARE_OG_DESCRIPTION,
@@ -152,6 +153,7 @@ import {
   measureText,
   questionText,
   shareCardImageUrl,
+  shareCardParts,
   shareOgTitle,
   shareUrl,
   wrapQuestion,
@@ -1726,6 +1728,72 @@ test("共有OG", "問いが無ければ差し替えない（null を返す）", 
 
 test("共有OG", "説明文は「タップして答える」", () => {
   assert(SHARE_OG_DESCRIPTION === "タップして答える", SHARE_OG_DESCRIPTION);
+});
+
+console.log("\nカードに何を載せるか");
+
+/** 既定は「ふつうの公開作品」。試したい欄だけ上書きする */
+const cardSource = (over = {}) => ({
+  question_text: "モーフ はどれ？",
+  author_name: "えがきさん",
+  anonymous: false,
+  ai: false,
+  sensitive: false,
+  image_width: 1200,
+  image_height: 900,
+  ...over,
+});
+
+test("カードの中身", "ふつうの作品は、問題文とCTAと投稿者名が載る", () => {
+  const p = shareCardParts(cardSource());
+  assert(p.headline === null, `見出しが ${p.headline}`);
+  assert(p.lines.join("") === "モーフ はどれ？", p.lines.join("/"));
+  assert(p.cta === CTA_TEXT, p.cta);
+  assert(p.authorLine === "えがきさん", `${p.authorLine}`);
+  assert(p.showAi === false, "AIの札が出ている");
+  assert(p.blurPx === 0, `ぼかしが ${p.blurPx}`);
+});
+
+test("カードの中身", "匿名の作品では作者欄そのものが消える（代わりの表示も置かない）", () => {
+  const p = shareCardParts(cardSource({ anonymous: true }));
+  assert(p.authorLine === null, `作者欄に ${p.authorLine} が出ている`);
+  // 「匿名」という語がどこにも出ないこと
+  const all = [p.headline, ...p.lines, p.cta, p.authorLine].filter(Boolean).join(" ");
+  assert(!all.includes("匿名"), all);
+});
+
+test("カードの中身", "表示名が無いときも作者欄を出さない", () => {
+  const p = shareCardParts(cardSource({ author_name: null }));
+  assert(p.authorLine === null, `${p.authorLine}`);
+});
+
+test("カードの中身", "AI部門の作品には札が付く", () => {
+  assert(shareCardParts(cardSource({ ai: true })).showAi === true, "札が出ない");
+});
+
+test("カードの中身", "ぼかす作品は、ぼかし・専用の見出し・専用のCTAになる", () => {
+  const p = shareCardParts(cardSource({ sensitive: true }));
+  assert(p.blurPx === SENSITIVE_BLUR_PX, `ぼかしが ${p.blurPx}`);
+  assert(p.headline === SENSITIVE_TEXT, p.headline);
+  assert(p.cta === SENSITIVE_CTA_TEXT, p.cta);
+});
+
+test("カードの中身", "ぼかす作品でも問題文は載る（問いを見せるための共有なので）", () => {
+  const p = shareCardParts(cardSource({ sensitive: true }));
+  assert(p.lines.join("") === "モーフ はどれ？", p.lines.join("/"));
+});
+
+test("カードの中身", "問いが無い共有では、問題文の行が0になる", () => {
+  const p = shareCardParts(cardSource({ question_text: null }));
+  assert(p.lines.length === 0, `${p.lines.length} 行`);
+  assert(p.cta === CTA_TEXT, p.cta);
+});
+
+test("カードの中身", "絵の見せ方は縦横比から決まる（新しい設定を持たない）", () => {
+  assert(shareCardParts(cardSource({ image_width: 800, image_height: 1600 }))
+    .objectPosition === "top", "縦長が上端から見えていない");
+  assert(shareCardParts(cardSource({ image_width: 2000, image_height: 600 }))
+    .objectPosition === "center", "横長が中央に寄っていない");
 });
 
 console.log("\nクローラーの見分け");

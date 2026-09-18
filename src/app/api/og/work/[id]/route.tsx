@@ -18,21 +18,16 @@ import {
   CARD_RADIUS,
   CARD_WIDTH,
   CTA_FONT_SIZE,
-  CTA_TEXT,
   QUESTION_FONT_SIZE,
   QUESTION_LINE_HEIGHT,
   QUESTION_SHADOW,
   QUESTION_STROKE,
   SCRIM_MAX_ALPHA,
   SCRIM_START_RATIO,
-  SENSITIVE_BLUR_PX,
-  SENSITIVE_CTA_TEXT,
-  SENSITIVE_TEXT,
   SENSITIVE_VEIL_ALPHA,
   SOFT_SHADOW,
   UNAVAILABLE_TEXT,
-  cardObjectPosition,
-  wrapQuestion,
+  shareCardParts,
 } from "@/features/share/card";
 
 /**
@@ -180,15 +175,14 @@ export async function GET(
 
   if (card.state !== "ok") return ogResponse(unavailableCard());
 
-  const lines = card.question_text ? wrapQuestion(card.question_text) : [];
-  const sensitive = card.sensitive;
-
-  // 絵の見せ方。**新しい切り取りの設定を作らない**（features/share/card.ts）
-  const objectPosition = cardObjectPosition(card.image_width, card.image_height);
-
-  // ぼかす作品では、問いと案内の文言が変わる（利用者の指示 7）
-  const headline = sensitive ? SENSITIVE_TEXT : null;
-  const cta = sensitive ? SENSITIVE_CTA_TEXT : CTA_TEXT;
+  // 【載せる・載せないの判断はここでしない】
+  //   どの文字を出すか・作者欄を出すか・ぼかすか・どこを見せるかは、
+  //   features/share/card.ts の shareCardParts が決める。
+  //   絵にしないと確かめられない形で書くと目で見るしかなくなるので、
+  //   判断だけを外へ出して、単体試験から呼べるようにしてある。
+  const parts = shareCardParts(card);
+  const { headline, lines, cta, authorLine, showAi, blurPx, objectPosition } = parts;
+  const sensitive = blurPx > 0;
 
   return ogResponse(
     frame(
@@ -211,7 +205,7 @@ export async function GET(
             height: CARD_HEIGHT,
             objectFit: "cover",
             objectPosition,
-            ...(sensitive ? { filter: `blur(${SENSITIVE_BLUR_PX}px)` } : {}),
+            ...(blurPx > 0 ? { filter: `blur(${blurPx}px)` } : {}),
           }}
         />
 
@@ -287,7 +281,7 @@ export async function GET(
                 既存の画面は「AI生成」という呼び名を使う（features/work/types.ts の
                 DIVISIONS）。カードでは場所が狭いので短い「AI」にし、
                 **別の意味に読めないよう枠で囲って札にする** */}
-            {card.ai ? (
+            {showAi ? (
               <div
                 style={{
                   display: "flex",
@@ -364,7 +358,7 @@ export async function GET(
             {/* 投稿者。表示名だけ。@handle は出さない（利用者の指示 3）。
                 匿名の作品では**欄そのものを出さない**（利用者の指示 5）。
                 「匿名」という代わりの表示も置かない */}
-            {card.anonymous || !card.author_name ? null : (
+            {authorLine === null ? null : (
               <div
                 style={{
                   display: "flex",
@@ -374,7 +368,7 @@ export async function GET(
                   textShadow: SOFT_SHADOW,
                 }}
               >
-                {card.author_name}
+                {authorLine}
               </div>
             )}
           </div>

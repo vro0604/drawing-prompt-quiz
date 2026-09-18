@@ -467,3 +467,64 @@ export function isCrawlerUserAgent(userAgent: string | null | undefined): boolea
   const ua = userAgent.toLowerCase();
   return CRAWLER_MARKS.some((m) => ua.includes(m));
 }
+
+/* ===========================================================================
+ * カードに何を載せるかの決め
+ * ===========================================================================
+ *
+ * 【なぜ絵を描く側から切り出すか】
+ *   「匿名なら作者欄そのものを出さない」「ぼかす作品では文言が変わる」は
+ *   **絵にしないと確かめられない**形で書くと、目で見るしかなくなる。
+ *   載せる・載せないの判断だけをここへ出せば、単体試験でそのまま呼べる。
+ *
+ *   絵を描く側（src/app/api/og/work/[id]/route.tsx）は、この結果を
+ *   並べるだけにする。判断を2か所に書かない。
+ */
+
+/** カードに載せるものが決まった形 */
+export type ShareCardParts = {
+  /** ぼかす作品にだけ出る見出し。ふだんは null */
+  headline: string | null;
+  /** 問題文。最大2行。問いが無ければ空 */
+  lines: string[];
+  /** 「タップして答える」か、ぼかす作品用の文言 */
+  cta: string;
+  /** 投稿者の表示名。**出さないときは null**（「匿名」とも書かない） */
+  authorLine: string | null;
+  /** 「AI」の札を出すか */
+  showAi: boolean;
+  /** 絵をぼかすか。0 ならぼかさない */
+  blurPx: number;
+  /** 絵の見せ方（object-position に渡す値） */
+  objectPosition: "top" | "center";
+};
+
+/**
+ * カードに載せるものを決める。
+ *
+ * 受け取るのは get_share_card がそのまま返した形。
+ * **ここで DB も画像も触らない。**値から値を決めるだけ。
+ */
+export function shareCardParts(source: {
+  question_text: string | null;
+  author_name: string | null;
+  anonymous: boolean;
+  ai: boolean;
+  sensitive: boolean;
+  image_width: number;
+  image_height: number;
+}): ShareCardParts {
+  const sensitive = source.sensitive === true;
+
+  return {
+    headline: sensitive ? SENSITIVE_TEXT : null,
+    // ぼかす作品でも問いは出す（利用者の指示 7 が「問題文」を挙げている）
+    lines: source.question_text ? wrapQuestion(source.question_text) : [],
+    cta: sensitive ? SENSITIVE_CTA_TEXT : CTA_TEXT,
+    // 匿名なら欄そのものを消す。代わりの表示も置かない（利用者の指示 5）
+    authorLine: source.anonymous || !source.author_name ? null : source.author_name,
+    showAi: source.ai === true,
+    blurPx: sensitive ? SENSITIVE_BLUR_PX : 0,
+    objectPosition: cardObjectPosition(source.image_width, source.image_height),
+  };
+}
