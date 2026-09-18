@@ -2,6 +2,48 @@
 
 ---
 
+# 本番を変える作業は、長く使っている作業木から直接行わない
+
+本番へ影響するのは次の3種類。画面を出すこと、本番のデータベースへ書くこと、
+外部サービス（Vercel ／ Supabase ／ Cloudflare）の設定を書き換えること。
+どれも、**始める前に作業木を作り直す。**
+
+なぜか。この計算機には作業木（git worktree）が複数あり、長く使っているものほど
+`origin/main` から離れていく。2026-09-18 の実測で、主作業木は 86 コミット遅れ・
+3 コミット進み・未コミット 179 件・`origin/main` にある migration を 14 本持たず・
+同じ版番号を使うファイルが 2 組あった。**この状態から画面を出すと、本番が
+86 コミットぶん巻き戻る。**直近2回はどちらも途中で人が気づいて作り直したので
+事故にならなかった。気づくかどうかに頼るのをやめる。
+
+## 順番
+
+```bash
+git fetch origin
+git worktree add -b <枝の名前> ../dpq-<名前> origin/main
+cp -al node_modules ../dpq-<名前>/node_modules   # 実体にする（リンクだと Turbopack が拒否する）
+cd ../dpq-<名前>
+# 作業してコミットする
+npm run preflight          # 出せる状態かを見る
+npm run deploy:main -- --apply   # 画面を出す（push 直前にもう一度確かめる）
+```
+
+データベースへ当てるときは `npm run preflight:db` を先に見る。
+
+## 手で打ち忘れても止まる
+
+本番を変えるスクリプトは、外へ送る直前に同じ判定を通る。満たさなければ
+非0で終わり、接続もしない。通るのは次の道具である。
+
+`db:deploy` ／ `db:baseline` ／ `db:apply:one` ／ `db:apply:many` ／
+`smoke:prod` ／ `cleanup:testdata --apply` ／ `setup:domain --apply` ／
+`setup:auth --apply` ／ `setup:protection --apply` ／ `deploy:main --apply`
+
+判定の中身と、止まったときの直しかたは `docs/db-workflow.md` と
+`docs/prod-runbook.md` にある。**この柵は自分では merge も rebase も reset も
+stash も commit もしない。**古い作業木や未コミットの変更は、そのまま残す。
+
+---
+
 # 無人実行（クラウドのルーチン）の規約
 
 平日の日中、ユーザーが不在のあいだにクラウド上の Claude Code がこのリポジトリを

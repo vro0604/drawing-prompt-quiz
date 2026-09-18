@@ -52,6 +52,7 @@ const SOURCES = {
     how: "（ファイルを数えるので、いつでも測れます）",
   },
   "柵の自己試験": { how: "npm run test:guard" },
+  "作業木の柵の自己試験": { how: "npm run test:preflight" },
   "道具の自己試験": { how: "npm run test:tools" },
   "縦断試験": { how: "npm run test:db" },
   "アップグレード試験": { how: "npm run test:db:upgrade" },

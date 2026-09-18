@@ -46,6 +46,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { execFileSync } from "node:child_process";
 import pg from "pg";
+import { requireSafeWorktree } from "./_preflight.mjs";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const MIGRATIONS = path.join(ROOT, "supabase", "migrations");
@@ -99,6 +100,12 @@ if (DRY) {
   console.log("--dry-run なので、ここで終わります。DBは変更していません。");
   process.exit(0);
 }
+
+// ── ここから先は本番へ書く。作業木を先に見る ──────────────────
+//
+// 古い作業木にしか無い migration を、本番の版番号で当ててしまう事故
+// （2026-09-09 の 20260909180000）を、接続の前で止める。
+requireSafeWorktree({ mode: "db", label: `${name} の適用` });
 
 // ── 接続文字列を組み立てる（画面には出さない）──────────────────
 

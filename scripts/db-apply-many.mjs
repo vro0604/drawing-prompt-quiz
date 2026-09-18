@@ -229,6 +229,12 @@ if (invokedDirectly) {
     process.exit(0);
   }
 
+  // ここから先は本番へ書く。接続の前に作業木を見る。
+  // 「どこへ当てるか」は --confirm-project が見ている。
+  // 「どこから当てるか」を見るのがこちらである。取り違えは両側で起こる。
+  const { requireSafeWorktree } = await import("./_preflight.mjs");
+  requireSafeWorktree({ mode: "db", label: `${items.length} 本の適用` });
+
   if (!linked) {
     console.log("✗ どのプロジェクトへ当てるのか分かりません。npm run db:link を済ませてください。");
     process.exit(1);

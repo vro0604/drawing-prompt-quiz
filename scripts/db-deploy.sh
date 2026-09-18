@@ -11,6 +11,11 @@
 
 set -euo pipefail
 cd "$(dirname "$0")/.."
+
+# この作業木から本番へ当ててよいかを、接続する前に見る。
+# 古い作業木・未コミットの変更・版番号の重複があれば、ここで止まる（非0で終わる）。
+node scripts/preflight.mjs --db
+
 # shellcheck source=./_db-target.sh
 source "$(dirname "$0")/_db-target.sh"
 

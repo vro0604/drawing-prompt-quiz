@@ -16,6 +16,11 @@
 
 set -euo pipefail
 cd "$(dirname "$0")/.."
+
+# 履歴表へ1行書くのも本番への書き込みである。古い作業木の版番号を
+# 「適用済み」として登録すると、本番の履歴に嘘が入る。先に作業木を見る。
+node scripts/preflight.mjs --db
+
 # shellcheck source=./_db-target.sh
 source "$(dirname "$0")/_db-target.sh"
 

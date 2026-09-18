@@ -120,6 +120,23 @@ export function summary(title) {
 export const APPLY = process.argv.includes("--apply");
 export const DRY_RUN = !APPLY;
 
+/**
+ * **--apply が付いたときだけ、作業木の確認を通す。**
+ *
+ * ここに置く理由は2つある。
+ *   ・このファイルを読み込む4本（setup-domain / setup-auth / setup-protection /
+ *     cleanup-testdata）が、外へ送る側の全部だから。1か所で足りる。
+ *   ・あとから同じ作りの道具が増えても、この共通部分を使う限り自動で通る。
+ *     **書き忘れても柵が効く**形にしておく。
+ *
+ * 下見（--apply なし）では通さない。外へ1バイトも出ないので、
+ * 古い作業木から下見をすること自体は止める理由が無い。
+ */
+if (APPLY) {
+  const { requireSafeWorktree } = await import("./_preflight.mjs");
+  requireSafeWorktree({ mode: "core", label: "外部サービスへの書き込み" });
+}
+
 export function banner(title, note2) {
   console.log("");
   console.log(`${BOLD}${title}${RESET}`);

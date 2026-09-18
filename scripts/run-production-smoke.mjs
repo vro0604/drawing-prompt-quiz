@@ -23,6 +23,7 @@ import { spawn } from "node:child_process";
 import { existsSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { PRODUCTION_ENTRY_MARK } from "./_env-target.mjs";
+import { requireSafeWorktree } from "./_preflight.mjs";
 
 const name = process.argv[2];
 
@@ -50,6 +51,11 @@ if (!existsSync(path)) {
   console.error(`scripts/smoke-${name}.mjs がありません。`);
   process.exit(2);
 }
+
+// 本番に行を増やす操作なので、作業木を先に見る。
+// 古い作業木から走らせると、いま本番で動いている画面とは違う前提で
+// 合否を出すことになり、「合格した」という記録のほうが嘘になる。
+requireSafeWorktree({ mode: "core", label: `本番スモーク（${name}）` });
 
 console.log("");
 console.log("=== 本番へ向けて実行します ===");

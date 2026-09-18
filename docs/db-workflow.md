@@ -79,6 +79,7 @@ npm run db:link      # DBパスワードを聞かれる
 ## ふだんの流れ
 
 ```bash
+npm run preflight:db # この作業木から当ててよいかを見る（DBにも遠くにも触らない）
 npm run db:status    # 何が適用されるかを見る（DBは変更しない）
 npm run db:deploy    # dry-run を表示 → 問題なければ push
 npm run db:verify    # 構造・権限・漏洩経路・診断を自動判定
@@ -86,6 +87,23 @@ npm run db:privs     # 誰がどの関数を呼べるかを一覧（読むだけ
 ```
 
 `db:baseline` は初回の1回だけ。2回目以降は実行不要（実行しても害はない）。
+
+### preflight:db が見ていること
+
+**どこへ当てるか**は `--confirm-project` が見ている。
+**どこから当てるか**を見るのがこちら。取り違えは両側で起こる。
+
+| 見るもの | 止める条件 |
+|---|---|
+| 遠くの `main` の現在値（`git ls-remote`。控えを信じない） | 読めない／手元の控えと食い違う |
+| この作業木が遠くの `main` を含んでいるか | 1コミットでも遅れている |
+| 未コミットの変更 | 身に覚えのないものが1件でもある |
+| `origin/main` にあって手元に無い migration | 1本でもある（＝作業木が古い決定的な印） |
+| 同じ版番号を使っているファイル | 2つ以上ある（2026-09-09 の `20260909180000` がこの形） |
+
+満たさないときは終了コード 1 で止まり、`db:deploy` も `db:apply:one` も
+`db:apply:many` も `db:baseline` も、**接続する前に終わる。**
+この道具は merge も rebase も reset も stash も行わない。直すのは人の判断に属する。
 
 ### db:deploy が守っていること
 
@@ -242,6 +260,7 @@ npm run db:verify
 
 | 禁止 | 理由 |
 |---|---|
+| 長く使っている作業木から本番へ当てる | `origin/main` より遅れている作業木には、本番に当たっているはずの SQL が無い。<br>**当てると本番の履歴とファイルの対応が崩れる。**`npm run preflight:db` が止める |
 | `supabase db reset --linked` | リモートDBを作り直す。**データが全部消える** |
 | `db push --include-all` | `applied/` を戻した場合などに古いSQLを巻き込む |
 | `applied/` `rollback/` のファイルを `migrations/` へ移す | 再実行されて反映が止まる |
