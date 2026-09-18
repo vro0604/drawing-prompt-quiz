@@ -132,8 +132,15 @@ export const FEED_SORTS: { value: string; label: string }[] = [
   { value: "answers", label: "回答数順" },
 ];
 
-/** 1ページの件数。get_public_works の上限は50 */
-export const FEED_PAGE_SIZE = 24;
+/**
+ * 一度に取る件数。
+ *
+ * 2026-09-18 に 24 から 36 へ増やした。一覧が段違いの列になり、
+ * 広い画面では1画面に入る枚数が増えた。24 だと最初の1画面で尽きて、
+ * スクロールが始まる前に読み足しが走る。
+ * 上限は get_feed_works 側の 100（旧 get_public_works は 50 のまま）。
+ */
+export const FEED_PAGE_SIZE = 36;
 
 /** 一覧の1件（get_public_works が返す行） */
 export type PublicWorkListItem = {

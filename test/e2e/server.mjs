@@ -118,7 +118,7 @@ export async function startApp({ port = 3210, log = false } = {}) {
   await reservePort(port);
 
   const mock = await startSupabaseMock();
-  const seeded = await seedForE2E(mock.db);
+  const seeded = await seedForE2E(mock.db, { objects: mock.objects });
 
   // **`.env.local` の名前を先に埋めておく。**
   //   Next.js は `.env.local` を必ず読む。取り消す仕組みは無い

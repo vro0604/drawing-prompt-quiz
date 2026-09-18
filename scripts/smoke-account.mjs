@@ -300,8 +300,10 @@ section("7. 作品が公開から外れ、作者由来の情報が消えてい�
   must(page.status === 404, "作品ページが開けなくなった", `実際 ${page.status}`);
 
   const list = await stayer.get("/works");
+  // 題名は一覧に出ない（2026-09-18）。**題名で探すと必ず「消えた」になる**ので、
+  // 作品のIDで見る
   must(
-    !new RegExp(`退会テスト作品${stamp}`).test(list.html),
+    !list.html.includes(leaverWorkId),
     "作品一覧から消えた",
   );
 

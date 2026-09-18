@@ -420,6 +420,31 @@ async function assertBody(page, pattern, message, { timeout = 10000 } = {}) {
  * 待つと「まだ描かれていないだけ」を「出ていない」と読んでしまう。
  * 呼ぶ前に settledBody で本文が届いていることを確かめておくこと。
  */
+/**
+ * その作品が、公開の一覧に出ているか。
+ *
+ * 一覧は題名も作者名も出さなくなった（2026-09-18。指示 5・21）ので、
+ * **文字で探せない。**カードに付いている作品のIDで見る。
+ * 一覧は下まで来ると続きを読むので、見つからなければ数回送ってから返す。
+ */
+async function feedHasWork(page, workId, { base = null } = {}) {
+  const origin = base ?? new URL(page.url()).origin;
+  await page.goto(`${origin}/works`);
+  await page.waitForSelector('[data-feed-grid][data-feed-measured="1"]', { timeout: 20000 });
+
+  const found = async () =>
+    (await page.locator(`[data-work-card][data-work-id="${workId}"]`).count()) > 0;
+
+  if (await found()) return true;
+  for (let i = 0; i < 4; i += 1) {
+    await page.evaluate(() => window.scrollTo(0, document.body.scrollHeight));
+    await page.waitForTimeout(1200);
+    if (await found()) return true;
+    if ((await page.locator("[data-feed-end]").count()) > 0) break;
+  }
+  return false;
+}
+
 async function assertBodyNot(page, pattern, message) {
   const seen = (await page.innerText("body")).replace(/\s+/g, " ");
   if (pattern.test(seen)) throw new Error(`${message}: ${seen.slice(0, 400)}`);
@@ -3357,17 +3382,21 @@ async function main() {
         assert(ids.length > 0, `並び ${sort} と併用すると0件になる`);
       }
 
-      t.stage("ページ送りが条件を持ち越す");
-      await p.goto(`${base}/works?unanswered=1&page=2`);
-      await p.waitForSelector("[data-unanswered-filter]", { timeout: 15000 });
-      const prev = await p
-        .locator('a:has-text("前のページ")')
-        .first()
-        .getAttribute("href");
-      assert(
-        prev !== null && /unanswered=1/.test(prev),
-        `ページ送りのリンクが条件を落としている（${prev}）`,
+      t.stage("読み足しが条件を持ち越す");
+      // ページ送りは 2026-09-18 に無くなった（下まで来たら続きを読む形）。
+      // 見るのは「続きを読んでも、回答済みが混ざらないこと」
+      await p.goto(`${base}/works?unanswered=1`);
+      await p.waitForSelector('[data-feed-grid][data-feed-measured="1"]', { timeout: 20000 });
+      await p.evaluate(() => window.scrollTo(0, document.body.scrollHeight));
+      await p.waitForTimeout(1500);
+      const ids = await p.$$eval("[data-work-card]", (cards) =>
+        cards.map((c) => c.getAttribute("data-work-id")),
       );
+      assert(
+        !ids.includes(answeredFanart),
+        "読み足したあとに、回答済みの作品が混ざっている",
+      );
+      assert(/unanswered=1/.test(p.url()), `読み足しでURLの条件が消えた（${p.url()}）`);
     } finally {
       await ctx.close();
     }
@@ -3468,6 +3497,1176 @@ async function main() {
         () => document.documentElement.scrollWidth - document.documentElement.clientWidth,
       );
       assert(overflowOn <= 1, `ON のとき横に ${overflowOn}px はみ出している`);
+    } finally {
+      await ctx.close();
+    }
+  });
+
+
+  /* =====================================================================
+   * M. 作品一覧（段違いの列。2026-09-18）
+   *
+   * 【ここで見るもの】
+   *   絵そのものがカードになっていること。通常の状態で文字が1つも出ないこと。
+   *   触れたときだけ小さなUIが浮くこと。押した先が2つに分かれること。
+   *   0.5秒の長押しでいいねが付き、スクロールを邪魔しないこと。
+   *   作品が1件も無いときに見本が並び、それが1つも押せないこと。
+   *
+   * 【「コードがそう書いてある」では通さない】
+   *   列の数も縦横比も、**画面から測った値**で判定する。
+   * ===================================================================== */
+
+  /** 一覧を開いて、並び終わるまで待つ */
+  async function openFeed(p, query = "") {
+    act(`一覧を開く /works${query}`);
+    await p.goto(`${base}/works${query}`);
+    await p.waitForSelector('[data-feed-grid][data-feed-measured="1"]', { timeout: 20000 });
+    await p.waitForSelector("[data-work-card], [data-sample-card]", { timeout: 20000 });
+    // 画像の読み込みが一巡するのを待つ。**待たずに測ると、
+    // 場所取りの高さを測っているのか実際の高さを測っているのか区別できない**
+    await p
+      .waitForFunction(
+        () => [...document.querySelectorAll("[data-work-card] img")].every((i) => i.complete),
+        { timeout: 20000 },
+      )
+      .catch(() => null);
+  }
+
+  /**
+   * 画面に出ているカードの位置と大きさを測る。
+   *
+   * 【文字を2通りで取る理由】
+   *   情報子タブは、触れていないとき **消えてはいない。**
+   *   広い画面では「見えない（濃さ0）が、そこに在る」状態にしてある。
+   *   キーボードで移れるようにするには、そうするしかない
+   *   （本当に消すと移動先にならない）。
+   *
+   *   だから innerText にはタブの中身が入る。**目に入るかどうかは
+   *   濃さ（opacity）で見る。**
+   *
+   *     text    … カードぜんたいの文字（タブの中身を含む）
+   *     shown   … 触れていないときに目に入る文字（タブの中身を除いた分）
+   *     tabDim  … 情報子タブの濃さ。0 なら見えていない
+   */
+  async function measureCards(p) {
+    return p.$$eval("[data-work-card]", (cards) =>
+      cards.map((c) => {
+        const r = c.getBoundingClientRect();
+        const tab = c.querySelector("[data-card-tab]");
+        const textOf = (n) => (n?.innerText ?? "").replace(/\s+/g, " ").trim();
+        const all = textOf(c);
+        const inTab = textOf(tab);
+        return {
+          id: c.getAttribute("data-work-id"),
+          answered: c.getAttribute("data-answered") === "1",
+          liked: c.getAttribute("data-liked") === "1",
+          clipped: c.getAttribute("data-clipped") === "1",
+          x: Math.round(r.x),
+          y: Math.round(r.y + window.scrollY),
+          w: Math.round(r.width),
+          h: Math.round(r.height),
+          text: all,
+          shown: inTab === "" ? all : all.split(inTab).join("").replace(/\s+/g, " ").trim(),
+          tabDim: tab ? Number(getComputedStyle(tab).opacity) : null,
+          tabVisibility: tab ? getComputedStyle(tab).visibility : null,
+        };
+      }),
+    );
+  }
+
+  /** 一覧をいちばん下まで送って、全部読み込む */
+  async function loadWholeFeed(p, { max = 6 } = {}) {
+    for (let i = 0; i < max; i += 1) {
+      if ((await p.locator("[data-feed-end]").count()) > 0) break;
+      await p.evaluate(() => window.scrollTo(0, document.body.scrollHeight));
+      await p.waitForTimeout(1200);
+    }
+    await p.evaluate(() => window.scrollTo(0, 0));
+    await p.waitForTimeout(200);
+  }
+
+  /** DB の行が n 件になるまで待つ（サーバーの返事を待たずに数えない） */
+  async function waitForRows(sql, params, want, label) {
+    for (let i = 0; i < 40; i += 1) {
+      const { rows } = await db.query(sql, params);
+      if (rows[0].n === want) return;
+      await new Promise((r) => setTimeout(r, 250));
+    }
+    const { rows } = await db.query(sql, params);
+    throw new Error(`${label}: ${rows[0].n} 件（${want} 件のはず）`);
+  }
+
+  /** そのカードを、いま押している状態にして ms ミリ秒保つ（マウス） */
+  async function pressCard(p, workId, ms) {
+    const card = p.locator(`[data-work-card][data-work-id="${workId}"]`);
+    await card.scrollIntoViewIfNeeded();
+    const box = await card.boundingBox();
+    assert(box !== null, `カード ${workId} の位置が取れない`);
+    const cx = box.x + box.width / 2;
+    const cy = box.y + Math.min(box.height / 2, 120);
+    await p.mouse.move(cx, cy);
+    await p.mouse.down();
+    await p.waitForTimeout(ms);
+    return { cx, cy, box };
+  }
+
+  /** DB のいいね件数（画面ではなく行そのものを見る） */
+  async function likeRows(workId) {
+    const { rows } = await db.query(
+      `select count(*)::int as n from public.likes where work_id = $1`,
+      [workId],
+    );
+    return rows[0].n;
+  }
+
+  await test("M", "一覧が段違いの列で並ぶ（列が2本以上・カードが重ならない）", async (t) => {
+    const { ctx, p } = await newGuest();
+    try {
+      t.stage("一覧を開く");
+      await openFeed(p);
+
+      const columns = Number(
+        await p.locator("[data-feed-grid]").getAttribute("data-feed-columns"),
+      );
+      assert(columns >= 3, `幅1280 で ${columns} 列（3本以上のはず）`);
+
+      const cards = await measureCards(p);
+      assert(cards.length >= 6, `カードが ${cards.length} 枚しか出ていない`);
+
+      // 同じ列（x が同じ）の中で、カードが上下に重なっていないこと
+      const byColumn = new Map();
+      for (const c of cards) {
+        const key = c.x;
+        if (!byColumn.has(key)) byColumn.set(key, []);
+        byColumn.get(key).push(c);
+      }
+      assert(byColumn.size === columns, `列の数が ${byColumn.size}（${columns} のはず）`);
+      for (const [x, list] of byColumn) {
+        list.sort((a, b) => a.y - b.y);
+        for (let i = 1; i < list.length; i += 1) {
+          assert(
+            list[i].y >= list[i - 1].y + list[i - 1].h - 1,
+            `列 x=${x} でカードが重なっている`,
+          );
+        }
+      }
+
+      // 1段目の上端だけはそろう（どの列も同じ高さから始まる）
+      const tops = [...byColumn.values()].map((l) => l[0].y);
+      assert(new Set(tops).size === 1, "1段目の上端がそろっていない");
+
+      // 段と段のあいだが、決めた隙間ちょうどであること。
+      // **表のように行をそろえていない**ことは、下の別の検査で見る
+      for (const [x, list] of byColumn) {
+        for (let i = 1; i < list.length; i += 1) {
+          const space = list[i].y - (list[i - 1].y + list[i - 1].h);
+          assert(
+            Math.abs(space - 16) <= 1,
+            `列 x=${x} の段の間が ${space}px（16px のはず）`,
+          );
+        }
+      }
+    } finally {
+      await ctx.close();
+    }
+  });
+
+  await test("M", "縦横比の違う絵が、段違いに積まれる（表になっていない）", async (t) => {
+    const { ctx, p } = await newGuest();
+    try {
+      t.stage("一覧を全部読み込む");
+      await openFeed(p);
+      await loadWholeFeed(p);
+
+      const cards = await measureCards(p);
+      assert(cards.length >= 10, `カードが ${cards.length} 枚しか出ていない`);
+
+      // 高さが何通りあるか。**1通りしかなければ、それは表**
+      const heights = new Set(cards.map((c) => c.h));
+      assert(heights.size >= 3, `カードの高さが ${heights.size} 通りしかない`);
+
+      // 列の下端がそろっていないこと（そろっていたら行で区切っている）
+      const byColumn = new Map();
+      for (const c of cards) {
+        if (!byColumn.has(c.x)) byColumn.set(c.x, []);
+        byColumn.get(c.x).push(c);
+      }
+      const bottoms = [...byColumn.values()].map((l) =>
+        Math.max(...l.map((c) => c.y + c.h)),
+      );
+      assert(
+        new Set(bottoms).size > 1,
+        `列の下端が全部そろっている（段違いになっていない）: ${bottoms.join(",")}`,
+      );
+    } finally {
+      await ctx.close();
+    }
+  });
+
+  await test("M", "元の縦横比のまま出る（極端なものだけ上限で止まる）", async () => {
+    const { ctx, p } = await newGuest();
+    try {
+      await openFeed(p);
+      const cards = await measureCards(p);
+      const { rows } = await db.query(
+        `select id, image_width, image_height from public.works where is_published`,
+      );
+      const size = new Map(rows.map((r) => [r.id, r]));
+
+      let checkedNormal = 0;
+      let checkedClipped = 0;
+      for (const c of cards) {
+        const src = size.get(c.id);
+        if (!src) continue;
+        const want = src.image_height / src.image_width;
+        const got = c.h / c.w;
+
+        // 上限2.5・下限0.25 は Pinterest の実測値
+        // （docs/RESEARCH/2026-09-18_pinterest-masonry.md）
+        if (want > 2.5 || want < 0.25) {
+          const limit = want > 2.5 ? 2.5 : 0.25;
+          assert(
+            Math.abs(got - limit) < 0.05,
+            `極端な絵の表示比が ${got.toFixed(2)}（${limit} で止まるはず）`,
+          );
+          assert(c.clipped, "切った印が立っていない");
+          checkedClipped += 1;
+        } else {
+          assert(
+            Math.abs(got - want) < 0.03,
+            `縦横比が変わっている（元 ${want.toFixed(3)} / 画面 ${got.toFixed(3)}）`,
+          );
+          assert(!c.clipped, "切っていないのに印が立っている");
+          checkedNormal += 1;
+        }
+      }
+      assert(checkedNormal >= 5, `ふつうの絵を ${checkedNormal} 枚しか確かめていない`);
+      assert(checkedClipped >= 2, `極端な絵を ${checkedClipped} 枚しか確かめていない`);
+    } finally {
+      await ctx.close();
+    }
+  });
+
+  await test("M", "通常の状態のカードに、文字が1つも出ない", async () => {
+    const { ctx, p } = await newGuest();
+    try {
+      await openFeed(p);
+      const cards = await measureCards(p);
+      for (const c of cards) {
+        // 触れていないあいだ、情報子タブは濃さ0で見えていない
+        assert(
+          c.tabDim === 0 || c.tabVisibility === "hidden",
+          `触れていないのに情報子タブの濃さが ${c.tabDim}`,
+        );
+        // タブを除いた文字。**画像が届かなかったときの代わりの文言だけは許す**
+        // （検証用のデータには画像を置いていない作品が混ざるため）
+        const rest = c.shown.replace("画像を読み込めませんでした", "").trim();
+        assert(rest === "", `カードに文字が出ている: 「${rest.slice(0, 60)}」`);
+      }
+
+      // 題名が HTML のどこにも「見える形で」出ていないこと。
+      // 読み上げのための代替文には入っているが、目には入らない
+      const { rows } = await db.query(
+        `select title from public.works where is_published limit 20`,
+      );
+      const body = (await p.innerText("body")).replace(/\s+/g, " ");
+      for (const r of rows) {
+        assert(!body.includes(r.title), `一覧に題名が出ている: ${r.title}`);
+      }
+    } finally {
+      await ctx.close();
+    }
+  });
+
+  await test("M", "触れたときだけ情報子タブが出る（作者・完成度・保存・…）", async (t) => {
+    const { ctx, p } = await newGuest();
+    try {
+      await openFeed(p);
+      const card = p.locator("[data-work-card]").first();
+      const tab = card.locator("[data-card-tab]");
+      const dim = () => tab.evaluate((el) => Number(getComputedStyle(el).opacity));
+
+      t.stage("触れる前は見えない");
+      // **isVisible では見分けられない。**濃さ0でもそこに在る作りなので
+      // （キーボードで移れるようにするため）、濃さそのものを見る
+      assert((await dim()) === 0, `触れていないのに情報子タブの濃さが ${await dim()}`);
+
+      t.stage("触れると出る");
+      await card.hover();
+      await p.waitForFunction(
+        () => {
+          const t2 = document.querySelector("[data-work-card] [data-card-tab]");
+          return t2 && Number(getComputedStyle(t2).opacity) > 0.9;
+        },
+        { timeout: 5000 },
+      );
+      const text = (await tab.innerText()).replace(/\s+/g, " ");
+      assert(/保存/.test(text), `保存が無い: ${text}`);
+      assert(/…/.test(text), `「…」が無い: ${text}`);
+      assert(
+        /落書き|線画|仕上げ/.test(text),
+        `完成度の札が無い: ${text}`,
+      );
+      assert((await card.locator("[data-card-author]").count()) === 1, "作者が出ていない");
+
+      t.stage("黒い帯で絵を覆っていないこと");
+      const cover = await card.evaluate((el) => {
+        const c = el.getBoundingClientRect();
+        const t2 = el.querySelector("[data-card-tab]");
+        // 情報子タブの中で、実際に地を持つ部品だけを数える
+        const parts = [...t2.querySelectorAll("*")].filter((n) => {
+          const bg = getComputedStyle(n).backgroundColor;
+          return bg && bg !== "rgba(0, 0, 0, 0)" && bg !== "transparent";
+        });
+        let area = 0;
+        for (const n of parts) {
+          const r = n.getBoundingClientRect();
+          area += r.width * r.height;
+        }
+        return area / (c.width * c.height);
+      });
+      assert(cover < 0.5, `情報子タブが絵の ${Math.round(cover * 100)}% を覆っている`);
+    } finally {
+      await ctx.close();
+    }
+  });
+
+  await test("M", "キーボードで移っても情報子タブが出る", async (t) => {
+    const { ctx, p } = await newGuest();
+    try {
+      await openFeed(p);
+      const card = p.locator("[data-work-card]").first();
+      const save = card.locator("[data-card-save]");
+      await save.focus();
+      await p.waitForFunction(
+        () => {
+          const t2 = document.querySelector("[data-work-card] [data-card-tab]");
+          return t2 && Number(getComputedStyle(t2).opacity) > 0.9;
+        },
+        { timeout: 5000 },
+      );
+
+      t.stage("いま焦点があるのが、その保存のボタンであること");
+      const focused = await p.evaluate(
+        () => document.activeElement?.getAttribute("data-card-save") !== null,
+      );
+      assert(focused, "保存のボタンに焦点が移っていない");
+
+      t.stage("焦点が目に見えること");
+      // **輪郭が読めるだけでは足りない。**見えていなければ、
+      // キーボードで動く人はいまどこに居るのか分からない。
+      // 輪郭か影のどちらかが、太さを持って出ていることを見る
+      const ring = await save.evaluate((el) => {
+        const cs = getComputedStyle(el);
+        return {
+          style: cs.outlineStyle,
+          width: parseFloat(cs.outlineWidth) || 0,
+          shadow: cs.boxShadow,
+        };
+      });
+      assert(
+        (ring.style !== "none" && ring.width > 0) ||
+          (ring.shadow && ring.shadow !== "none"),
+        `焦点の印が出ていない（${JSON.stringify(ring)}）`,
+      );
+    } finally {
+      await ctx.close();
+    }
+  });
+
+  await test("M", "作者を押すと、その人のページへ移る", async () => {
+    const { ctx, p } = await newGuest();
+    try {
+      await openFeed(p);
+      const card = p.locator("[data-work-card]").first();
+      await card.hover();
+      const author = card.locator("[data-card-author]");
+      await author.waitFor({ state: "visible", timeout: 5000 });
+      await author.click();
+      await p.waitForURL(/\/u\//, { timeout: 20000 });
+      assert(/\/u\//.test(p.url()), `作者のページへ行かない（${p.url()}）`);
+    } finally {
+      await ctx.close();
+    }
+  });
+
+  await test("M", "情報子タブから保存できる（DB にも残る）", async (t) => {
+    const ctx = await browser.newContext({ viewport: { width: 1280, height: 900 } });
+    const p = await ctx.newPage();
+    try {
+      t.stage("登録した人としてサインインする");
+      await signInAs(p, base, seeded.memberEmail);
+      await openFeed(p);
+
+      const card = p.locator("[data-work-card]").first();
+      const workId = await card.getAttribute("data-work-id");
+      await card.hover();
+      const save = card.locator("[data-card-save]");
+      await save.waitFor({ state: "visible", timeout: 5000 });
+      await save.click();
+
+      await p.waitForSelector(
+        `[data-work-card][data-work-id="${workId}"][data-saved="1"]`,
+        { timeout: 15000 },
+      );
+
+      // 画面はサーバーの返事を待たずに先に入りへ変わる。
+      // **行が入るまで待ってから数える。**待たずに数えると、
+      // 通っているのに0件で落ちる
+      await waitForRows(
+        `select count(*)::int as n from public.saves where work_id = $1`,
+        [workId],
+        1,
+        "保存の行",
+      );
+    } finally {
+      await ctx.close();
+    }
+  });
+
+  await test("M", "「…」に 共有・興味なし・通報 の3つが入っている", async () => {
+    const { ctx, p } = await newGuest();
+    try {
+      await openFeed(p);
+      const card = p.locator("[data-work-card]").first();
+      await card.hover();
+      await card.locator("[data-card-menu]").click();
+      const list = card.locator("[data-card-menu-list]");
+      await list.waitFor({ state: "visible", timeout: 5000 });
+      for (const key of ["share", "uninterest", "report"]) {
+        assert(
+          (await list.locator(`[data-card-menu-item="${key}"]`).count()) === 1,
+          `「…」に ${key} が無い`,
+        );
+      }
+    } finally {
+      await ctx.close();
+    }
+  });
+
+  await test("M", "「興味なし」を押すと、その人の一覧から消える（読み直しても出ない）", async (t) => {
+    const { ctx, p } = await newGuest();
+    try {
+      await openFeed(p);
+      const card = p.locator("[data-work-card]").first();
+      const workId = await card.getAttribute("data-work-id");
+
+      await card.hover();
+      await card.locator("[data-card-menu]").click();
+      await card
+        .locator("[data-card-menu-list]")
+        .waitFor({ state: "visible", timeout: 10000 });
+      await card.locator('[data-card-menu-item="uninterest"]').click();
+
+      await p.waitForSelector(`[data-work-card][data-work-id="${workId}"]`, {
+        state: "detached",
+        timeout: 15000,
+      });
+
+      t.stage("読み直しても出ない");
+      await openFeed(p);
+      assert(
+        (await p.locator(`[data-work-card][data-work-id="${workId}"]`).count()) === 0,
+        "読み直すと戻ってきている",
+      );
+
+      t.stage("作品そのものは公開のまま（別の人には出る）");
+      const other = await browser.newContext({ viewport: { width: 1280, height: 900 } });
+      const op = await other.newPage();
+      await openFeed(op);
+      assert(
+        (await op.locator(`[data-work-card][data-work-id="${workId}"]`).count()) === 1,
+        "他の人の一覧からも消えている",
+      );
+      await other.close();
+    } finally {
+      await ctx.close();
+    }
+  });
+
+  await test("M", "「…」の通報から、通報の画面へ移る", async () => {
+    const { ctx, p } = await newGuest();
+    try {
+      await openFeed(p);
+      const card = p.locator("[data-work-card]").first();
+      const workId = await card.getAttribute("data-work-id");
+      await card.hover();
+      await card.locator("[data-card-menu]").click();
+      await card
+        .locator("[data-card-menu-list]")
+        .waitFor({ state: "visible", timeout: 10000 });
+      await card.locator('[data-card-menu-item="report"]').click();
+      await p.waitForURL(new RegExp(`/works/${workId}/report`), { timeout: 20000 });
+      await assertBody(p, /この作品を報告する/, "通報の画面が出ていない");
+    } finally {
+      await ctx.close();
+    }
+  });
+
+  await test("M", "未回答の作品を押すと、説明を挟まずクイズが出る", async () => {
+    const { ctx, p } = await newGuest();
+    try {
+      await openFeed(p);
+      const card = p.locator('[data-work-card][data-answered="0"]').first();
+      const workId = await card.getAttribute("data-work-id");
+      await card.locator("[data-card-link]").click();
+      await p.waitForURL(new RegExp(`/works/${workId}`), { timeout: 20000 });
+      assert(/[?&]q=1/.test(p.url()), `クイズの印が URL に無い（${p.url()}）`);
+
+      await p.waitForSelector("[data-answer-flow]", { timeout: 20000 });
+
+      // **クイズが、作品の情報より先に出ていること。**
+      // 途中に「まず説明を読む画面」を挟まない（指示 8）
+      const order = await p.evaluate(() => {
+        const flow = document.querySelector("[data-answer-flow]");
+        const meta = [...document.querySelectorAll("dt")].find((d) =>
+          (d.innerText ?? "").includes("投稿日"),
+        );
+        if (!flow || !meta) return null;
+        return {
+          flow: flow.getBoundingClientRect().top + window.scrollY,
+          meta: meta.getBoundingClientRect().top + window.scrollY,
+        };
+      });
+      assert(order !== null, "クイズか作品の情報が見つからない");
+      assert(
+        order.flow < order.meta,
+        `作品の情報がクイズより上にある（クイズ ${Math.round(order.flow)} / 情報 ${Math.round(order.meta)}）`,
+      );
+    } finally {
+      await ctx.close();
+    }
+  });
+
+  await test("M", "回答済みの作品を押すと、クイズではなく結果が出る", async (t) => {
+    const { ctx, p } = await newGuest();
+    try {
+      const target = seeded.divisionWorks.original[5];
+      t.stage("先に1件答えておく");
+      await answerThroughUi(p, target);
+
+      t.stage("一覧に戻る");
+      await openFeed(p);
+      const card = p.locator(`[data-work-card][data-work-id="${target}"]`);
+      assert(
+        (await card.getAttribute("data-answered")) === "1",
+        "答えたのに回答済みの印が立っていない",
+      );
+
+      await card.locator("[data-card-link]").click();
+      await p.waitForURL(new RegExp(`/works/${target}`), { timeout: 20000 });
+      assert(!/[?&]q=1/.test(p.url()), `回答済みなのにクイズの印が付いた（${p.url()}）`);
+      await settledBody(p);
+      assert(
+        (await p.locator("[data-answer-flow]").count()) === 0,
+        "回答済みなのにクイズが出ている",
+      );
+    } finally {
+      await ctx.close();
+    }
+  });
+
+  await test("M", "カードを 0.5 秒長押しすると、いいねが付く（DB にも残る）", async (t) => {
+    const ctx = await browser.newContext({ viewport: { width: 1280, height: 900 } });
+    const p = await ctx.newPage();
+    try {
+      await signInAs(p, base, seeded.memberEmail);
+      await openFeed(p);
+
+      const workId = seeded.aspectWorks.tall;
+      const card = p.locator(`[data-work-card][data-work-id="${workId}"]`);
+      assert((await card.count()) === 1, "対象のカードが一覧に出ていない");
+
+      t.stage("0.5秒より長く押す");
+      await pressCard(p, workId, 750);
+      await p.mouse.up();
+
+      await p.waitForSelector(
+        `[data-work-card][data-work-id="${workId}"][data-liked="1"]`,
+        { timeout: 15000 },
+      );
+      await waitForRows(
+        `select count(*)::int as n from public.likes where work_id = $1`,
+        [workId],
+        1,
+        "いいねの行",
+      );
+
+      t.stage("長押しでは画面が移らない");
+      assert(new URL(p.url()).pathname === "/works", `画面が移った（${p.url()}）`);
+
+      t.stage("ピンクの枠と粒が出る");
+      assert(
+        (await card.locator("[data-like-ring]").count()) === 1,
+        "いいね済みの枠が出ていない",
+      );
+      assert(
+        (await card.locator(".dpq-like-motes").count()) === 1,
+        "いいね済みの粒が出ていない",
+      );
+    } finally {
+      await ctx.close();
+    }
+  });
+
+  await test("M", "長押しの間、カードの中央からピンクが外へ広がる", async (t) => {
+    // **サインインしない。**広がりは押している時間そのものの表示で、
+    // いいねが通るかどうかとは別の仕掛け。ここでは成立させる前に離すので、
+    // 登録済みかどうかは1つも関係しない
+    const { ctx, p } = await newGuest();
+    try {
+      await openFeed(p);
+
+      // **いいねが成立する前に離す。**成立させると、その作品のいいねが
+      // 残って、あとの試験（短く押す・別カードへ移る）の前提を壊す。
+      // 成立させないので、どのカードを使ってもよい
+      const card = p.locator("[data-work-card]").first();
+      const workId = await card.getAttribute("data-work-id");
+
+      /** いま広がっている色の、実際の大きさと濃さ */
+      const wash = () =>
+        card.evaluate((el) => {
+          const w = el.querySelector("[data-like-wash]");
+          if (!w) return null;
+          const r = w.getBoundingClientRect();
+          const cs = getComputedStyle(w);
+          return {
+            pressing: el.getAttribute("data-pressing"),
+            w: Math.round(r.width),
+            h: Math.round(r.height),
+            opacity: Number(cs.opacity),
+            color: cs.backgroundColor,
+          };
+        });
+
+      t.stage("押す前は出ていない");
+      const before = await wash();
+      assert(before !== null, "広がりの部品が無い");
+      assert(before.w === 0 && before.opacity === 0, `押す前に出ている: ${JSON.stringify(before)}`);
+
+      t.stage("押しはじめてすぐ");
+      await pressCard(p, workId, 150);
+      const early = await wash();
+      assert(early.pressing === "1", "押している印が立っていない");
+      assert(early.w > 0, "押しても広がりが出ない");
+      assert(
+        early.opacity > 0 && early.opacity < 1,
+        `濃さが ${early.opacity}（塗りつぶしにしない。指示 14）`,
+      );
+      // パステルピンク。**濃い赤や黒にしない**
+      assert(
+        /^rgba?\(2\d\d, 1[5-9]\d, 1[5-9]\d/.test(early.color),
+        `色が ${early.color}（パステルピンクのはず）`,
+      );
+
+      t.stage("押し続けると広がる");
+      await p.waitForTimeout(180);
+      const later = await wash();
+      assert(
+        later.w > early.w * 1.3,
+        `広がっていない（${early.w}px → ${later.w}px）`,
+      );
+
+      t.stage("満ちる直前にはカード全体へ届いている");
+      await p.waitForTimeout(140);
+      const full = await wash();
+      const box = await card.boundingBox();
+      assert(
+        full.w >= box.width && full.h >= box.height,
+        `カード全体に届いていない（${full.w}x${full.h} / カード ${Math.round(box.width)}x${Math.round(box.height)}）`,
+      );
+
+      t.stage("カードから外れると、その場で消える");
+      // **指を離すのではなく、カードの外へ動かす。**
+      // 押して離すのは「開く」操作なので、離すと画面が移ってしまい、
+      // 消えたかどうかを見る相手が居なくなる（実測: 作品ページへ移った）。
+      // 外れたときに消えることは、失効の見た目そのものでもある
+      await p.mouse.move(5, 5);
+      await p.waitForTimeout(250);
+      const after = await wash();
+      assert(after.w === 0 && after.opacity === 0, `外れても残っている: ${JSON.stringify(after)}`);
+      assert(after.pressing === "0", "押している印が残っている");
+
+      await p.mouse.up();
+      assert(
+        (await likeRows(workId)) === 0,
+        "0.5秒に届く前に外れたのに、いいねが付いた",
+      );
+    } finally {
+      await ctx.close();
+    }
+  });
+
+  await test("M", "もう一度長押しするといいねが外れる（DB も合う）", async () => {
+    const ctx = await browser.newContext({ viewport: { width: 1280, height: 900 } });
+    const p = await ctx.newPage();
+    try {
+      await signInAs(p, base, seeded.memberEmail);
+      await openFeed(p);
+      const workId = seeded.aspectWorks.tall;
+
+      await pressCard(p, workId, 750);
+      await p.mouse.up();
+      await p.waitForSelector(
+        `[data-work-card][data-work-id="${workId}"][data-liked="0"]`,
+        { timeout: 15000 },
+      );
+      await waitForRows(
+        `select count(*)::int as n from public.likes where work_id = $1`,
+        [workId],
+        0,
+        "いいねの行",
+      );
+
+      const card = p.locator(`[data-work-card][data-work-id="${workId}"]`);
+      assert((await card.locator("[data-like-ring]").count()) === 0, "枠が残っている");
+    } finally {
+      await ctx.close();
+    }
+  });
+
+  await test("M", "短く押しただけではいいねが付かず、クイズへ移る", async () => {
+    const ctx = await browser.newContext({ viewport: { width: 1280, height: 900 } });
+    const p = await ctx.newPage();
+    try {
+      await signInAs(p, base, seeded.memberEmail);
+      await openFeed(p);
+
+      const workId = seeded.aspectWorks.wide;
+      await pressCard(p, workId, 120);
+      await p.mouse.up();
+
+      await p.waitForURL(new RegExp(`/works/${workId}`), { timeout: 20000 });
+      assert(await likeRows(workId) === 0, "短く押しただけでいいねが付いた");
+    } finally {
+      await ctx.close();
+    }
+  });
+
+  await test("M", "長押しの途中で別のカードへ移ると、いいねは付かない", async (t) => {
+    const ctx = await browser.newContext({ viewport: { width: 1280, height: 900 } });
+    const p = await ctx.newPage();
+    try {
+      await signInAs(p, base, seeded.memberEmail);
+      await openFeed(p);
+
+      const workId = seeded.aspectWorks.white;
+      await pressCard(p, workId, 150);
+
+      t.stage("別のカードの上へ動かす");
+      const other = p.locator(`[data-work-card][data-work-id="${seeded.aspectWorks.wide}"]`);
+      const box = await other.boundingBox();
+      await p.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
+      await p.waitForTimeout(700);
+      await p.mouse.up();
+
+      assert(await likeRows(workId) === 0, "外れたのにいいねが付いた");
+      assert(
+        await likeRows(seeded.aspectWorks.wide) === 0,
+        "移った先のカードにいいねが付いた",
+      );
+    } finally {
+      await ctx.close();
+    }
+  });
+
+  await test("M", "長押ししている間もページはスクロールできる（止めていない）", async (t) => {
+    const ctx = await browser.newContext({ viewport: { width: 1280, height: 900 } });
+    const p = await ctx.newPage();
+    try {
+      await signInAs(p, base, seeded.memberEmail);
+      await openFeed(p);
+
+      const workId = seeded.aspectWorks.tall;
+
+      t.stage("カードが指の動きを奪っていないこと");
+      const touchAction = await p
+        .locator(`[data-work-card][data-work-id="${workId}"]`)
+        .evaluate((el) => {
+          const own = getComputedStyle(el).touchAction;
+          const frame = getComputedStyle(el.querySelector(".dpq-card-frame")).touchAction;
+          return { own, frame };
+        });
+      assert(
+        touchAction.own === "auto" && touchAction.frame === "auto",
+        `カードが touch-action を止めている（${JSON.stringify(touchAction)}）`,
+      );
+
+      t.stage("押したままスクロールする");
+      await pressCard(p, workId, 100);
+      const before = await p.evaluate(() => window.scrollY);
+      await p.mouse.wheel(0, 600);
+      await p.waitForTimeout(250);
+      const after = await p.evaluate(() => window.scrollY);
+      await p.mouse.up();
+      assert(after > before, `押している間にスクロールできない（${before} → ${after}）`);
+
+      t.stage("押している座標からカードが逃げたら失効する");
+      assert(await likeRows(workId) === 0, "カードが逃げたのにいいねが付いた");
+    } finally {
+      await ctx.close();
+    }
+  });
+
+  await test("M", "下まで来ると続きが読み込まれる（すでに出ているカードは動かない）", async (t) => {
+    const { ctx, p } = await newGuest();
+    try {
+      await openFeed(p);
+      const before = await measureCards(p);
+
+      t.stage("いちばん下まで送る");
+      await p.evaluate(() => window.scrollTo(0, document.body.scrollHeight));
+      await p.waitForTimeout(1500);
+
+      const after = await measureCards(p);
+      assert(after.length >= before.length, "読み足しでカードが減っている");
+
+      // すでに出ていたカードの位置が変わっていないこと（指示 3・17）
+      const pos = new Map(after.map((c) => [c.id, c]));
+      for (const b of before) {
+        const a = pos.get(b.id);
+        assert(a, `読み足しでカード ${b.id} が消えた`);
+        assert(
+          Math.abs(a.x - b.x) <= 1 && Math.abs(a.y - b.y) <= 1,
+          `読み足しでカードが動いた（${b.x},${b.y} → ${a.x},${a.y}）`,
+        );
+      }
+    } finally {
+      await ctx.close();
+    }
+  });
+
+  await test("M", "長く送っても重くならない（画面外の組み立てをブラウザに省かせている）", async (t) => {
+    const { ctx, p } = await newGuest();
+    try {
+      t.stage("一覧を全部読み込む");
+      await openFeed(p);
+      await loadWholeFeed(p);
+
+      const n = await p.locator("[data-work-card]").count();
+      assert(n >= 15, `カードが ${n} 枚しか出ていない`);
+
+      t.stage("画面の外のカードは、中身を組み立てていないこと");
+      // content-visibility: auto を当ててある。**場所は取り続ける**ので
+      // スクロールの棒は動かないが、画面の外にある間は中身を組まない。
+      // 効いているかどうかは「その入れ物の中に出ている部品の数」で見る
+      const skipped = await p.evaluate(() => {
+        const wraps = [...document.querySelectorAll("[data-feed-grid] > div > div")];
+        let off = 0;
+        let offWithBox = 0;
+        for (const w of wraps) {
+          const r = w.getBoundingClientRect();
+          const outside = r.bottom < -1200 || r.top > window.innerHeight + 1200;
+          if (!outside) continue;
+          off += 1;
+          // 場所は取り続けている（高さが0になっていない）
+          if (r.height > 0) offWithBox += 1;
+        }
+        return { off, offWithBox, contentVisibility: wraps[0] ? getComputedStyle(wraps[0]).contentVisibility : null };
+      });
+      assert(
+        skipped.contentVisibility === "auto",
+        `画面外を省く設定になっていない（${skipped.contentVisibility}）`,
+      );
+      assert(
+        skipped.off === skipped.offWithBox,
+        `画面外のカードが場所を手放している（${skipped.offWithBox}/${skipped.off}）`,
+      );
+
+      t.stage("下まで送って戻しても、並びが変わらない");
+      const before = await measureCards(p);
+      await p.evaluate(() => window.scrollTo(0, document.body.scrollHeight));
+      await p.waitForTimeout(600);
+      await p.evaluate(() => window.scrollTo(0, 0));
+      await p.waitForTimeout(600);
+      const after = await measureCards(p);
+      const pos = new Map(after.map((c) => [c.id, c]));
+      for (const b of before) {
+        const a = pos.get(b.id);
+        assert(a, `送って戻したらカード ${b.id} が消えた`);
+        assert(
+          Math.abs(a.x - b.x) <= 1 && Math.abs(a.y - b.y) <= 1,
+          `送って戻したらカードが動いた（${b.x},${b.y} → ${a.x},${a.y}）`,
+        );
+      }
+
+      t.stage("窓の大きさを変えても、はみ出さず列が組み直る");
+      const wide = Number(await p.locator("[data-feed-grid]").getAttribute("data-feed-columns"));
+      await p.setViewportSize({ width: 800, height: 900 });
+      await p.waitForTimeout(600);
+      const narrow = Number(await p.locator("[data-feed-grid]").getAttribute("data-feed-columns"));
+      assert(narrow < wide, `幅を狭めても列が ${wide} から変わらない`);
+      const overflow = await p.evaluate(
+        () => document.documentElement.scrollWidth - document.documentElement.clientWidth,
+      );
+      assert(overflow <= 1, `幅を変えたあと横に ${overflow}px はみ出している`);
+    } finally {
+      await ctx.close();
+    }
+  });
+
+  await test("M", "クイズへ入って戻ると、元の位置と読み込み済みが戻る", async (t) => {
+    const { ctx, p } = await newGuest();
+    try {
+      await openFeed(p);
+
+      t.stage("下へ送って、読み足しを起こす");
+      await p.evaluate(() => window.scrollTo(0, document.body.scrollHeight));
+      await p.waitForTimeout(1500);
+      const loaded = (await measureCards(p)).length;
+      const y = await p.evaluate(() => window.scrollY);
+      assert(y > 200, `スクロールできていない（${y}）`);
+
+      t.stage("見えているカードを押してクイズへ入る");
+      const target = await p.evaluate(() => {
+        const cards = [...document.querySelectorAll("[data-work-card]")];
+        const seen = cards.find((c) => {
+          const r = c.getBoundingClientRect();
+          return r.top >= 0 && r.top < window.innerHeight - 100;
+        });
+        return seen?.getAttribute("data-work-id") ?? null;
+      });
+      assert(target !== null, "画面の中にカードが無い");
+      await p.locator(`[data-work-card][data-work-id="${target}"] [data-card-link]`).click();
+      await p.waitForURL(new RegExp(`/works/${target}`), { timeout: 20000 });
+
+      t.stage("答えずに戻る");
+      await p.goBack();
+      await p.waitForSelector('[data-feed-grid][data-feed-measured="1"]', { timeout: 20000 });
+      await p.waitForFunction(
+        (n) => document.querySelectorAll("[data-work-card]").length >= n,
+        loaded,
+        { timeout: 20000 },
+      );
+
+      const back = await p.evaluate(() => window.scrollY);
+      assert(
+        Math.abs(back - y) < 200,
+        `戻ったときの位置が ${back}（元は ${y}）。先頭へ跳んでいる`,
+      );
+      assert(
+        (await measureCards(p)).length >= loaded,
+        "戻ると読み込み済みのカードが減っている",
+      );
+    } finally {
+      await ctx.close();
+    }
+  });
+
+  await test("M", "スマホ幅では、カードに常設のUIが1つも無い", async () => {
+    const ctx = await browser.newContext({
+      viewport: { width: 390, height: 844 },
+      isMobile: true,
+      hasTouch: true,
+    });
+    const p = await ctx.newPage();
+    try {
+      await openFeed(p);
+
+      const columns = Number(
+        await p.locator("[data-feed-grid]").getAttribute("data-feed-columns"),
+      );
+      assert(columns === 2, `スマホ幅で ${columns} 列（2列のはず）`);
+
+      const cards = await measureCards(p);
+      for (const c of cards) {
+        // 触る端末では、情報子タブは本当に消えている（移動先にもならない）
+        assert(
+          c.tabVisibility === "hidden",
+          `スマホで情報子タブが ${c.tabVisibility} になっている`,
+        );
+        const rest = c.text.replace("画像を読み込めませんでした", "").trim();
+        assert(rest === "", `スマホのカードに文字が出ている: 「${rest}」`);
+      }
+
+      // 保存・「…」・作者が、どれも見えないこと（触れる端末では出さない）
+      for (const sel of ["[data-card-save]", "[data-card-menu]", "[data-card-author]"]) {
+        const visible = await p.$$eval(sel, (list) =>
+          list.filter((n) => {
+            const r = n.getBoundingClientRect();
+            return r.width > 0 && r.height > 0 && getComputedStyle(n).visibility !== "hidden";
+          }).length,
+        );
+        assert(visible === 0, `スマホで ${sel} が ${visible} 個見えている`);
+      }
+
+      const overflow = await p.evaluate(
+        () => document.documentElement.scrollWidth - document.documentElement.clientWidth,
+      );
+      assert(overflow <= 1, `一覧が横に ${overflow}px はみ出している`);
+    } finally {
+      await ctx.close();
+    }
+  });
+
+  await test("M", "スマホでタップするとクイズへ、長押しするといいねが付く", async (t) => {
+    const ctx = await browser.newContext({
+      viewport: { width: 390, height: 844 },
+      isMobile: true,
+      hasTouch: true,
+    });
+    const p = await ctx.newPage();
+    try {
+      await signInAs(p, base, seeded.memberEmail);
+      await openFeed(p);
+
+      const workId = seeded.aspectWorks.extremeTall;
+      const card = p.locator(`[data-work-card][data-work-id="${workId}"]`);
+      await card.scrollIntoViewIfNeeded();
+      const box = await card.boundingBox();
+      const x = box.x + box.width / 2;
+      const y = box.y + Math.min(box.height / 2, 100);
+
+      t.stage("指で 0.5 秒より長く押す");
+      const cdp = await ctx.newCDPSession(p);
+      await cdp.send("Input.dispatchTouchEvent", {
+        type: "touchStart",
+        touchPoints: [{ x, y }],
+      });
+      // 指が少し動いても失効しないこと（数pxで切らない。指示 13）
+      await p.waitForTimeout(200);
+      await cdp.send("Input.dispatchTouchEvent", {
+        type: "touchMove",
+        touchPoints: [{ x: x + 3, y: y + 4 }],
+      });
+      await p.waitForTimeout(600);
+      await cdp.send("Input.dispatchTouchEvent", { type: "touchEnd", touchPoints: [] });
+
+      await p.waitForSelector(
+        `[data-work-card][data-work-id="${workId}"][data-liked="1"]`,
+        { timeout: 15000 },
+      );
+      await waitForRows(
+        `select count(*)::int as n from public.likes where work_id = $1`,
+        [workId],
+        1,
+        "スマホの長押しでのいいねの行",
+      );
+      assert(new URL(p.url()).pathname === "/works", `長押しで画面が移った（${p.url()}）`);
+
+      t.stage("軽く叩くとクイズへ移る");
+      const other = seeded.aspectWorks.extremeWide;
+      const ocard = p.locator(`[data-work-card][data-work-id="${other}"]`);
+      await ocard.scrollIntoViewIfNeeded();
+      await ocard.locator("[data-card-link]").tap();
+      await p.waitForURL(new RegExp(`/works/${other}`), { timeout: 20000 });
+      assert(await likeRows(other) === 0, "叩いただけでいいねが付いた");
+    } finally {
+      await ctx.close();
+    }
+  });
+
+  await test("M", "作品が1件も無いときは、見本を10枚並べる（1つも押せない）", async (t) => {
+    const { ctx, p } = await newGuest();
+    try {
+      t.stage("公開作品をいったん全部伏せる");
+      await db.query(`update public.works set is_published = false where is_published`);
+      try {
+        await p.goto(`${base}/works`);
+        await p.waitForSelector("[data-sample-card]", { timeout: 20000 });
+
+        const samples = await p.locator("[data-sample-card]").count();
+        assert(samples === 10, `見本が ${samples} 枚（10枚のはず）`);
+        assert(
+          (await p.locator("[data-work-card]").count()) === 0,
+          "見本と実作品が混ざっている",
+        );
+
+        t.stage("上に一度だけ説明が出る");
+        assert(
+          (await p.locator("[data-feed-sample-notice]").count()) === 1,
+          "説明が1つではない",
+        );
+        await assertBody(p, /まだ作品がありません/, "説明の文が出ていない");
+
+        t.stage("見本は押せない（リンクもボタンも長押しも無い）");
+        const interactive = await p.$$eval("[data-sample-card]", (list) =>
+          list.map((n) => ({
+            links: n.querySelectorAll("a,button,[role=button]").length,
+            cursor: getComputedStyle(n).cursor,
+            tabbables: n.querySelectorAll("[tabindex]").length,
+          })),
+        );
+        for (const s of interactive) {
+          assert(s.links === 0, "見本の中に押せるものがある");
+          assert(s.cursor !== "pointer", "見本が押せるように見えている");
+          assert(s.tabbables === 0, "見本がキーボードの移動先になっている");
+        }
+
+        t.stage("見本を長押ししても何も起きない");
+        const box = await p.locator("[data-sample-card]").first().boundingBox();
+        await p.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
+        await p.mouse.down();
+        await p.waitForTimeout(800);
+        await p.mouse.up();
+        await p.waitForTimeout(300);
+        assert(
+          new URL(p.url()).pathname === "/works",
+          `見本を押したら画面が移った（${p.url()}）`,
+        );
+        const { rows } = await db.query(`select count(*)::int as n from public.likes`);
+        assert(rows[0].n >= 0, "");
+
+        t.stage("縦長・正方形・横長が混ざっている（偏らせてある）");
+        const shapes = await p.$$eval("[data-sample-card]", (list) =>
+          list.map((n) => {
+            const r = n.getBoundingClientRect();
+            return r.height / r.width;
+          }),
+        );
+        assert(shapes.filter((r) => r > 1.05).length >= 5, "縦長が少ない");
+        assert(shapes.filter((r) => Math.abs(r - 1) <= 0.05).length >= 2, "正方形が無い");
+        assert(shapes.filter((r) => r < 0.95).length >= 1, "横長が無い");
+      } finally {
+        t.stage("伏せた作品を元に戻す");
+        await db.query(
+          `update public.works set is_published = true
+            where not is_published and deleted_at is null`,
+        );
+      }
+
+      t.stage("作品が1件でもあれば、見本は1枚も出ない");
+      await openFeed(p);
+      assert(
+        (await p.locator("[data-sample-card]").count()) === 0,
+        "作品があるのに見本が出ている",
+      );
+      assert(
+        (await p.locator("[data-feed-sample-notice]").count()) === 0,
+        "作品があるのに「まだ作品がありません」が出ている",
+      );
+    } finally {
+      await ctx.close();
+    }
+  });
+
+  await test("M", "画像が読めないときは、場所を取ったまま代わりの表示になる", async (t) => {
+    const { ctx, p } = await newGuest();
+    try {
+      t.stage("画像だけを落とす");
+      await p.route("**/_next/image**", (route) => route.abort());
+      await p.goto(`${base}/works`);
+      await p.waitForSelector('[data-feed-grid][data-feed-measured="1"]', { timeout: 20000 });
+      await assertBody(p, /画像を読み込めませんでした/, "代わりの表示が出ていない");
+
+      // 場所取りが消えていないこと。**消えると一覧が崩れる**
+      const cards = await measureCards(p);
+      const { rows } = await db.query(
+        `select id, image_width, image_height from public.works where is_published`,
+      );
+      const size = new Map(rows.map((r) => [r.id, r]));
+      let checked = 0;
+      for (const c of cards) {
+        const src = size.get(c.id);
+        if (!src) continue;
+        const want = Math.min(2.5, Math.max(0.25, src.image_height / src.image_width));
+        assert(
+          Math.abs(c.h / c.w - want) < 0.05,
+          `画像が無いと場所取りが崩れる（${(c.h / c.w).toFixed(2)} / ${want.toFixed(2)}）`,
+        );
+        checked += 1;
+      }
+      assert(checked >= 5, `${checked} 枚しか確かめていない`);
     } finally {
       await ctx.close();
     }
@@ -4566,12 +5765,10 @@ async function main() {
     const { workId, reportId } = await seedReportedWork("管理E2E：下げる");
 
     t.stage("下げる前に、公開の一覧に出ていることを確かめる");
+    // 一覧は題名を出さなくなった（2026-09-18。指示 5・21）。
+    // **題名で探すのをやめ、カードに付いている作品のIDで見る**
     const anon = await outsideWindow();
-    await anon.goto(`${base}/works`);
-    assert(
-      /管理E2E：下げる/.test(await settledBody(anon)),
-      "非表示にする前から一覧に出ていない",
-    );
+    assert(await feedHasWork(anon, workId), "非表示にする前から一覧に出ていない");
 
     t.stage("運営者で詳細を開く");
     const p = await adminWindow();
@@ -4608,7 +5805,7 @@ async function main() {
     t.stage("公開の一覧からも作品ページからも消えている");
     await anon.goto(`${base}/works`);
     assert(
-      !/管理E2E：下げる/.test(await settledBody(anon)),
+      !(await feedHasWork(anon, workId)),
       "非表示にしたのに一覧に残っている",
     );
     const detail = await anon.goto(`${base}/works/${workId}`);
@@ -4715,11 +5912,7 @@ async function main() {
 
     t.stage("公開の一覧にも残っている");
     const anon = await outsideWindow();
-    await anon.goto(`${base}/works`);
-    assert(
-      /管理E2E：却下/.test(await settledBody(anon)),
-      "却下したのに作品が一覧から消えた",
-    );
+    assert(await feedHasWork(anon, workId), "却下したのに作品が一覧から消えた");
   });
 
   await test("X", "一般の登録利用者は、管理の操作そのものを実行できない", async (t) => {

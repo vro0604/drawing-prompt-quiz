@@ -183,8 +183,9 @@ section("6. いいね・保存の件数が操作と一致する");
   // 作品は出るが、いいね数は載らない。数字は作品ページで取りに行く。
   const list = await visitor.get("/works");
   const listText = textOf(list.html);
+  // 題名は一覧に出ない（2026-09-18）。**作品のIDで見る**
   must(
-    new RegExp(`スモーク・反応対象${stamp}`).test(listText),
+    list.html.includes(workId),
     "作品は一覧に出ている",
   );
   must(

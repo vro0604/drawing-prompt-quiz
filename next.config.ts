@@ -46,6 +46,34 @@ const supabaseOrigin = (() => {
   }
 })();
 
+/**
+ * 配信元が、この端末の中を指しているか。
+ *
+ * 【なぜ見るのか】
+ *   Next.js 16 から、画像の最適化は**端末の中や社内網のアドレスを
+ *   既定で断る**ようになった（node_modules/next/dist/docs の
+ *   01-app/02-guides/upgrading/version-16.md）。
+ *
+ *   本番は Supabase の https のホストなので、この制限に当たらない。
+ *   当たるのは、手元で検証用のサーバー（127.0.0.1 の適当な口）へ
+ *   向けたときだけで、そのとき**作品の画像が1枚も出ない。**
+ *   実測: /_next/image が 400 で `"url" parameter is not allowed` を返し、
+ *   一覧の15枚すべてが「画像を読み込めませんでした」になった。
+ *
+ *   画像が出ないと、一覧の並びを目で確かめられない。
+ *   そこで「配信元が端末の中を指しているときだけ」許可を開ける。
+ *
+ * 【本番で開くことはない】
+ *   判定は配信元のホスト名だけを見る。本番の値では false になる。
+ *   環境変数を新しく増やしていないので、間違えて本番で立てる経路が無い。
+ */
+const supabaseIsLocal =
+  supabaseOrigin !== null &&
+  (supabaseOrigin.hostname === "127.0.0.1" ||
+    supabaseOrigin.hostname === "localhost" ||
+    supabaseOrigin.hostname === "::1" ||
+    supabaseOrigin.hostname === "0.0.0.0");
+
 const nextConfig: NextConfig = {
   images: {
     remotePatterns: supabaseOrigin
@@ -58,6 +86,9 @@ const nextConfig: NextConfig = {
           },
         ]
       : [],
+
+    // 上の説明のとおり。**本番では必ず false になる**
+    dangerouslyAllowLocalIP: supabaseIsLocal,
   },
   experimental: {
     serverActions: {

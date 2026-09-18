@@ -89,16 +89,18 @@ section("2. AI作品が通常の一覧に出ない");
 {
   const normal = await guesser.get("/works");
   must(normal.status === 200, "未サインインでも一覧が見える", `実際 ${normal.status}`);
-  must(/スモーク・クイズ対象/.test(normal.html), "通常の一覧にオリジナル作品が出る");
-  must(!/スモーク・AI作品/.test(normal.html), "通常の一覧に AI作品が出ない");
+  // **題名で探さない。**一覧は 2026-09-18 から題名を出さない
+  // （クイズの手がかりになるため。指示 5・21）。作品のIDで見る
+  must(normal.html.includes(workId), "通常の一覧にオリジナル作品が出る");
+  must(!normal.html.includes(aiWorkId), "通常の一覧に AI作品が出ない");
 
   const ai = await guesser.get("/works?tab=ai");
-  must(/スモーク・AI作品/.test(ai.html), "AIタブには AI作品が出る");
-  must(!/スモーク・クイズ対象/.test(ai.html), "AIタブに通常作品が出ない");
+  must(ai.html.includes(aiWorkId), "AIタブには AI作品が出る");
+  must(!ai.html.includes(workId), "AIタブに通常作品が出ない");
 
   const fanartTab = await guesser.get("/works?tab=fanart");
   must(
-    !/スモーク・クイズ対象/.test(fanartTab.html),
+    !fanartTab.html.includes(workId),
     "ファンアートタブにオリジナル作品が出ない",
   );
 }

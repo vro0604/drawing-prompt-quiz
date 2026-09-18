@@ -105,6 +105,32 @@ import {
   CHECKOUT_BUSY_MESSAGE,
   isStripeRequestConflict,
 } from "../../src/features/billing/conflict.ts";
+import {
+  LIKE_PRESS_MS,
+  PRESS_IDLE,
+  pressAdvance,
+  pressRelease,
+  pressStart,
+  stillPressing,
+  washFraction,
+} from "../../src/features/feed/press.ts";
+import {
+  EDGE_PX,
+  EDGE_PX_NARROW,
+  GAP_PX,
+  GAP_PX_NARROW,
+  MAX_RATIO,
+  MIN_RATIO,
+  MIN_COLUMNS,
+  TARGET_COLUMN_PX,
+  columnWidthFor,
+  columnsFor,
+  displayRatio,
+  distribute,
+  edgeFor,
+  gapFor,
+  isClipped,
+} from "../../src/features/feed/layout.ts";
 import { recordCount } from "../counts.mjs";
 
 const results = [];
@@ -1282,6 +1308,252 @@ test("課金", "DB に課金の関数がまだ無いときのエラー（PGRST20
   assert(isBillingNotInstalled(null) === false, "エラーが無いのに未導入と見なした");
 });
 
+
+
+/* ===========================================================================
+ * 一覧の長押し（いいね）と、段違いの並べかた（2026-09-18）
+ * ===========================================================================
+ *
+ * どちらも画面を立てずに確かめられる形にしてある。
+ * 時間は外から渡し、座標も幅も数値で渡す。
+ */
+
+console.log("\n一覧の長押し（いいね）");
+
+/** 押しっぱなしで t ミリ秒経ったときの状態 */
+function pressedFor(ms) {
+  return pressAdvance(pressStart(0), ms);
+}
+
+test("いいねの長押し", "0.5 秒ちょうどで成立する", () => {
+  const p = pressedFor(LIKE_PRESS_MS);
+  assert(p.phase === "done", `phase が ${p.phase}`);
+  assert(p.progress === 1, `progress が ${p.progress}`);
+});
+
+test("いいねの長押し", "0.499 秒では成立しない", () => {
+  const p = pressedFor(LIKE_PRESS_MS - 1);
+  assert(p.phase === "holding", `phase が ${p.phase}`);
+  assert(p.progress < 1, `progress が ${p.progress}`);
+});
+
+test("いいねの長押し", "成立は離すのを待たない（押したまま満ちた時点で決まる）", () => {
+  const p = pressedFor(LIKE_PRESS_MS);
+  const after = pressRelease(p, LIKE_PRESS_MS + 500);
+  assert(after.phase === "done", "離したら取り消された");
+});
+
+test("いいねの長押し", "途中で離すと 0 に戻る（残りを持ち越さない）", () => {
+  const half = pressedFor(LIKE_PRESS_MS / 2);
+  const released = pressRelease(half, LIKE_PRESS_MS / 2);
+  assert(released.phase === "idle", `phase が ${released.phase}`);
+  assert(released.progress === 0, `progress が ${released.progress}`);
+
+  // 押し直しても、前の残りから続かない。
+  // **一覧では指が何十枚もの絵の上を通る。**残ると、触れたつもりのない
+  // 絵にいいねが付く（回答の長押しとは、ここが逆）
+  const again = pressAdvance(pressStart(1000), 1000 + LIKE_PRESS_MS - 1);
+  assert(again.phase === "holding", "押し直しで前の残りが乗っている");
+});
+
+test("いいねの長押し", "何もしていない状態は時計を進めても増えない", () => {
+  const p = pressAdvance(PRESS_IDLE, 10_000);
+  assert(p.phase === "idle" && p.progress === 0, "触っていないのに進んだ");
+});
+
+test("いいねの広がり", "0 で 0、1 で 1（カード全体に届くのと成立が同時）", () => {
+  assert(washFraction(0) === 0, "0 で 0 になっていない");
+  assert(washFraction(1) === 1, "1 で 1 になっていない");
+});
+
+test("いいねの広がり", "広がりは成立の時刻を1ミリ秒も動かさない", () => {
+  // 見た目の関数を通した値と、時間そのものの割合は別物
+  const p = pressedFor(LIKE_PRESS_MS - 1);
+  assert(washFraction(p.progress) < 1, "満ちていないのに見た目が満ちている");
+  assert(pressedFor(LIKE_PRESS_MS).phase === "done", "成立の時刻が動いている");
+});
+
+console.log("\n長押しの失効（スクロールを止めないための判定）");
+
+const VIEW = { width: 400, height: 800 };
+const CARD = { top: 100, left: 20, right: 220, bottom: 400 };
+
+test("長押しの失効", "カードの中を押している間は続く", () => {
+  assert(stillPressing({ x: 120, y: 250 }, CARD, VIEW), "中を押しているのに失効した");
+});
+
+test("長押しの失効", "少し動いただけでは失効しない（数pxで切らない）", () => {
+  assert(stillPressing({ x: 123, y: 254 }, CARD, VIEW), "わずかな移動で失効した");
+});
+
+test("長押しの失効", "スクロールで押下座標からカードが外れたら失効する", () => {
+  // 指は動いていない。カードのほうが上へ逃げた
+  const moved = { top: -400, left: 20, right: 220, bottom: -100 };
+  assert(!stillPressing({ x: 120, y: 250 }, moved, VIEW), "外れたのに続いている");
+});
+
+test("長押しの失効", "カードが画面の外へ出たら失効する", () => {
+  // 座標はカードの中にあるが、カードごと画面の上へ出ている
+  const off = { top: -900, left: 20, right: 220, bottom: -600 };
+  assert(!stillPressing({ x: 120, y: -700 }, off, VIEW), "画面外なのに続いている");
+});
+
+test("長押しの失効", "別のカードの上へ移ったら失効する", () => {
+  // 隣の列へ指が移った＝元のカードの範囲から出た
+  assert(!stillPressing({ x: 300, y: 250 }, CARD, VIEW), "別のカードの上でも続いている");
+});
+
+console.log("\n一覧の並べかた（段違いの列）");
+
+/**
+ * Pinterest を実測した列数（2026-09-18。
+ * docs/RESEARCH/2026-09-18_pinterest-masonry.md）。
+ * 左が画面の幅、右がそのとき Pinterest が出した列の数。
+ */
+const PINTEREST_COLUMNS = [
+  [375, 2],
+  [390, 2],
+  [700, 2],
+  [740, 3],
+  [768, 3],
+  [940, 3],
+  [980, 4],
+  [1024, 4],
+  [1200, 4],
+  [1240, 5],
+  [1280, 5],
+  [1440, 5],
+  [1480, 6],
+  [1660, 6],
+  [1700, 7],
+  [1880, 7],
+  [1920, 8],
+];
+
+test("列の数", "Pinterest の実測値と、17通りの幅すべてで一致する", () => {
+  for (const [width, want] of PINTEREST_COLUMNS) {
+    const got = columnsFor(width);
+    assert(got === want, `幅 ${width} が ${got} 列（Pinterest の実測は ${want} 列）`);
+  }
+});
+
+test("列の数", "手のひらの端末（幅375）でも2列", () => {
+  assert(columnsFor(375) >= MIN_COLUMNS, "スマホで1列になっている");
+  assert(columnsFor(375) === 2, `スマホで ${columnsFor(375)} 列`);
+});
+
+test("列の数", "画面が広いほど増える（減ることがない）", () => {
+  let prev = 0;
+  for (let w = 320; w <= 2600; w += 1) {
+    const cols = columnsFor(w);
+    assert(cols >= prev, `幅 ${w} で列が ${prev} から ${cols} へ減った`);
+    prev = cols;
+  }
+});
+
+test("列の幅", "どの幅でも、1列の幅が目標の前後に収まる", () => {
+  for (let w = 320; w <= 2600; w += 7) {
+    const gap = gapFor(w);
+    const edge = edgeFor(w);
+    const cols = columnsFor(w);
+    const cw = columnWidthFor(w, cols, gap, edge);
+    // 上限は目標の2倍。ここを超えると、絵が1枚だけ巨大になる
+    assert(cw <= TARGET_COLUMN_PX * 2, `幅 ${w} で1列が ${Math.round(cw)}px`);
+    // 下限は120px。これ以下だと絵が判別できない
+    assert(cw >= 120, `幅 ${w} で1列が ${Math.round(cw)}px`);
+  }
+});
+
+test("列の幅", "Pinterest の実測値と一致する（幅1440で5列・1列267.2px）", () => {
+  const cw = columnWidthFor(1440, columnsFor(1440), GAP_PX, EDGE_PX);
+  // Pinterest の実測は 267.19px
+  assert(Math.abs(cw - 267.2) < 0.5, `1列が ${cw.toFixed(2)}px（267.2px のはず）`);
+});
+
+test("列の幅", "列と隙間と端の余白を足すと、ちょうど画面の幅になる", () => {
+  for (const w of [375, 768, 1280, 1440, 1920]) {
+    const gap = gapFor(w);
+    const edge = edgeFor(w);
+    const cols = columnsFor(w);
+    const cw = columnWidthFor(w, cols, gap, edge);
+    const total = cw * cols + gap * (cols - 1) + edge * 2;
+    assert(Math.abs(total - w) < 0.001, `幅 ${w} の合計が ${total}`);
+  }
+});
+
+test("隙間と端の余白", "Pinterest の実測値と同じ（広い画面16/20・狭い画面9/8）", () => {
+  assert(gapFor(1280) === GAP_PX && GAP_PX === 16, "広い画面の隙間が16pxでない");
+  assert(edgeFor(1280) === EDGE_PX && EDGE_PX === 20, "広い画面の端の余白が20pxでない");
+  assert(gapFor(390) === GAP_PX_NARROW && GAP_PX_NARROW === 9, "狭い画面の隙間が9pxでない");
+  assert(edgeFor(390) === EDGE_PX_NARROW && EDGE_PX_NARROW === 8, "狭い画面の端の余白が8pxでない");
+});
+
+test("縦横比", "ふつうの縦長・横長・正方形は1枚も切らない", () => {
+  assert(displayRatio(800, 1200) === 1.5, "縦長が切られた");
+  assert(displayRatio(1600, 900) === 0.5625, "横長が切られた");
+  assert(displayRatio(1000, 1000) === 1, "正方形が切られた");
+  assert(!isClipped(800, 1200) && !isClipped(1600, 900) && !isClipped(1000, 1000),
+    "ふつうの絵が切られた印になっている");
+});
+
+test("縦横比", "極端に縦長なものは上限で止める（Pinterest の実測 2.5）", () => {
+  assert(MAX_RATIO === 2.5, `上限が ${MAX_RATIO}（Pinterest の実測は 2.5）`);
+  assert(displayRatio(600, 3000) === MAX_RATIO, "上限で止まっていない");
+  assert(isClipped(600, 3000), "切られた印が立っていない");
+  // ちょうど上限の絵は切らない（Pinterest も 236x590 をそのまま出している）
+  assert(!isClipped(236, 590), "ちょうど上限の絵まで切っている");
+});
+
+test("縦横比", "極端に横長なものは下限で止める", () => {
+  assert(MIN_RATIO === 0.25, `下限が ${MIN_RATIO}`);
+  assert(displayRatio(4000, 600) === MIN_RATIO, "下限で止まっていない");
+  assert(isClipped(4000, 600), "切られた印が立っていない");
+  // Pinterest が実際に出している中でいちばん横長な比（0.254）は切らない
+  assert(!isClipped(1000, 254), "Pinterest が出している横長まで切っている");
+});
+
+test("縦横比", "大きさが読めない絵は正方形として場所を取る（0で割らない）", () => {
+  assert(displayRatio(0, 0) === 1, "0 のときに 1 になっていない");
+  assert(displayRatio(-5, 100) === 1, "負の値で壊れる");
+});
+
+test("段の組み方", "いちばん背の低い列へ積む", () => {
+  // 3列に、高さ 3・1・1・1 の順で入れる
+  const { columns } = distribute([3, 1, 1, 1], 3);
+  assert(columns[0][0] === 0, "1枚目が1列目に入っていない");
+  assert(columns[1][0] === 1 && columns[2][0] === 2, "2・3枚目が空いている列に入っていない");
+  // 4枚目は、いちばん低い列（2列目か3列目）へ入る。1列目（高さ3）ではない
+  assert(!columns[0].includes(3), "いちばん高い列へ積んでいる");
+});
+
+test("段の組み方", "あとから足しても、すでに置いたものが動かない", () => {
+  const first = distribute([1.5, 1, 0.6, 1.2, 1, 1.4], 3).columns;
+  const later = distribute([1.5, 1, 0.6, 1.2, 1, 1.4, 1, 1, 2], 3).columns;
+  for (let c = 0; c < 3; c += 1) {
+    const before = first[c];
+    const after = later[c].slice(0, before.length);
+    assert(
+      before.join(",") === after.join(","),
+      `読み足しで ${c + 1} 列目の並びが変わった（${before} → ${later[c]}）`,
+    );
+  }
+});
+
+test("段の組み方", "全部のカードがどこか1つの列に必ず1回だけ入る", () => {
+  const ratios = Array.from({ length: 37 }, (_, i) => 0.6 + ((i * 7) % 20) / 10);
+  const { columns } = distribute(ratios, 5);
+  const seen = columns.flat().sort((a, b) => a - b);
+  assert(seen.length === ratios.length, `${seen.length} 件しか入っていない`);
+  assert(seen.every((v, i) => v === i), "抜けか重複がある");
+});
+
+test("段の組み方", "列の高さが大きく偏らない（いちばん高い列と低い列の差）", () => {
+  const ratios = Array.from({ length: 60 }, (_, i) => 0.5 + ((i * 13) % 21) / 10);
+  const { heights } = distribute(ratios, 4);
+  const spread = Math.max(...heights) - Math.min(...heights);
+  // 1枚ぶんの高さ（最大2.6）より小さければ、見た目の段差は1枚以内に収まる
+  assert(spread <= MAX_RATIO, `列の高さの差が ${spread.toFixed(2)}（1枚ぶん以内のはず）`);
+});
 
 const passed = results.filter((r) => r.ok).length;
 const failed = results.filter((r) => !r.ok);

@@ -329,6 +329,7 @@ function PublicView({
   result,
   resultOpen,
   after,
+  quizFirst,
 }: {
   work: WorkDetail;
   quiz: WorkQuiz | null;
@@ -337,26 +338,28 @@ function PublicView({
   result: MyWorkResult | null;
   resultOpen: boolean;
   after: AfterAnswerData;
+  /**
+   * 一覧のカードから直接来たか（URL に ?q=1 が付いている）。
+   *
+   * 【何が変わるか】
+   *   絵・作品の情報・いいね／保存の3つを、**クイズより後ろへ回す。**
+   *   出るものは1つも減らないし、増えもしない。順番だけが入れ替わる。
+   *
+   * 【なぜ要るか】
+   *   一覧で絵を押した人は、その絵に答えるつもりで押している。
+   *   上から順に「題名・大きな絵・部門・制作時間・投稿日・いいね」と並ぶと、
+   *   答える場所へ着くまでに画面を2つぶん送ることになる。
+   *   **押した操作と、始まる操作のあいだに別の画面が挟まる。**
+   *
+   *   回答済みの人と作者には効かない。あちらは絵を見に来ているので、
+   *   絵が先に出るほうが正しい。
+   */
+  quizFirst: boolean;
 }) {
-  return (
+  // 絵・作品の情報・いいね／保存。**中身は quizFirst で変わらない。**
+  // 変わるのは、この塊をクイズの前に置くか後ろに置くかだけ
+  const details = (
     <>
-      <header className="space-y-2">
-        <h1 className="text-2xl font-bold break-words">{work.title}</h1>
-        <p className="text-sm text-faint">
-          {/* handle がある人だけ公開プロフィールを持つ（001 の SELECT ポリシー） */}
-          {/* 1つの式にまとめているのは、隣り合う値の境目に React が
-              <!-- --> を挟み、「@handle」が繋がった文字列でなくなるため */}
-          {work.author.handle ? (
-            <Link href={`/u/${work.author.handle}`} className="underline">
-              {`${work.author.display_name}（@${work.author.handle}）`}
-            </Link>
-          ) : (
-            work.author.display_name
-          )}
-          {work.is_author ? "・あなたの作品" : ""}
-        </p>
-      </header>
-
       <WorkImage
         imagePath={work.image_path}
         width={work.image_width}
@@ -376,6 +379,32 @@ function PublicView({
       />
 
       <Reactions work={work} canReact={canReact} />
+    </>
+  );
+
+  // 順番を入れ替えるのは「まだ答えていない、作者でもない人」だけ
+  const askFirst = quizFirst && quiz !== null && !quiz.is_author && myAnswer === null;
+
+  return (
+    <>
+      <header className="space-y-2">
+        <h1 className="text-2xl font-bold break-words">{work.title}</h1>
+        <p className="text-sm text-faint">
+          {/* handle がある人だけ公開プロフィールを持つ（001 の SELECT ポリシー） */}
+          {/* 1つの式にまとめているのは、隣り合う値の境目に React が
+              <!-- --> を挟み、「@handle」が繋がった文字列でなくなるため */}
+          {work.author.handle ? (
+            <Link href={`/u/${work.author.handle}`} className="underline">
+              {`${work.author.display_name}（@${work.author.handle}）`}
+            </Link>
+          ) : (
+            work.author.display_name
+          )}
+          {work.is_author ? "・あなたの作品" : ""}
+        </p>
+      </header>
+
+      {askFirst ? null : details}
 
       {/* クイズ。出す形は3通りしかない。
             作者      → 回答できない案内（D28）
@@ -437,6 +466,8 @@ function PublicView({
           </noscript>
         </>
       )}
+
+      {askFirst ? details : null}
 
       {/* 回答したあと。お題と作者の言葉を**一緒に**開示する（D162 の 4） */}
       {myAnswer && after.revealed ? (
@@ -717,6 +748,8 @@ export default async function WorkPage({
     f?: string | string[];
     /** 分析から外す相手を選ぶ一覧を開いているか */
     manage?: string;
+    /** 一覧のカードから直接来たか。1 ならクイズを先に出す（2026-09-18） */
+    q?: string;
   }>;
 }) {
   // 未同意の登録者をここで止める（P5）。**判定は DB の consent_status()。**
@@ -733,6 +766,7 @@ export default async function WorkPage({
     pattern: rawPattern,
     f: rawFilters,
     manage: rawManage,
+    q: rawQuizFirst,
   } = await searchParams;
 
   // まず公開の経路で引く。ここで取れたものは誰が見ても同じ。
@@ -904,6 +938,7 @@ export default async function WorkPage({
           result={result}
           resultOpen={resultOpen}
           after={after}
+          quizFirst={rawQuizFirst === "1"}
         />
       ) : myWork ? (
         <OwnerOnlyView work={myWork} importState={importState} />

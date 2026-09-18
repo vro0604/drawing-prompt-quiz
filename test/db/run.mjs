@@ -7679,6 +7679,261 @@ async function main() {
 
   } // ← T. 課金 の入れ物ここまで
 
+  /* ---------------------------------------------------------------------
+   * U. 作品一覧（段違いの列。2026-09-18）
+   * ---------------------------------------------------------------------
+   *
+   * 新しい一覧は get_feed_works を通る。旧 get_public_works は残してある
+   * （本番はDBを先に更新するので、旧い画面が動く時間帯がある）。
+   *
+   * ここで見るのは4つ。
+   *   1. 足した4列が、見ている本人の状態だけを返すこと
+   *   2. 「興味なし」が押した本人の一覧からだけ消えること
+   *   3. お題・正解・他人の回答が1つも増えていないこと
+   *   4. 旧い入口を壊していないこと
+   */
+  {
+    const feedAuthor = await makeMember(db, "feed-author");
+    const feedViewer = await makeMember(db, "feed-viewer");
+    const feedOther = await makeMember(db, "feed-other");
+
+    const feedPrompts = [];
+    const feedWorks = [];
+    for (let i = 0; i < 3; i += 1) {
+      const p = await drawPrompt(db, feedAuthor);
+      feedPrompts.push(p.prompt_id);
+      feedWorks.push(await postWork(db, feedAuthor, p.prompt_id, `一覧の検査 ${i + 1}`));
+    }
+
+    /** その人から見た一覧の行（既定の条件） */
+    async function feed(who, extra = {}) {
+      return asRole(db, who, async (c) => {
+        const r = await c.query(
+          `select * from public.get_feed_works($1, $2, $3, $4, $5, $6)`,
+          [
+            extra.division ?? null,
+            extra.sort ?? "new",
+            extra.limit ?? 50,
+            extra.offset ?? 0,
+            extra.completeness ?? null,
+            extra.unansweredOnly ?? false,
+          ],
+        );
+        return r.rows;
+      });
+    }
+
+    await test("U", "一覧が、見ている本人の状態を4つ返す", async () => {
+      const rows = await feed(asMember(feedViewer));
+      const row = rows.find((r) => r.id === feedWorks[0]);
+      assert(row, "作った作品が一覧に出ていない");
+      for (const key of [
+        "author_avatar_path",
+        "answered_by_me",
+        "liked_by_me",
+        "saved_by_me",
+      ]) {
+        assert(key in row, `列 ${key} が返っていない`);
+      }
+      assert(row.answered_by_me === false, "答えていないのに回答済みになっている");
+      assert(row.liked_by_me === false, "押していないのにいいね済みになっている");
+      assert(row.saved_by_me === false, "押していないのに保存済みになっている");
+    });
+
+    await test("U", "回答済みの印は、答えた本人にだけ立つ", async () => {
+      await answerWork(db, feedViewer, feedWorks[0]);
+
+      const mine = (await feed(asMember(feedViewer))).find((r) => r.id === feedWorks[0]);
+      assert(mine.answered_by_me === true, "答えたのに回答済みになっていない");
+
+      const others = (await feed(asMember(feedOther))).find((r) => r.id === feedWorks[0]);
+      assert(others.answered_by_me === false, "他人の回答が自分の印になっている");
+    });
+
+    await test("U", "いいね・保存の印も、押した本人にだけ立つ", async () => {
+      await value(db, asMember(feedViewer), `select public.toggle_like($1)`, [feedWorks[1]]);
+      await value(db, asMember(feedViewer), `select public.toggle_save($1)`, [feedWorks[1]]);
+
+      const mine = (await feed(asMember(feedViewer))).find((r) => r.id === feedWorks[1]);
+      assert(mine.liked_by_me === true, "いいねを押したのに印が立たない");
+      assert(mine.saved_by_me === true, "保存を押したのに印が立たない");
+
+      const others = (await feed(asMember(feedOther))).find((r) => r.id === feedWorks[1]);
+      assert(others.liked_by_me === false, "他人のいいねが自分の印になっている");
+      assert(others.saved_by_me === false, "他人の保存が自分の印になっている");
+    });
+
+    await test("U", "未サインインでも一覧は出る（3つの印はすべて false）", async () => {
+      const rows = await feed(ANON);
+      assert(rows.length > 0, "未サインインで一覧が0件になった");
+      for (const r of rows) {
+        assert(
+          r.answered_by_me === false && r.liked_by_me === false && r.saved_by_me === false,
+          "誰か分からないのに印が立っている",
+        );
+      }
+    });
+
+    await test("U", "一覧に、お題・正解・他人の回答が1つも入っていない", async () => {
+      const rows = await feed(asMember(feedViewer));
+      const keys = Object.keys(rows[0]);
+      for (const banned of [
+        "prompt_id",
+        "tag_id",
+        "tag_label",
+        "correct",
+        "is_correct",
+        "accuracy",
+        "slot_stats",
+        "flavor",
+        "answers",
+      ]) {
+        assert(!keys.includes(banned), `一覧が ${banned} を返している`);
+      }
+    });
+
+    await test("U", "「興味なし」を押すと、押した本人の一覧からだけ消える", async () => {
+      const target = feedWorks[2];
+
+      const before = await feed(asMember(feedViewer));
+      assert(before.some((r) => r.id === target), "消す前から一覧に出ていない");
+
+      const r = await value(db, asMember(feedViewer),
+        `select public.set_work_uninterest($1, true)`, [target]);
+      assert(r.applied === true, "興味なしが記録されなかった");
+
+      const after = await feed(asMember(feedViewer));
+      assert(!after.some((x) => x.id === target), "興味なしにしたのに一覧に残っている");
+
+      // 他の人の一覧には残る。作品そのものは公開のまま
+      const others = await feed(asMember(feedOther));
+      assert(others.some((x) => x.id === target), "他人の一覧からも消えている");
+
+      const detail = await value(db, asMember(feedViewer),
+        `select public.get_work_detail($1)`, [target]);
+      assert(detail !== null, "興味なしにすると作品ページまで開けなくなっている");
+    });
+
+    await test("U", "「興味なし」を外すと一覧に戻る", async () => {
+      const target = feedWorks[2];
+      await value(db, asMember(feedViewer), `select public.set_work_uninterest($1, false)`,
+        [target]);
+      const back = await feed(asMember(feedViewer));
+      assert(back.some((x) => x.id === target), "外したのに一覧へ戻らない");
+    });
+
+    await test("U", "同じ作品を二度「興味なし」にしても落ちない（行は1つ）", async () => {
+      const target = feedWorks[2];
+      await value(db, asMember(feedViewer), `select public.set_work_uninterest($1, true)`, [target]);
+      await value(db, asMember(feedViewer), `select public.set_work_uninterest($1, true)`, [target]);
+      // 遮断表は誰も直接読めない。**持ち主の立場に戻って**数える
+      // （アプリがこの経路を持っているわけではない。answerWork が
+      //   quiz_choices を覗くのと同じ扱い）
+      const n = (
+        await db.query(
+          `select count(*)::int as n from public.work_uninterests
+            where work_id = $1 and user_id = $2`,
+          [target, feedViewer],
+        )
+      ).rows[0].n;
+      assert(n === 1, `行が ${n} 件ある（1件のはず）`);
+      await value(db, asMember(feedViewer), `select public.set_work_uninterest($1, false)`, [target]);
+    });
+
+    await test("U", "ゲストも「興味なし」を使える", async () => {
+      const g = await makeGuest(db);
+      const r = await value(db, asGuest(g), `select public.set_work_uninterest($1, true)`,
+        [feedWorks[0]]);
+      assert(r.applied === true, "ゲストが興味なしを使えない");
+      const rows = await feed(asGuest(g));
+      assert(!rows.some((x) => x.id === feedWorks[0]), "ゲストの一覧から消えていない");
+    });
+
+    await test("U", "公開していない作品には「興味なし」を付けられない（在るか無いかも分からせない）", async () => {
+      const p = await drawPrompt(db, feedAuthor);
+      const hidden = await value(db, asMember(feedAuthor), `select gen_random_uuid()`);
+      // 存在しないIDと、下書きの作品。**どちらも同じ返事になる**
+      const a = await value(db, asMember(feedViewer),
+        `select public.set_work_uninterest($1, true)`, [hidden]);
+      assert(a.applied === false, "存在しないIDで記録されてしまった");
+
+      await asRole(db, asMember(feedAuthor), async (c) => {
+        await c.query(
+          `select public.create_work($1, $2, '下書き', $3, 800, 600, 'original',
+                                     null, null, null, null, false)`,
+          [hidden, p.prompt_id, `${feedAuthor}/${hidden}.png`],
+        );
+      });
+      const b = await value(db, asMember(feedViewer),
+        `select public.set_work_uninterest($1, true)`, [hidden]);
+      assert(b.applied === false, "下書きに興味なしを付けられてしまった");
+    });
+
+    await test("U", "未サインインは「興味なし」を呼べない", async () => {
+      await expectFailure(
+        () => value(db, ANON, `select public.set_work_uninterest($1, true)`, [feedWorks[0]]),
+        "permission denied",
+      );
+    });
+
+    await test("U", "公開作品の総数は、絞り込みにも興味なしにも左右されない", async () => {
+      const real = (
+        await db.query(
+          `select count(*)::int as n from public.works
+            where is_published and review_status = 'ok' and deleted_at is null`,
+        )
+      ).rows[0].n;
+      for (const who of [ANON, asMember(feedViewer), asMember(feedOther)]) {
+        const n = await value(db, who, `select public.count_public_works()`);
+        assert(n === real, `数えた値が ${n}（実データは ${real}）`);
+      }
+    });
+
+    await test("U", "AI は既定の一覧に出ない（分けているのは SQL 側）", async () => {
+      const p = await drawPrompt(db, feedAuthor);
+      const aiWork = await postWork(db, feedAuthor, p.prompt_id, "AIの検査", { division: "ai" });
+
+      const normal = await feed(asMember(feedOther));
+      assert(!normal.some((r) => r.id === aiWork), "既定の一覧に AI が混ざっている");
+
+      const aiTab = await feed(asMember(feedOther), { division: "ai" });
+      assert(aiTab.some((r) => r.id === aiWork), "AI のタブに AI が出ない");
+    });
+
+    await test("U", "一度に返す上限は 100 件（それ以上を頼んでも増えない）", async () => {
+      const rows = await feed(ANON, { limit: 500 });
+      assert(rows.length <= 100, `${rows.length} 件返った（100件までのはず）`);
+    });
+
+    await test("U", "旧い一覧の入口を壊していない（5引数版・6引数版とも動く）", async () => {
+      const five = await asRole(db, ANON, async (c) => {
+        const r = await c.query(`select * from public.get_public_works(null, 'new', 10, 0, null)`);
+        return r.rows;
+      });
+      const six = await asRole(db, ANON, async (c) => {
+        const r = await c.query(
+          `select * from public.get_public_works(null, 'new', 10, 0, null, false)`,
+        );
+        return r.rows;
+      });
+      assert(five.length > 0 && six.length > 0, "旧い入口が0件になった");
+      assert(
+        Object.keys(five[0]).length === 21,
+        `旧い入口が返す列が ${Object.keys(five[0]).length} 個（21のはず）`,
+      );
+      // 旧い入口は「興味なし」を見ない。**旧い画面の見え方を変えないため**
+      const target = feedWorks[0];
+      await value(db, asMember(feedViewer), `select public.set_work_uninterest($1, true)`, [target]);
+      const old = await asRole(db, asMember(feedViewer), async (c) => {
+        const r = await c.query(`select * from public.get_public_works(null, 'new', 50, 0, null)`);
+        return r.rows;
+      });
+      assert(old.some((r) => r.id === target), "旧い入口の見え方まで変わっている");
+      await value(db, asMember(feedViewer), `select public.set_work_uninterest($1, false)`, [target]);
+    });
+  }
+
+
 
 
   // =========================================================================

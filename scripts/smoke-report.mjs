@@ -466,8 +466,10 @@ section("8. 削除する（この検査が作った1件だけ）");
 
   // 一覧・ランキングから消える
   const list = await visitor.get("/works");
+  // 題名は一覧に出ない（2026-09-18）。**題名で探すと必ず「消えた」になる**ので、
+  // 作品のIDで見る
   must(
-    !new RegExp(`削除される作品${stamp}`).test(list.html),
+    !list.html.includes(doomedId),
     "作品一覧から消えた",
   );
 

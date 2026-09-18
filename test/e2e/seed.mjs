@@ -9,6 +9,7 @@
  */
 
 import { asRole } from "../db/harness.mjs";
+import { colorFor, solidPng } from "./png.mjs";
 
 function member(uid) {
   return { role: "authenticated", uid, isAnonymous: false };
@@ -60,19 +61,36 @@ async function drawPrompt(db, uid, timeLimit = 3600, mode = "normal") {
  * 部門を指定できる。ファンアートは原作名が要る（create_work の検査）ので、
  * 指定が無ければこちらで埋める。AI生成は原作名を持てないので渡さない。
  */
-async function postWork(db, uid, promptId, title, { division = "original" } = {}) {
+async function postWork(
+  db,
+  uid,
+  promptId,
+  title,
+  { division = "original", width = 800, height = 600, objects = null, color = null } = {},
+) {
   const workId = (await db.query(`select gen_random_uuid() as id`)).rows[0].id;
   const sourceTitle = division === "fanart" ? "検証用の原作" : null;
+  const path = `${uid}/${workId}.png`;
   await asRole(db, member(uid), async (c) => {
-    await c.query(`select public.create_work($1, $2, $3, $4, 800, 600, $5, $6)`, [
+    await c.query(`select public.create_work($1, $2, $3, $4, $5, $6, $7, $8)`, [
       workId,
       promptId,
       title,
-      `${uid}/${workId}.png`,
+      path,
+      width,
+      height,
       division,
       sourceTitle,
     ]);
   });
+
+  // 保管庫のもどきへ、その大きさの絵を実際に置く。
+  // **DB に書いた大きさと、置く絵の大きさを必ず同じにする。**
+  // ずれていると、場所取りの縦横比と届いた絵の縦横比が食い違い、
+  // 検証が「アプリの不具合」と「下ごしらえの不具合」を区別できなくなる
+  if (objects) {
+    objects.set(`works/${path}`, solidPng(width, height, color ?? colorFor(workId)));
+  }
   return workId;
 }
 
@@ -81,7 +99,10 @@ async function postWork(db, uid, promptId, title, { division = "original" } = {}
  *
  * 返すもの: 公開作品6件、作者、フレーバー付きの作品1件。
  */
-export async function seedForE2E(db, { memberEmail = "e2e-member@example.test" } = {}) {
+export async function seedForE2E(
+  db,
+  { memberEmail = "e2e-member@example.test", objects = null } = {},
+) {
   // フレーバーの検証に、回答する人がもう2人要る（開く人・開かない人）
   const hintReaderEmail = "e2e-hint-reader@example.test";
   const plainAnswererEmail = "e2e-plain@example.test";
@@ -95,14 +116,33 @@ export async function seedForE2E(db, { memberEmail = "e2e-member@example.test" }
   const works = [];
   for (let i = 0; i < 6; i += 1) {
     const p = await drawPrompt(db, author, 3600);
-    const w = await postWork(db, author, p.prompt_id, `検証用の作品 ${i + 1}`);
+    // 縦横比をばらけさせる。**全部同じ形だと、段違いに組めているかが
+    // 見た目でも当たり判定でも確かめられない**（Masonry の検証）
+    const shapes = [
+      [800, 1200],
+      [900, 900],
+      [1200, 800],
+      [760, 1400],
+      [1000, 1000],
+      [1000, 1500],
+    ];
+    const [iw, ih] = shapes[i];
+    const w = await postWork(db, author, p.prompt_id, `検証用の作品 ${i + 1}`, {
+      width: iw,
+      height: ih,
+      objects,
+    });
     works.push({ workId: w, promptId: p.prompt_id });
   }
 
   // 高難度のお題を1件。**語数が5〜6語になるので、出題も5〜6問になる**（D165）。
   // 問数が増えてもスマホで操作できることを、この作品で見る。
   const hardPrompt = await drawPrompt(db, author, 3600, "hard");
-  const hardWork = await postWork(db, author, hardPrompt.prompt_id, "検証用の高難度作品");
+  const hardWork = await postWork(db, author, hardPrompt.prompt_id, "検証用の高難度作品", {
+    width: 900,
+    height: 1200,
+    objects,
+  });
 
   // 1件だけ、作者のフレーバーテキストを付ける（ヒントの分離集計を見るため）
   const flavorWork = works[0].workId;
@@ -136,6 +176,9 @@ export async function seedForE2E(db, { memberEmail = "e2e-member@example.test" }
       divisionWorks[division].push(
         await postWork(db, author, p.prompt_id, `検証用の${division}作品 ${i + 1}`, {
           division,
+          width: [900, 1100, 1000][i],
+          height: [1300, 900, 1000][i],
+          objects,
         }),
       );
     }
@@ -147,6 +190,34 @@ export async function seedForE2E(db, { memberEmail = "e2e-member@example.test" }
   await asRole(db, member(author), async (c) => {
     await c.query(`select public.update_work_completeness($1, 'sketch')`, [sketchWork]);
   });
+
+  /* --- 縦横比の検証用（指示 4・18）-----------------------------------------
+   *
+   * 一覧は元の縦横比を保つが、**極端なものだけは表示の上限で止める。**
+   * 止まっているかどうかは、この5件で確かめる。
+   *
+   *   tall / wide          ふつうの縦長・横長。**切らない**
+   *   extremeTall          高さが幅の5倍。上限（2.5倍）で止まる
+   *   extremeWide          幅が高さの5倍。下限（0.25倍）で止まる
+   *   white                真っ白。地に溶けないよう縁が要る（指示 18）
+   */
+  const aspectWorks = {};
+  const aspectSpecs = [
+    ["tall", 800, 1200, null],
+    ["wide", 1600, 900, null],
+    ["extremeTall", 600, 3000, null],
+    ["extremeWide", 3000, 600, null],
+    ["white", 1000, 1000, [255, 255, 255]],
+  ];
+  for (const [key, w, h, color] of aspectSpecs) {
+    const p = await drawPrompt(db, author, 3600);
+    aspectWorks[key] = await postWork(db, author, p.prompt_id, `縦横比の検証 ${key}`, {
+      width: w,
+      height: h,
+      color,
+      objects,
+    });
+  }
 
   // 管理画面の検証に使う運営者。**ADMIN_USER_ID にこの id を渡す**
   // （test/e2e/server.mjs）。作品も回答も持たせない。管理画面しか触らない人。
@@ -165,6 +236,7 @@ export async function seedForE2E(db, { memberEmail = "e2e-member@example.test" }
     viewer,
     works,
     divisionWorks,
+    aspectWorks,
     sketchWork,
     hardWork,
     hardPromptId: hardPrompt.prompt_id,

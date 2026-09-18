@@ -177,24 +177,37 @@ section("作品一覧（あってはいけないものが無いか）");
 const works = await get("/works");
 must(works.status === 200, "/works が開く", String(works.status));
 
-// **ページ全体を見ない。作品カードの中だけを見る。**
+// **一覧の文字を見ても分からなくなった（2026-09-18）。**
 //
-// 最初はページ全体の文字を見ていた。**作品が0件になった日に「ランキング」で
-// 引っかかった。**当たっていたのは見出しの「ランキングを見る」というリンクで、
-// 作品ではなかった。
+//   もとは作品カードの中の文字（題名）に、検査用の目印が無いかを見ていた。
+//   一覧が「絵そのものがカード」に変わり、**題名も作者名も文字として
+//   出なくなった。**カードの中を見ても目印は1つも見つからないので、
+//   この形のままだと「検査用の作品は無い」と必ず言うことになる。
 //
-// **あってはいけないものを探す検査は、探す範囲を先に絞る。**
-// 範囲が広いほど、関係ない文字に当たって「あることになる」。
-const cards = works.body.match(/<a[^>]+href="\/works\/[0-9a-f-]{36}"[\s\S]*?<\/a>/g) ?? [];
-const cardsText = text(cards.join("\n"));
-const found = SMOKE_MARKERS.filter((m) => cardsText.includes(m));
+//   だから見る先を変える。一覧から作品のIDだけを拾い、
+//   **その作品のページを開いて、そこに出ている題名で見る。**
+//   開く数は先頭20件まで（一覧が長くても検査が終わるようにする）。
+const workIds = [
+  ...new Set((works.body.match(/\/works\/([0-9a-f-]{36})/g) ?? []).map((m) => m.slice(7))),
+];
+const checked = workIds.slice(0, 20);
+
+const found = [];
+for (const id of checked) {
+  const page = await get(`/works/${id}`);
+  if (page.status !== 200) continue;
+  const title = text((page.body.match(/<h1[^>]*>([\s\S]*?)<\/h1>/) ?? [])[1] ?? "");
+  for (const m of SMOKE_MARKERS) {
+    if (title.includes(m) && !found.includes(m)) found.push(m);
+  }
+}
 
 must(
   found.length === 0,
   "検査用の作品が1件も出ていない",
   found.length > 0
     ? `見つかった目印: ${found.join(" / ")}`
-    : `作品カード ${cards.length} 件を見た`,
+    : `一覧から拾った ${workIds.length} 件のうち ${checked.length} 件の題名を見た`,
 );
 
 // 掃除したあとフィードが空になる問題（D124）。

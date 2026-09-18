@@ -523,8 +523,13 @@ export async function startSupabaseMock({ db = null } = {}) {
           }
           return send(res, 404, { message: "Object not found" });
         }
+        // 中身そのものを置いてあれば、それを返す。
+        // 検証用の下ごしらえ（seed.mjs）が、作品ごとに大きさと色の違う
+        // PNG を直に置いている。**置いていなければ今までどおり 1x1 の点。**
+        // アプリからの投稿は大きさしか控えていないので、そちらは点のまま
+        const stored = objects.get(key);
         res.writeHead(200, { "content-type": "image/png" });
-        return res.end(TINY_PNG);
+        return res.end(Buffer.isBuffer(stored) ? stored : TINY_PNG);
       }
 
       if (path.startsWith("/storage/v1/object/")) {

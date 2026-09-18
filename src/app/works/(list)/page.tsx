@@ -1,61 +1,65 @@
-import Image from "next/image";
 import Link from "next/link";
 import { getCurrentUser } from "@/features/auth/session";
-import { fetchPublicWorks, workImageUrl } from "@/features/work/rpc";
+import { countPublicWorks, fetchFeedWorks } from "@/features/feed/rpc";
+import { SAMPLE_CARDS, toFeedCardWorks } from "@/features/feed/present";
 import {
   COMPLETENESS_FILTERS,
   FEED_PAGE_SIZE,
   FEED_SORTS,
   FEED_TABS,
-  completenessLabel,
-  divisionLabel,
-  type PublicWorkListItem,
 } from "@/features/work/types";
 import { noticeMuted, noticeSuccess, surface, tabOff, tabOn } from "@/app/_surface";
 import { requireConsent } from "@/features/consent/rpc";
+import MasonryFeed from "./_masonry";
 
 /**
  * /works ／ 公開作品の一覧。
  *
+ * 【2026-09-18 に作りを変えた】
+ *   もとは「決まった大きさのカードの中に、絵を縮めて入れる」形だった。
+ *   カードの下にタイトル・作者・部門・完成度が並んでいた。
+ *
+ *   いまは**絵そのものがカード**で、列の高さは絵ごとに違う。
+ *   通常の状態でカードに出るものは絵だけで、文字は1つも出ない。
+ *   PC で絵に触れたときだけ、小さな情報のタブが絵の上に浮く。
+ *
+ *   タイトルを一覧に出さないのは、**それがクイズの答えの手がかりになる**ため
+ *   （指示 5・21）。作者名・部門・完成度は、答えには関わらないが、
+ *   絵を見る邪魔になるので同じくタブの中へ移した。
+ *
+ * 【ページ送りをやめた】
+ *   「次のページ」の代わりに、下まで来たら続きを読む。読んだぶんと
+ *   スクロールの位置は、クイズへ入って戻ってきたときに復帰する
+ *   （_masonry.tsx の sessionStorage）。
+ *
  * 【AI 作品を通常の一覧に混ぜない（spec 7-3 / Step 8 の終了条件）】
  *   既定のタブでは AI 部門が出ない。分けているのは
- *   **SQL 側**（get_public_works の p_division が null のとき AI を除く）で、
+ *   **SQL 側**（get_feed_works の p_division が null のとき AI を除く）で、
  *   ここで取ってから捨てているのではない。
- *
- *   捨てる形にすると、24件取って数件捨てた結果ページごとの件数がばらつき、
- *   ページ送りの位置もずれる。絞り込みは件数を数える前に済ませる必要がある。
  *
  *   AI を締め出しているのではなく、見る場所を分けている。
  *   タブで「AI生成」を選べば見られる。
  *
  * 【未サインインでも見られる】
- *   get_public_works は anon にも実行権限がある。一覧そのものは、
+ *   get_feed_works は anon にも実行権限がある。一覧そのものは、
  *   サインインしていなくても、匿名の利用者が発行されていなくても出る。
  *
- *   サインイン状態を読むのは「未回答のみ」を押せるかどうかの1点だけで、
- *   **読むだけ。**ここで匿名の利用者を作らない（下記）。
- *
- * 【ページ送りの作り】
- *   総件数を数える関数が無いので「次のページがあるか」は
- *   取れた件数で判断する。1ページぶん丸ごと取れたときだけ次を出す。
- *   最終ページがちょうど24件だと空のページへ進めてしまうが、
- *   総件数を数えるより負荷が軽く、実害も小さいのでこの形にする。
+ *   サインイン状態を読むのは2点だけで、**読むだけ。**
+ *     ・「未回答のみ」を押せるか
+ *     ・いいね／保存を押す前に案内を出し分けるか
+ *   ここで匿名の利用者を作らない（spec 11-1）。
  *
  * 【未回答のみ（D169 の11）】
  *   自分が回答を送った作品を一覧から外す絞り込み。**推薦ではない。**
- *   見る人が自分で押す道具で、システムが選ぶ「次の作品」とは別物である。
+ *   外す条件は回答を送ったかどうかだけで、開いただけの作品は消えない。
+ *   除外は SQL 側で行う（取ってから捨てると1ページの件数がばらつく）。
  *
- *   外す条件は**回答を送ったかどうかだけ。**開いただけの作品は消えない。
- *   閲覧の履歴は記録していないし、ここでも見ていない。
- *
- *   除外は SQL 側（get_public_works の p_unanswered_only）で行う。
- *   取ってから画面で捨てると、1ページの件数がばらつき、
- *   次のページに回答済みの作品が混ざる。
- *
- *   **誰なのか分からないときは押せない。**このサービスは、回答や投稿の
- *   直前になって初めて匿名の利用者を発行する（ページを開いただけでは
- *   発行しない）。まだ一度も何もしていない訪問者には、照合する回答履歴が
- *   そもそも無い。その状態では絞り込みを押せなくして、理由をその場に書く。
+ * 【作品が1件も無いとき（指示 22〜27）】
+ *   真っ白な画面にしない。見本のカードを10枚並べる。
+ *   **見本は押せない。**公開作品が1件でもあれば、見本は1枚も出ない。
+ *   「1件も無い」の判定は count_public_works で、絞り込みも興味なしも
+ *   掛けていない。絞り込みの結果として0件になっただけのときは、
+ *   見本ではなく「この条件では見つかりません」と書く。
  *
  * Next.js 16 では searchParams が Promise なので await が必要。
  */
@@ -78,7 +82,6 @@ function resolveSort(raw: string | undefined) {
 type FeedState = {
   tab: string;
   sort: string;
-  page: number;
   done: string;
   unanswered: boolean;
 };
@@ -91,51 +94,8 @@ function hrefWith(current: FeedState, patch: Partial<FeedState>) {
   if (next.done !== "") params.set("done", next.done);
   // 既定（OFF）のときは付けない。**OFF に戻すとURLからも消える**
   if (next.unanswered) params.set("unanswered", "1");
-  if (next.page > 1) params.set("page", String(next.page));
   const query = params.toString();
   return query ? `/works?${query}` : "/works";
-}
-
-function WorkCard({ work }: { work: PublicWorkListItem }) {
-  return (
-    <li>
-      <Link
-        href={`/works/${work.id}`}
-        className="group block space-y-3 rounded-2xl border border-line p-3 transition hover:border-line-hover"
-      >
-        <div className="overflow-hidden rounded-xl bg-sunken">
-          <Image
-            src={workImageUrl(work.image_path)}
-            alt={work.title}
-            width={work.image_width}
-            height={work.image_height}
-            className="h-48 w-full object-cover transition group-hover:scale-[1.02]"
-            sizes="(max-width: 640px) 100vw, (max-width: 1024px) 50vw, 33vw"
-          />
-        </div>
-
-        <div className="space-y-1 px-1 pb-1">
-          <p className="truncate text-sm font-bold">{work.title}</p>
-          <p className="truncate text-xs text-faint">
-            {work.author_display_name}
-            {work.author_handle ? `（@${work.author_handle}）` : ""}
-          </p>
-          {/*
-            カードに数字を載せない（D112）。
-
-            一覧は目に入る回数が最も多く、横並びなので**比較が自動的に起きる**。
-            数字を置くと、見るたびに順位づけが立ち上がる。
-
-            回答数もいいね数も消えたわけではなく、作品ページで取りに行けば見える。
-            **隠すのではなく、取りに行かせる。**
-          */}
-          <p className="text-xs text-faint">
-            {divisionLabel(work.division)}・{completenessLabel(work.completeness)}
-          </p>
-        </div>
-      </Link>
-    </li>
-  );
 }
 
 export default async function WorksPage({
@@ -146,12 +106,10 @@ export default async function WorksPage({
     sort?: string;
     done?: string;
     unanswered?: string;
-    page?: string;
     notice?: string;
   }>;
 }) {
   // 未同意の登録者をここで止める（P5）。**判定は DB の consent_status()。**
-  // 止めるのは、そのセッションが関門より後に始まっていて、かつ未同意のときだけ。
   await requireConsent();
 
   const {
@@ -159,220 +117,227 @@ export default async function WorksPage({
     sort: rawSort,
     done: rawDone,
     unanswered: rawUnanswered,
-    page: rawPage,
     notice,
   } = await searchParams;
 
   const tab = resolveTab(rawTab);
   const sort = resolveSort(rawSort);
 
-  // 知らない値は「すべて」に落とす。一覧が壊れるより空のほうが害が小さい、
-  // という get_public_works 側の考えかたに合わせる
+  // 知らない値は「すべて」に落とす。一覧が壊れるより空のほうが害が小さい
   const done = COMPLETENESS_FILTERS.some((f) => f.value !== null && f.value === rawDone)
     ? (rawDone as string)
     : "";
 
-  const parsedPage = Number.parseInt(rawPage ?? "1", 10);
-  const page = Number.isFinite(parsedPage) && parsedPage > 0 ? parsedPage : 1;
-
   // **回答履歴を照合できる相手が居るかどうか。**
-  // ここで匿名ユーザーを発行してはいけない（spec 11-1）。開いただけの
-  // 訪問者で利用者の行が増え、無料枠を圧迫する。読むだけにする。
+  // ここで匿名ユーザーを発行してはいけない（spec 11-1）。読むだけにする。
   const viewer = await getCurrentUser();
   const canFilterUnanswered = viewer !== null;
+  const canReact = viewer !== null && viewer.is_anonymous !== true;
 
   const wantsUnanswered = rawUnanswered === "1";
   const unanswered = wantsUnanswered && canFilterUnanswered;
 
-  const current = { tab: tab.key, sort: sort.value, page, done, unanswered: wantsUnanswered };
+  const current = { tab: tab.key, sort: sort.value, done, unanswered: wantsUnanswered };
 
-  const works = await fetchPublicWorks({
-    division: tab.value,
-    sort: sort.value,
-    completeness: done === "" ? null : done,
-    unansweredOnly: unanswered,
-    limit: FEED_PAGE_SIZE,
-    offset: (page - 1) * FEED_PAGE_SIZE,
-  });
+  const [rows, totalPublic] = await Promise.all([
+    fetchFeedWorks({
+      division: tab.value,
+      sort: sort.value,
+      completeness: done === "" ? null : done,
+      unansweredOnly: unanswered,
+      limit: FEED_PAGE_SIZE,
+      offset: 0,
+    }),
+    countPublicWorks(),
+  ]);
 
-  const hasNext = works.length === FEED_PAGE_SIZE;
+  const works = toFeedCardWorks(rows);
+
+  // 見本を出すのは「公開作品が本当に0件」のときだけ（指示 27）。
+  // 数えられなかったとき（-1）は出さない。**作品があるのに
+  // 「まだありません」と書くほうが害が大きい。**
+  const showSamples = works.length === 0 && totalPublic === 0;
 
   return (
-    <main className="mx-auto w-full max-w-5xl space-y-8 p-6 sm:p-10">
-      <header className="space-y-2">
-        <div className="flex flex-wrap items-baseline justify-between gap-x-6 gap-y-2">
-          <h1 className="text-2xl font-bold">作品一覧</h1>
-          <Link href="/rankings" className="text-sm underline">
-            ランキングを見る
-          </Link>
-        </div>
-        <p className="text-sm text-faint">
-          絵だけを見て、描き手が引いたお題を当ててみてください。回答はゲストのままでもできます。
-        </p>
-      </header>
+    // 一覧は画面の幅いっぱいに広げる。**幅に上限を置かない。**
+    // Pinterest も広い画面ほど列が増え続ける（実測: 幅2560で10列）。
+    // 上限を置くと、広い画面で右側が空いたまま列が増えなくなる
+    <main className="w-full space-y-6 py-6 sm:py-8">
+      <div className="mx-auto w-full max-w-5xl space-y-6 px-5">
+        <header className="space-y-2">
+          <div className="flex flex-wrap items-baseline justify-between gap-x-6 gap-y-2">
+            <h1 className="text-2xl font-bold">作品一覧</h1>
+            <Link href="/rankings" className="text-sm underline">
+              ランキングを見る
+            </Link>
+          </div>
+          <p className="text-sm text-faint">
+            絵だけを見て、描き手が引いたお題を当ててみてください。回答はゲストのままでもできます。
+          </p>
+          <p className="text-xs text-faint">
+            絵を押すとクイズが始まります。長押しすると「いいね」が付きます。
+          </p>
+        </header>
 
-      {notice ? (
-        <p className={noticeSuccess}>
-          {notice}
-        </p>
-      ) : null}
+        {notice ? <p className={noticeSuccess}>{notice}</p> : null}
 
-      {/* --- 部門タブ --------------------------------------------------------- */}
-      <nav className="flex flex-wrap gap-2">
-        {FEED_TABS.map((t) => (
-          <Link
-            key={t.key}
-            href={hrefWith(current, { tab: t.key, page: 1 })}
-            className={
-              t.key === tab.key
-                ? tabOn
-                : tabOff
-            }
-          >
-            {t.label}
-          </Link>
-        ))}
-      </nav>
-
-      {/* --- 並び順 ----------------------------------------------------------- */}
-      <div className="flex flex-wrap items-center gap-x-4 gap-y-2 text-xs">
-        <span className="text-faint">並び</span>
-        {FEED_SORTS.map((s) => (
-          <Link
-            key={s.value}
-            href={hrefWith(current, { sort: s.value, page: 1 })}
-            className={
-              s.value === sort.value
-                ? "font-bold underline"
-                : "text-faint underline hover:text-muted"
-            }
-          >
-            {s.label}
-          </Link>
-        ))}
-      </div>
-
-      {/* --- 完成度 ---------------------------------------------------------- */}
-      {/*
-        既定は「すべて」。**落書きを別の場所へ押し込めるための絞り込みではない。**
-        落書きにも居場所を作るための軸なので、既定で全部見える形にする（D135）。
-      */}
-      <div className="flex flex-wrap items-center gap-x-4 gap-y-2 text-xs">
-        <span className="text-faint">完成度</span>
-        {COMPLETENESS_FILTERS.map((f) => {
-          const value = f.value ?? "";
-          return (
+        {/* --- 部門タブ ------------------------------------------------------- */}
+        <nav className="flex flex-wrap gap-2">
+          {FEED_TABS.map((t) => (
             <Link
-              key={f.label}
-              href={hrefWith(current, { done: value, page: 1 })}
+              key={t.key}
+              href={hrefWith(current, { tab: t.key })}
+              className={t.key === tab.key ? tabOn : tabOff}
+            >
+              {t.label}
+            </Link>
+          ))}
+        </nav>
+
+        {/* --- 並び順 --------------------------------------------------------- */}
+        <div className="flex flex-wrap items-center gap-x-4 gap-y-2 text-xs">
+          <span className="text-faint">並び</span>
+          {FEED_SORTS.map((s) => (
+            <Link
+              key={s.value}
+              href={hrefWith(current, { sort: s.value })}
               className={
-                value === done
+                s.value === sort.value
                   ? "font-bold underline"
                   : "text-faint underline hover:text-muted"
               }
             >
-              {f.label}
+              {s.label}
             </Link>
-          );
-        })}
-      </div>
+          ))}
+        </div>
 
-      {/* --- 未回答のみ ------------------------------------------------------ */}
-      {/*
-        部門・完成度・並び順・ページと**同時に使える。**
-        URL の検索語（?unanswered=1）に入るので、再読込しても残り、
-        部門を変えても外れない。OFF にすると URL からも消える。
-      */}
-      <div className="flex flex-wrap items-center gap-x-4 gap-y-2 text-xs">
-        <span className="text-faint">回答</span>
-        {canFilterUnanswered ? (
-          <Link
-            href={hrefWith(current, { unanswered: !wantsUnanswered, page: 1 })}
-            aria-pressed={wantsUnanswered}
-            data-unanswered-filter={wantsUnanswered ? "on" : "off"}
-            className={
-              // スマホでも押せる大きさにする（44px 以上）
-              `inline-flex min-h-11 items-center rounded-lg border px-4 ${
-                wantsUnanswered
-                  ? "border-line-active font-bold"
-                  : "border-line text-faint hover:text-muted"
-              }`
-            }
-          >
-            未回答のみ{wantsUnanswered ? "（ON）" : ""}
-          </Link>
-        ) : (
-          <span
-            data-unanswered-filter="disabled"
-            className="inline-flex min-h-11 items-center rounded-lg border border-line px-4 text-faint opacity-60"
-          >
-            未回答のみ（まだ使えません）
-          </span>
-        )}
-        {!canFilterUnanswered ? (
-          <span className="text-faint">
-            どの作品に答えたかは、一度でも回答するか、アカウントでサインインすると
-            分かるようになります。それまでは絞り込めません。
-          </span>
+        {/* --- 完成度 -------------------------------------------------------- */}
+        {/*
+          既定は「すべて」。**落書きを別の場所へ押し込めるための絞り込みではない。**
+          落書きにも居場所を作るための軸なので、既定で全部見える形にする（D135）。
+        */}
+        <div className="flex flex-wrap items-center gap-x-4 gap-y-2 text-xs">
+          <span className="text-faint">完成度</span>
+          {COMPLETENESS_FILTERS.map((f) => {
+            const value = f.value ?? "";
+            return (
+              <Link
+                key={f.label}
+                href={hrefWith(current, { done: value })}
+                className={
+                  value === done
+                    ? "font-bold underline"
+                    : "text-faint underline hover:text-muted"
+                }
+              >
+                {f.label}
+              </Link>
+            );
+          })}
+        </div>
+
+        {/* --- 未回答のみ ---------------------------------------------------- */}
+        <div className="flex flex-wrap items-center gap-x-4 gap-y-2 text-xs">
+          <span className="text-faint">回答</span>
+          {canFilterUnanswered ? (
+            <Link
+              href={hrefWith(current, { unanswered: !wantsUnanswered })}
+              aria-pressed={wantsUnanswered}
+              data-unanswered-filter={wantsUnanswered ? "on" : "off"}
+              className={
+                // スマホでも押せる大きさにする（44px 以上）
+                `inline-flex min-h-11 items-center rounded-lg border px-4 ${
+                  wantsUnanswered
+                    ? "border-line-active font-bold"
+                    : "border-line text-faint hover:text-muted"
+                }`
+              }
+            >
+              未回答のみ{wantsUnanswered ? "（ON）" : ""}
+            </Link>
+          ) : (
+            <span
+              data-unanswered-filter="disabled"
+              className="inline-flex min-h-11 items-center rounded-lg border border-line px-4 text-faint opacity-60"
+            >
+              未回答のみ（まだ使えません）
+            </span>
+          )}
+          {!canFilterUnanswered ? (
+            <span className="text-faint">
+              どの作品に答えたかは、一度でも回答するか、アカウントでサインインすると
+              分かるようになります。それまでは絞り込めません。
+            </span>
+          ) : null}
+        </div>
+
+        {wantsUnanswered && !canFilterUnanswered ? (
+          <p className={noticeMuted}>
+            「未回答のみ」は、いまの状態では使えません（回答の履歴を照合する相手が
+            決まっていないため）。一覧はすべての作品を出しています。
+          </p>
+        ) : null}
+
+        {tab.key === "ai" ? (
+          <p className={noticeMuted}>AI生成の作品です。通常の一覧には出ません。</p>
+        ) : null}
+
+        {/* --- 作品が1件も無いときの説明（指示 25。一覧の上に1度だけ） -------- */}
+        {showSamples ? (
+          <div data-feed-sample-notice className={`${surface} space-y-2`}>
+            <p className="text-sm font-bold">まだ作品がありません。</p>
+            <p className="text-sm text-faint">
+              下に並んでいるのは、作品が投稿されたときの表示イメージです。押しても何も起きません。
+            </p>
+            <p className="pt-1 text-sm">
+              <Link href="/play" className="underline">
+                お題を引く画面へ
+              </Link>
+            </p>
+          </div>
+        ) : null}
+
+        {/* --- 絞り込んだ結果として0件だったとき ----------------------------- */}
+        {works.length === 0 && !showSamples ? (
+          <div className={surface}>
+            <p className="text-sm">
+              {unanswered
+                ? "この条件で、まだ答えていない作品はありません。"
+                : "この条件に当てはまる作品はありません。"}
+            </p>
+            <p className="pt-3 text-sm">
+              <Link href="/works" className="underline">
+                絞り込みを外して全部見る
+              </Link>
+            </p>
+          </div>
         ) : null}
       </div>
 
-      {wantsUnanswered && !canFilterUnanswered ? (
-        <p className={noticeMuted}>
-          「未回答のみ」は、いまの状態では使えません（回答の履歴を照合する相手が
-          決まっていないため）。一覧はすべての作品を出しています。
-        </p>
-      ) : null}
-
-      {tab.key === "ai" ? (
-        <p className={noticeMuted}>
-          AI生成の作品です。通常の一覧には出ません。
-        </p>
-      ) : null}
-
-      {/* --- 一覧 ------------------------------------------------------------- */}
-      {works.length === 0 ? (
-        <div className={surface}>
-          <p className="text-sm">
-            {page > 1
-              ? "このページには作品がありません。"
-              : unanswered
-                ? "この条件で、まだ答えていない作品はありません。"
-                : "まだ作品がありません。お題を引いて最初の1件を投稿してみてください。"}
-          </p>
-          <p className="pt-3 text-sm">
-            <Link href="/play" className="underline">
-              お題を引く画面へ
-            </Link>
-          </p>
-        </div>
-      ) : (
-        <ul className="grid gap-5 sm:grid-cols-2 lg:grid-cols-3">
-          {works.map((w) => (
-            <WorkCard key={w.id} work={w} />
-          ))}
-        </ul>
-      )}
-
-      {/* --- ページ送り ------------------------------------------------------- */}
-      {page > 1 || hasNext ? (
-        <div className="flex items-center justify-between border-t border-ink/10 pt-6 text-sm">
-          {page > 1 ? (
-            <Link href={hrefWith(current, { page: page - 1 })} className="underline">
-              ← 前のページ
-            </Link>
-          ) : (
-            <span />
-          )}
-          <span className="text-xs text-faint">{page} ページ目</span>
-          {hasNext ? (
-            <Link href={hrefWith(current, { page: page + 1 })} className="underline">
-              次のページ →
-            </Link>
-          ) : (
-            <span />
-          )}
-        </div>
+      {/* --- 一覧本体 --------------------------------------------------------- */}
+      {works.length > 0 || showSamples ? (
+        <MasonryFeed
+          /*
+            【条件が変わったら、部品ごと作り直す】
+              タブや並び順を押すと、同じ道筋のまま検索語だけが変わる。
+              React はこの部品を残したまま渡す値だけを差し替えるので、
+              **中に貯めた「読み込み済みの何百枚」が前の条件のまま残る。**
+              条件を鍵にして作り直させる（key）。復帰の控えも条件ごとに
+              別なので、タブを行き来しても混ざらない。
+          */
+          key={`${tab.key}|${sort.value}|${done}|${unanswered ? "1" : "0"}`}
+          initialWorks={works}
+          samples={showSamples ? SAMPLE_CARDS : []}
+          query={{
+            division: tab.value,
+            sort: sort.value,
+            completeness: done === "" ? null : done,
+            unansweredOnly: unanswered,
+          }}
+          pageSize={FEED_PAGE_SIZE}
+          canReact={canReact}
+        />
       ) : null}
     </main>
   );

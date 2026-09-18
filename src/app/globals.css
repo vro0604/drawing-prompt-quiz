@@ -113,6 +113,41 @@
   --success-tint: #10b981; /* emerald-500 */
   --notice: #b45309; /* amber-700。注意 */
   --notice-tint: #f59e0b; /* amber-500 */
+
+  /*
+   * 絵の上に浮かせる小さなUI（作品一覧の情報子タブ）。
+   *
+   * 【明るいとき・暗いときで値を変えない】
+   *   このUIが乗るのは**ページの地ではなく、投稿された絵**である。
+   *   絵の明るさは利用者が決めるもので、こちらの配色設定とは関係が無い。
+   *   暗い設定にしたからといって絵が暗くなるわけではないので、
+   *   ここだけ切り替えると、明るい絵の上に暗いUIが乗って読めなくなる。
+   *   **どんな絵の上でも同じに見えるほうが読み違えが少ない。**
+   *
+   *   下の @media (prefers-color-scheme: dark) に、この2つは書かない。
+   */
+  --glass: rgb(255 255 255 / 0.9);
+  --glass-ink: rgb(0 0 0 / 0.85);
+
+  /*
+   * いいねの色（パステルピンク）。3つに分かれている。
+   *
+   *   like       いいね済みの細い枠
+   *   like-wash  長押し中に中央から広がる色。**濃い塗りつぶしにしない**
+   *   like-mote  いいね済みの粒
+   *
+   * これも絵の上に出るものなので、明るい／暗いで変えない。
+   */
+  /*
+   * 絵が届くまでのあいだ、場所取りの箱に敷く色。
+   * 実測: Pinterest は無彩色のべた塗り #efefef 一色（ぼかしも
+   * 「その絵で多い色」も使っていない。画像の要求を全部落として確認した）。
+   */
+  --photo-bed: #efefef;
+
+  --like: #f0a6bd;
+  --like-wash: rgb(244 178 198 / 0.55);
+  --like-mote: rgb(255 214 228 / 0.9);
 }
 
 @media (prefers-color-scheme: dark) {
@@ -147,6 +182,10 @@
     --danger: #fda4af; /* rose-300 */
     --success: #6ee7b7; /* emerald-300 */
     --notice: #fcd34d; /* amber-300 */
+
+    /* 暗いときの敷き色。**ここは実測ではない**（Pinterest の暗い配色は
+       ログインしないと出ないため測れなかった）。地より少しだけ明るくする */
+    --photo-bed: rgb(255 255 255 / 0.08);
   }
 }
 
@@ -189,6 +228,13 @@
   --color-success-tint: var(--success-tint);
   --color-notice: var(--notice);
   --color-notice-tint: var(--notice-tint);
+
+  --color-photo-bed: var(--photo-bed);
+  --color-glass: var(--glass);
+  --color-glass-ink: var(--glass-ink);
+  --color-like: var(--like);
+  --color-like-wash: var(--like-wash);
+  --color-like-mote: var(--like-mote);
 
   /* 等幅は /health だけで使うので、そちらの部品の中で読む（layout には置かない） */
   --font-sans: var(--font-geist-sans);
@@ -419,5 +465,141 @@ html {
 @media (prefers-reduced-motion: reduce) {
   .dpq-timer-blink {
     animation: none;
+  }
+}
+
+/* ===========================================================================
+ * 作品一覧のカード（2026-09-18）
+ * ===========================================================================
+ *
+ * 【情報子タブが出る条件は、CSS の側で決めている】
+ *   `@media (hover: hover) and (pointer: fine)` の中でしか見えない。
+ *   指で触る端末では visibility が hidden のままなので、
+ *   **見えないだけでなく、キーボードの移動先にもならない。**
+ *   「スマホのカードには常設情報を出さない」（指示 7）を、
+ *   画面のコードの分岐ではなく、環境の問い合わせで守る形にした。
+ *
+ *   分岐で書くと「どちらの端末か」を JavaScript が推測することになる。
+ *   触れるノートパソコンのように、両方に当てはまる端末で必ず外れる。
+ *
+ * 【触れていないときも focus は受け取れる】
+ *   PC では opacity が 0 でも visibility は visible にしてある。
+ *   透明な要素は焦点を受け取れるので、Tab で中のボタンへ入ると
+ *   :focus-within が立ち、そこで初めて見える。
+ */
+.dpq-card {
+  /* 長押ししたときに、画像の保存メニューや文字選択が割り込まないようにする。
+     **スクロールには一切触っていない**（touch-action を書いていない） */
+  -webkit-touch-callout: none;
+  -webkit-user-select: none;
+  user-select: none;
+}
+
+.dpq-card-tab {
+  visibility: hidden;
+  opacity: 0;
+  pointer-events: none;
+}
+
+@media (hover: hover) and (pointer: fine) {
+  .dpq-card-tab {
+    visibility: visible;
+    transform: translateY(4px);
+    transition:
+      opacity 140ms ease,
+      transform 140ms ease;
+  }
+
+  .dpq-card:hover .dpq-card-tab,
+  .dpq-card:focus-within .dpq-card-tab,
+  .dpq-card[data-menu-open="1"] .dpq-card-tab {
+    opacity: 1;
+    transform: translateY(0);
+  }
+
+  /*
+   * 【入れ物には触らせない。中身だけが押せる】
+   *   情報子タブの入れ物は絵の全面に重なっている。ここを押せる状態にすると、
+   *   **絵のどこを押しても入れ物に当たって、クイズが始まらない。**
+   *   実測: 触れた状態でカードを押すと、当たっていたのは
+   *   絵の上のリンクではなく入れ物のほうで、画面が1つも移らなかった。
+   *
+   *   だから押せるようにするのは入れ物の中の小さな塊だけにする
+   *   （上の段の2つのボタン、「…」の中身、下の段の作者と札）。
+   *   絵の残りの場所は、下にあるリンクがそのまま受け取る。
+   */
+  .dpq-card:hover .dpq-card-tab > *,
+  .dpq-card:focus-within .dpq-card-tab > *,
+  .dpq-card[data-menu-open="1"] .dpq-card-tab > * {
+    pointer-events: auto;
+  }
+}
+
+/*
+ * 背景と同じ色の絵が、地に溶けて境目が分からなくなるのを防ぐ（指示 18）。
+ *
+ * **絵の色は変えない。**枠を内側へ 1px 敷くだけで、絵そのものには
+ * 何も重ねていない（inset の影なので、絵の画素は1つも書き換わらない）。
+ *
+ * 【濃さを 5% から 10%（--line）へ上げた】
+ *   5%（--line-faint）では、真っ白な絵が白い地の上で**まったく見えなかった**
+ *   （実測: 検証用に置いた 1000x1000 の真っ白な作品が、
+ *   幅1280の画面で輪郭を1本も持たず、カードがあること自体が分からない）。
+ *   10% なら縁が見えるが、色の付いた絵の上ではほとんど気づかない。
+ */
+.dpq-card-frame {
+  box-shadow: inset 0 0 0 1px var(--line);
+}
+
+/*
+ * いいね済みの粒。**派手にしない。**
+ *
+ * 5つの小さな点が、それぞれ違う間で、ゆっくり浮いて消える。
+ * 絵より目立ってはいけないので、いちばん濃いときでも半分ほどの濃さ。
+ */
+.dpq-like-motes > i {
+  position: absolute;
+  width: 5px;
+  height: 5px;
+  border-radius: 9999px;
+  background: var(--like-mote);
+  opacity: 0;
+  animation: dpq-mote 4.2s ease-in-out infinite;
+}
+.dpq-like-motes > i:nth-child(1) { left: 14%; bottom: 8%;  animation-delay: 0s; }
+.dpq-like-motes > i:nth-child(2) { left: 38%; bottom: 4%;  animation-delay: 0.8s; }
+.dpq-like-motes > i:nth-child(3) { left: 61%; bottom: 10%; animation-delay: 1.7s; }
+.dpq-like-motes > i:nth-child(4) { left: 82%; bottom: 5%;  animation-delay: 2.5s; }
+.dpq-like-motes > i:nth-child(5) { left: 26%; bottom: 13%; animation-delay: 3.3s; }
+
+@keyframes dpq-mote {
+  0%   { transform: translateY(0) scale(0.7); opacity: 0; }
+  18%  { opacity: 0.5; }
+  70%  { opacity: 0.35; }
+  100% { transform: translateY(-46px) scale(1); opacity: 0; }
+}
+
+/*
+ * 動きを減らす設定のとき。
+ *
+ * 止めるのは装飾だけ。**長押し中の広がりは止めない。**
+ * あれは「あと何ミリ秒で成立するか」そのもので、装飾ではない
+ * （回答画面の円のゲージを止めないのと同じ理由）。
+ * 粒は止めるが、いいね済みのピンクの枠は残るので、
+ * 付いているかどうかは動きが無くても分かる。
+ */
+@media (prefers-reduced-motion: reduce) {
+  .dpq-card-tab {
+    transition: none;
+    transform: none;
+  }
+  .dpq-card:hover .dpq-card-tab,
+  .dpq-card:focus-within .dpq-card-tab,
+  .dpq-card[data-menu-open="1"] .dpq-card-tab {
+    transform: none;
+  }
+  .dpq-like-motes > i {
+    animation: none;
+    opacity: 0.4;
   }
 }

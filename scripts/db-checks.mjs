@@ -53,6 +53,9 @@ export const SEALED_TABLES = [
   "billing_purchases",
   "billing_entitlements",
   "billing_webhook_events",
+  // 2026-09-18。「興味なし」の記録。誰がどの作品を外したかは
+  // 本人以外に見せない（作者に見せると投稿を萎縮させる）
+  "work_uninterests",
 ];
 
 /** anon / authenticated が列権限を持つ10表 */
@@ -72,6 +75,12 @@ export const GRANTED_TABLES = [
 /** 誰でも呼べる取得系RPC */
 export const PUBLIC_RPCS = [
   "get_public_works",
+  // 2026-09-18。新しい作品一覧と、公開作品の総数。
+  // get_public_works は**返す列を変えられない**ので別名で作った
+  // （create or replace は戻り値の形を変えられず、drop すると
+  //   旧い画面が動いている時間帯に一覧が落ちる）
+  "get_feed_works",
+  "count_public_works",
   "get_work_detail",
   "get_work_quiz",
   "get_public_saves",
@@ -135,6 +144,16 @@ export const WRITE_RPCS = [
  * 回答RPCまで巻き込んでしまい、意味が逆になる。
  */
 export const ANSWER_RPCS = ["submit_answer"];
+
+/**
+ * 一覧まわりの書き込みRPC（authenticated のみ。ゲストも可）。
+ *
+ * **MEMBER_RPCS とは分ける。**「興味なし」は見る人が自分の一覧を
+ * 整える操作で、ランキングにも他人の画面にも影響しない。
+ * いいね・保存と違って登録を求める理由が無いので、
+ * 匿名ゲストを弾く検査の対象に入れてはいけない。
+ */
+export const FEED_RPCS = ["set_work_uninterest"];
 
 /**
  * 登録ユーザー限定の書き込みRPC。
@@ -206,6 +225,7 @@ export const ALL_FUNCS = [
   ...DRAFT_RPCS,
   ...WRITE_RPCS,
   ...ANSWER_RPCS,
+  ...FEED_RPCS,
   ...MEMBER_RPCS,
   ...INTERNAL_FUNCS,
   ...META_FUNCS,
@@ -656,15 +676,17 @@ export const checks = [
     //   ・billing_entitlements ・billing_webhook_events
     // 合わせて 69。本番も 2026-09-17T07:22Z に課金を当てて 69 になった
     // （当てる前の本番は 64 で、db:verify:keychain はここで食い違っていた）。
-    name: "public スキーマの表が69個",
-    expected: 69,
+    // 2026-09-18 に1表増えた。work_uninterests（「興味なし」の記録 / D211）。
+    // 合わせて 70。
+    name: "public スキーマの表が70個",
+    expected: 70,
     sql: `select count(*)::int from pg_tables where schemaname = 'public'`,
     detailSql: `select tablename from pg_tables
                  where schemaname = 'public' order by tablename`,
   },
   {
     group: "構造",
-    name: "遮断29表がすべて存在する",
+    name: "遮断30表がすべて存在する",
     expected: SEALED_TABLES.length,
     sql: `select count(*)::int from pg_tables
            where schemaname = 'public' and tablename = any($1)`,
@@ -672,8 +694,8 @@ export const checks = [
   },
   {
     group: "構造",
-    name: "69表すべてで RLS が有効",
-    expected: 69,
+    name: "70表すべてで RLS が有効",
+    expected: 70,
     sql: `select count(*)::int from pg_class c
             join pg_namespace n on n.oid = c.relnamespace
            where n.nspname = 'public' and c.relkind = 'r' and c.relrowsecurity`,
@@ -715,7 +737,7 @@ export const checks = [
   // ───────────────────────────── 権限 ─────────────────────────────
   {
     group: "権限",
-    name: "遮断24表に anon/authenticated の権限が0件",
+    name: "遮断30表に anon/authenticated の権限が0件",
     expected: 0,
     sql: `select count(*)::int from information_schema.column_privileges
            where table_schema = 'public'
@@ -725,7 +747,7 @@ export const checks = [
   },
   {
     group: "権限",
-    name: "遮断24表に PUBLIC / anon / authenticated の権限が0件（種類を漏らさず）",
+    name: "遮断30表に PUBLIC / anon / authenticated の権限が0件（種類を漏らさず）",
     // 上の information_schema による検査は SELECT / INSERT / UPDATE /
     // REFERENCES の4種しか見えない。**DELETE や TRUNCATE だけを
     // 配られていても気づけない。** relacl / attacl を展開して、
@@ -740,7 +762,7 @@ export const checks = [
   },
   {
     group: "権限",
-    name: "遮断24表に RLS ポリシーが0本",
+    name: "遮断30表に RLS ポリシーが0本",
     expected: 0,
     sql: `select count(*)::int from pg_policies
            where schemaname = 'public' and tablename = any($1)`,
@@ -842,8 +864,8 @@ export const checks = [
     // 数えるのは**名前の種類**であって、関数の本数ではない。
     // 互換期間は get_public_works と get_next_work に旧版が並ぶので、
     // 本数で数えると、旧版を足しただけでこの検査が落ちる。
-    name: "公開10本は anon から実行できる",
-    expected: 10,
+    name: "公開12本は anon から実行できる",
+    expected: PUBLIC_RPCS.length,
     sql: `select count(distinct p.proname)::int from pg_proc p
             join pg_namespace n on n.oid = p.pronamespace
            where n.nspname='public' and p.proname = any($1)
@@ -941,6 +963,35 @@ export const checks = [
            where n.nspname='public' and p.proname = any($1)
              and has_function_privilege('anon', p.oid, 'EXECUTE')`,
     params: [ANSWER_RPCS],
+  },
+  {
+    group: "関数",
+    name: "一覧RPC set_work_uninterest が存在する",
+    expected: 1,
+    sql: `select count(*)::int from pg_proc p
+            join pg_namespace n on n.oid = p.pronamespace
+           where n.nspname='public' and p.proname = any($1)`,
+    params: [FEED_RPCS],
+  },
+  {
+    group: "関数",
+    name: "set_work_uninterest は authenticated から実行できる（ゲスト含む）",
+    expected: 1,
+    sql: `select count(*)::int from pg_proc p
+            join pg_namespace n on n.oid = p.pronamespace
+           where n.nspname='public' and p.proname = any($1)
+             and has_function_privilege('authenticated', p.oid, 'EXECUTE')`,
+    params: [FEED_RPCS],
+  },
+  {
+    group: "関数",
+    name: "set_work_uninterest は anon から実行できない",
+    expected: 0,
+    sql: `select count(*)::int from pg_proc p
+            join pg_namespace n on n.oid = p.pronamespace
+           where n.nspname='public' and p.proname = any($1)
+             and has_function_privilege('anon', p.oid, 'EXECUTE')`,
+    params: [FEED_RPCS],
   },
   {
     group: "関数",
