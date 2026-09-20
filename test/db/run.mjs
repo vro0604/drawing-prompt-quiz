@@ -11403,6 +11403,155 @@ async function main() {
         `${sig} の search_path が ${JSON.stringify(r.rows[0].proconfig)}`);
     }
   });
+
+  /* 支援は Founder と独立した単発決済。Stripe の署名後に呼ぶ RPC を検査する。 */
+  {
+    const service = { role: "service_role", uid: null };
+    const start = (profileId, amount, source = "direct") =>
+      value(db, service, `select public.billing_support_start($1, $2, $3)`,
+        [profileId, amount, source]);
+    const attach = (id, session) =>
+      value(db, service, `select public.billing_support_attach($1, $2)`, [id, session]);
+    const complete = (session, id, amount, intent, mode = "payment", currency = "jpy") =>
+      value(db, service,
+        `select public.billing_support_complete($1, $2, $3, 'paid', $4, $5, $6)`,
+        [session, id, mode, amount, currency, intent]);
+    const count = async (sql, args = []) =>
+      Number((await db.query(sql, args)).rows[0].n);
+
+    await test("S", "500円・1,000円・100,000円だけ範囲内の支援を作れる", async () => {
+      for (const amount of [500, 1000, 100000]) {
+        const p = await start(null, amount);
+        assert(p.amount === amount, `金額 ${amount} を保持できない`);
+      }
+      for (const amount of [0, -1, 499, 100001]) {
+        await expectFailure(() => start(null, amount), "SUPPORT_AMOUNT_INVALID");
+      }
+      await expectFailure(() => start(null, 1000, "untrusted"), "SUPPORT_SOURCE_INVALID");
+    });
+
+    await test("S", "未ログインとログイン済みを記録し、繰り返し支援できる", async () => {
+      const member = await makeMember(db, "support-member");
+      const a = await start(null, 500, "footer");
+      const b = await start(member, 1000, "account");
+      const c = await start(member, 3000, "founder");
+      const rows = (await db.query(
+        `select id, profile_id, source from public.billing_support_payments where id = any($1)`,
+        [[a.id, b.id, c.id]],
+      )).rows;
+      assert(rows.length === 3, "支援行が重複または欠落した");
+      assert(rows.find((r) => r.id === a.id)?.profile_id === null, "匿名の user_id が null でない");
+      assert(rows.filter((r) => r.profile_id === member).length === 2, "同じ人が再度支援できない");
+      assert(rows.find((r) => r.id === c.id)?.source === "founder", "source が記録されない");
+      const grants = await count(
+        `select count(*)::int as n from public.billing_entitlements where profile_id = $1`, [member],
+      );
+      assert(grants === 0, "支援で Founder 等の権限が付いた");
+    });
+
+    await test("S", "Checkout のセッション・金額・通貨・種別を検証して一度だけ確定する", async () => {
+      const p = await start(null, 1000, "support_page");
+      await attach(p.id, "cs_support_db_1");
+      await expectFailure(() => complete("cs_support_db_1", p.id, 999, "pi_support_db_1"),
+        "SUPPORT_PAYMENT_MISMATCH");
+      await expectFailure(() => complete("cs_support_db_1", p.id, 1000, "pi_support_db_1", "subscription"),
+        "SUPPORT_PAYMENT_MISMATCH");
+      await expectFailure(() => complete("cs_support_db_1", p.id, 1000, "pi_support_db_1", "payment", "usd"),
+        "SUPPORT_PAYMENT_MISMATCH");
+      await complete("cs_support_db_1", p.id, 1000, "pi_support_db_1");
+      await complete("cs_support_db_1", p.id, 1000, "pi_support_db_1");
+      const n = await count(
+        `select count(*)::int as n from public.billing_support_payments
+          where stripe_payment_intent_id = 'pi_support_db_1' and status = 'paid'`,
+      );
+      assert(n === 1, "重複 Webhook で二重登録した");
+      await expectFailure(() => complete("cs_support_db_1", p.id, 1000, "pi_support_db_2"),
+        "SUPPORT_INTENT_MISMATCH");
+    });
+
+    await test("S", "キャンセルは売上に入らず、確定後は失効できない", async () => {
+      const p = await start(null, 500);
+      await attach(p.id, "cs_support_db_expire");
+      await value(db, service, `select public.billing_support_expire($1)`, ["cs_support_db_expire"]);
+      const status = (await db.query(`select status from public.billing_support_payments where id = $1`,
+        [p.id])).rows[0].status;
+      assert(status === "expired", "失効していない");
+      await value(db, service, `select public.billing_support_expire($1)`, ["cs_support_db_1"]);
+      const paid = (await db.query(`select status from public.billing_support_payments
+        where stripe_checkout_session_id = 'cs_support_db_1'`)).rows[0].status;
+      assert(paid === "paid", "支払済みが失効した");
+    });
+
+    await test("S", "別々の支援に同じ Stripe ID を割り当てられない", async () => {
+      const a = await start(null, 500);
+      const b = await start(null, 500);
+      await attach(a.id, "cs_support_db_unique");
+      await expectFailure(() => attach(b.id, "cs_support_db_unique"), "duplicate key");
+      await attach(b.id, "cs_support_db_unique_b");
+      await complete("cs_support_db_unique", a.id, 500, "pi_support_db_unique");
+      await expectFailure(() => complete("cs_support_db_unique_b", b.id, 500,
+        "pi_support_db_unique"), "duplicate key");
+    });
+
+    await test("S", "返金・異議申立・再送を集計へ正しく反映する", async () => {
+      const p = await start(null, 1000, "campaign");
+      await attach(p.id, "cs_support_db_refund");
+      await complete("cs_support_db_refund", p.id, 1000, "pi_support_db_refund");
+      const refund = (status, amount = 500) => value(db, service,
+        `select public.billing_support_refund($1, $2, $3, $4)`,
+        ["pi_support_db_refund", "re_support_db_1", amount, status]);
+      await refund("pending");
+      await refund("succeeded");
+      await refund("succeeded");
+      const row = (await db.query(`select status, refunded_amount from public.billing_support_payments
+        where id = $1`, [p.id])).rows[0];
+      assert(row.status === "paid" && row.refunded_amount === 500,
+        "部分返金または再送の反映が違う");
+      const summary = await value(db, service, `select public.billing_revenue_summary()`);
+      assert(Number(summary.support_refunded) === 500, "返金額が二重計上された");
+      await value(db, service, `select public.billing_support_dispute($1, $2)`,
+        ["pi_support_db_refund", "under_review"]);
+      const disputed = (await db.query(`select status from public.billing_support_payments
+        where id = $1`, [p.id])).rows[0].status;
+      assert(disputed === "disputed", "異議申立中にならない");
+      await value(db, service, `select public.billing_support_dispute($1, $2)`,
+        ["pi_support_db_refund", "lost"]);
+      const reversed = (await db.query(`select status from public.billing_support_payments
+        where id = $1`, [p.id])).rows[0].status;
+      assert(reversed === "reversed", "異議申立敗訴が売上から除かれない");
+    });
+
+    await test("S", "全額返金と失敗通知の再送は売上を復活させない", async () => {
+      const p = await start(null, 500, "footer");
+      await attach(p.id, "cs_support_db_fullrefund");
+      await complete("cs_support_db_fullrefund", p.id, 500, "pi_support_db_fullrefund");
+      for (const status of ["pending", "succeeded", "succeeded", "failed"]) {
+        await value(db, service, `select public.billing_support_refund($1, $2, $3, $4)`,
+          ["pi_support_db_fullrefund", "re_support_db_fullrefund", 500, status]);
+      }
+      const row = (await db.query(`select status, refunded_amount, refunded_at
+        from public.billing_support_payments where id = $1`, [p.id])).rows[0];
+      assert(row.status === "refunded" && row.refunded_amount === 500 && row.refunded_at,
+        "全額返金の状態が正しくない");
+      const summary = await value(db, service, `select public.billing_revenue_summary()`);
+      assert(Number(summary.support_refunded) === 1000, "返金総額が誤っている");
+      assert(Number(summary.support_count) === 2, "返金・異議申立済みが有効件数に入った");
+      assert(Number(summary.support_revenue) === 1500, "有効な支援額が誤っている");
+      assert(Number(summary.support_by_source.support_page.count) === 1,
+        "流入元別の件数が違う");
+    });
+
+    await test("S", "利用者は支援表と確定 RPC を直接使えない", async () => {
+      await expectFailure(() => value(db, ANON,
+        `select public.billing_support_start(null, 1000, 'direct')`), "permission denied");
+      await expectFailure(() => value(db, ANON,
+        `select public.billing_support_complete('cs_fake', null, 'payment', 'paid', 1000, 'jpy', 'pi_fake')`),
+      "permission denied");
+      await expectFailure(() => value(db, ANON,
+        `select count(*) from public.billing_support_payments`), "permission denied");
+    });
+  }
+
 }
 
 // ===========================================================================

@@ -100,6 +100,7 @@ import {
   verifyStripeSignature,
 } from "../../src/features/billing/signature.ts";
 import { STRIPE_API_VERSION, isBillingNotInstalled } from "../../src/features/billing/types.ts";
+import { normalizeSupportSource, parseSupportAmount } from "../../src/features/billing/support.ts";
 import {
   CHECKOUT_BUSY_CODE,
   CHECKOUT_BUSY_MESSAGE,
@@ -1336,6 +1337,27 @@ test("課金", "DB に課金の関数がまだ無いときのエラー（PGRST20
   assert(isBillingNotInstalled(null) === false, "エラーが無いのに未導入と見なした");
 });
 
+
+
+test("課金", "自由額支援は境界金額だけ通し、不正な数値表現を拒否する", () => {
+  for (const amount of [500, 1000, 100000, "500", "1000", "100000"]) {
+    assert(parseSupportAmount(amount) === Number(amount), `${amount} を拒否した`);
+  }
+  for (const amount of [0, -1, 499, 100001, 1.5, "0", "-500", "500.5",
+    "1e3", "Infinity", "NaN", "", " 1000", "1000円", null, undefined]) {
+    assert(parseSupportAmount(amount) === null, `${String(amount)} を受け付けた`);
+  }
+});
+
+test("課金", "支援の流入元は許可値だけ残し、未知の値は direct にする", () => {
+  for (const source of ["footer", "account", "founder", "founder_soldout",
+    "support_page", "campaign", "direct"]) {
+    assert(normalizeSupportSource(source) === source, `${source} が残らない`);
+  }
+  for (const source of ["unknown", "FOOTER", "", 3, null]) {
+    assert(normalizeSupportSource(source) === "direct", `${String(source)} が混入した`);
+  }
+});
 
 
 /* ===========================================================================

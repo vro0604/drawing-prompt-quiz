@@ -60,6 +60,7 @@
     "test:unit": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON test/unit/run.mjs",
     "test:tools": "node test/tools/run.mjs",
     "test:e2e": "node test/e2e/browser.mjs",
+    "test:e2e:support": "node test/e2e/support.mjs",
     "test:e2e:selftest": "node test/e2e/record-selftest.mjs",
     "test:billing:stripe": "node test/billing/stripe-e2e.mjs",
     "test:smoke:local": "node test/e2e/smoke.mjs",

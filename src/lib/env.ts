@@ -73,6 +73,13 @@ export function hasStripeSecretKey(): boolean {
   return STRIPE_SECRET_KEY !== "";
 }
 
+/** Webhook の live/test を API 鍵と突き合わせる。形式不明なら決済を閉じる。 */
+export function stripeSecretMode(): "live" | "test" | null {
+  if (STRIPE_SECRET_KEY.startsWith("sk_live_")) return "live";
+  if (STRIPE_SECRET_KEY.startsWith("sk_test_")) return "test";
+  return null;
+}
+
 /** Stripe からの知らせを確かめられる状態か。false なら Webhook は 503 で断る。 */
 export function hasStripeWebhookSecret(): boolean {
   return STRIPE_WEBHOOK_SECRET !== "";
@@ -86,6 +93,7 @@ export function hasStripeWebhookSecret(): boolean {
 export function billingConfigError(): string | null {
   const missing: string[] = [];
   if (!hasStripeSecretKey()) missing.push("STRIPE_SECRET_KEY");
+  else if (!stripeSecretMode()) missing.push("STRIPE_SECRET_KEY の形式");
   if (!hasStripeWebhookSecret()) missing.push("STRIPE_WEBHOOK_SECRET");
   if (!hasSupabaseSecretKey()) missing.push("SUPABASE_SECRET_KEY");
   if (missing.length === 0) return null;

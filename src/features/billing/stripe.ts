@@ -195,10 +195,59 @@ export async function createCheckoutSession(input: {
   return asSession(json);
 }
 
+/** 自由額支援。金額は呼び出し元で検証し、DB に記録した値だけを渡す。 */
+export async function createSupportCheckoutSession(input: {
+  supportId: string;
+  amount: number;
+  source: string;
+  profileId: string | null;
+  successUrl: string;
+  cancelUrl: string;
+}): Promise<CheckoutSession> {
+  const metadata = {
+    kind: "support",
+    support_payment_id: input.supportId,
+    source: input.source,
+    ...(input.profileId ? { profile_id: input.profileId } : {}),
+  };
+  const json = await callStripe("/checkout/sessions", {
+    method: "POST",
+    idempotencyKey: `support-checkout-${input.supportId}`,
+    form: {
+      mode: "payment",
+      payment_method_types: ["card"],
+      allow_promotion_codes: false,
+      client_reference_id: input.supportId,
+      success_url: input.successUrl,
+      cancel_url: input.cancelUrl,
+      locale: "ja",
+      line_items: [{
+        quantity: 1,
+        price_data: {
+          currency: "jpy",
+          unit_amount: input.amount,
+          product_data: { name: "つたわるかなを応援する" },
+        },
+      }],
+      metadata,
+      payment_intent_data: { metadata },
+    },
+  });
+  return asSession(json);
+}
+
 export async function retrieveCheckoutSession(id: string): Promise<CheckoutSession> {
   return asSession(await callStripe(`/checkout/sessions/${encodeURIComponent(id)}`, {
     method: "GET",
   }));
+}
+
+/** Webhook の到着順が前後したとき、支払いの種別を Stripe に照会する。 */
+export async function retrievePaymentIntentMetadata(id: string): Promise<Record<string, string>> {
+  const json = await callStripe(`/payment_intents/${encodeURIComponent(id)}`, { method: "GET" });
+  return json.metadata && typeof json.metadata === "object"
+    ? json.metadata as Record<string, string>
+    : {};
 }
 
 /**
@@ -212,4 +261,3 @@ export async function expireCheckoutSession(id: string): Promise<void> {
     method: "POST",
   });
 }
-

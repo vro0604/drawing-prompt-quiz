@@ -1,5 +1,6 @@
 import Link from "next/link";
 import { fetchFounderOfferStatus } from "@/features/billing/rpc";
+import { SUPPORT_MAX_YEN, SUPPORT_MIN_YEN } from "@/features/billing/support";
 import { surface } from "@/app/_surface";
 
 /**
@@ -45,15 +46,15 @@ export default async function TokushohoPage() {
       <header className="space-y-2">
         <h1 className="text-2xl font-bold">特定商取引法に基づく表示</h1>
         <p className="text-sm text-faint">
-          有料の商品をご購入いただく前に、必ずお読みください。
+          Founder のご購入、または自由額支援のお支払いの前にお読みください。
         </p>
       </header>
 
       {status === null ? (
         <div className={surface}>
           <p className="text-sm">
-            ただいま販売している商品はありません。販売を始めるときに、
-            この画面に価格と条件を掲示します。
+            Founding Creator の販売情報は現在表示できません。
+            自由額支援の条件はこの下に掲載しています。
           </p>
         </div>
       ) : null}
@@ -101,6 +102,15 @@ export default async function TokushohoPage() {
           <Note>表示している価格が、お支払いいただく総額です。</Note>
         </Row>
 
+        <Row label="自由額の単発支援">
+          「つたわるかなを応援する」：{SUPPORT_MIN_YEN.toLocaleString("ja-JP")}円〜
+          {SUPPORT_MAX_YEN.toLocaleString("ja-JP")}円（税込・1円単位）
+          <Note>
+            お支払いになる金額は支援する方が入力し、Stripe の決済画面でも確認できます。
+            支援に対する機能上の優遇・特典・Founder 資格はありません。
+          </Note>
+        </Row>
+
         <Row label="商品代金以外に必要な費用">
           ありません
           <Note>
@@ -123,7 +133,7 @@ export default async function TokushohoPage() {
         </Row>
 
         <Row label="商品の引き渡し時期">
-          お支払いの成立を確認しだい、ただちに
+          Founder 権は、お支払いの成立を確認しだい、ただちに付与します。
           <Note>
             通常は数秒から数分で、Founder 権と Founder 番号がアカウントに付きます。
             決済事業者からの連絡が遅れた場合は、そのぶん遅れます。
@@ -131,11 +141,14 @@ export default async function TokushohoPage() {
             Creator Pro の90日間の利用権は、
             <strong>Creator Pro が正式に開始した時点</strong>から始まります
             （購入日からは数えません）。
+            自由額支援には商品の引き渡しや特典の付与はありません。
           </Note>
         </Row>
 
         <Row label="販売数量の制限">
-          {cap === null ? "制限はありません" : `有効なご購入者 ${cap} 名まで`}
+          Founding Creator は{status === null ? "現在ご案内しておりません" :
+            cap === null ? "制限なし" : `有効なご購入者 ${cap} 名まで`}。
+          自由額支援には件数の制限はありません。
           <Note>
             上限に達した時点、または販売開始から90日を過ぎた時点の、
             早いほうで販売を終了します。
@@ -144,7 +157,8 @@ export default async function TokushohoPage() {
         </Row>
 
         <Row label="返品・キャンセル（返金）について">
-          ご購入から7日以内であれば、お申し出により全額を返金します
+          Founder の購入・自由額支援とも、決済成立から7日以内であれば、
+          お申し出により全額を返金します。
           <Note>
             お申し出は上記の窓口へご連絡ください。返金が成立した時点で、
             Founder 権・新機能の試験版への参加資格・Creator Pro の90日間の
@@ -156,8 +170,8 @@ export default async function TokushohoPage() {
               7日を過ぎていても対応します。
             </strong>
             <br />
-            デジタルな権利という商品の性質上、上記以外の理由による
-            返品・交換はお受けできません。
+            Founder 権は返金時に終了します。自由額支援には取り消す特典はありません。
+            上記以外の理由による返金はお受けできません。
           </Note>
         </Row>
 
@@ -180,6 +194,10 @@ export default async function TokushohoPage() {
         {" ／ "}
         <Link href="/privacy" className="underline">
           プライバシーポリシー
+        </Link>
+        {" ／ "}
+        <Link href="/support" className="underline">
+          つたわるかなを支援する
         </Link>
       </p>
     </main>

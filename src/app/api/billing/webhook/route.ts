@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { STRIPE_WEBHOOK_SECRET, hasStripeWebhookSecret } from "@/lib/env";
+import { STRIPE_WEBHOOK_SECRET, hasStripeWebhookSecret, stripeSecretMode } from "@/lib/env";
 import {
   callApplyRefundResult,
   callCompleteCheckout,
@@ -9,7 +9,14 @@ import {
   finishWebhookEvent,
 } from "@/features/billing/rpc";
 import {
+  applySupportDispute,
+  applySupportRefund,
+  completeSupportCheckout,
+  expireSupportCheckout,
+} from "@/features/billing/support-rpc";
+import {
   parseStripeEvent,
+  retrievePaymentIntentMetadata,
   verifyStripeSignature,
   type StripeEvent,
 } from "@/features/billing/stripe";
@@ -95,6 +102,19 @@ async function handleCheckoutCompleted(event: StripeEvent): Promise<string> {
 
   const metadata = (session.metadata ?? {}) as Record<string, unknown>;
 
+  if (metadata.kind === "support") {
+    await completeSupportCheckout({
+      sessionId,
+      supportId: str(metadata.support_payment_id),
+      mode: str(session.mode),
+      paymentStatus,
+      amount: num(session.amount_total),
+      currency: str(session.currency),
+      paymentIntentId: str(session.payment_intent),
+    });
+    return "support recorded";
+  }
+
   const result = await callCompleteCheckout({
     sessionId,
     // client_reference_id と metadata の両方に入れてある。片方が欠けても拾える
@@ -113,6 +133,12 @@ async function handleCheckoutCompleted(event: StripeEvent): Promise<string> {
 async function handleCheckoutExpired(event: StripeEvent): Promise<string> {
   const sessionId = str(event.object.id);
   if (!sessionId) return "決済ページの ID がありません";
+
+  const metadata = (event.object.metadata ?? {}) as Record<string, unknown>;
+  if (metadata.kind === "support") {
+    await expireSupportCheckout(sessionId);
+    return "support expired";
+  }
 
   const out = await callExpireCheckout(sessionId);
   return out.result;
@@ -135,11 +161,27 @@ async function handleRefund(event: StripeEvent): Promise<string> {
   const status =
     event.type === "refund.failed" ? "failed" : (str(refund.status) ?? "pending");
 
+  const supportHandled = await applySupportRefund({
+    paymentIntentId,
+    refundId: str(refund.id),
+    amount: num(refund.amount),
+    status,
+  });
+  if (supportHandled) return `support ${status}`;
+
   const out = await callApplyRefundResult({
     paymentIntentId,
     refundId: str(refund.id),
     refundStatus: status,
   });
+
+  if (out.result === "unknown_payment") {
+    const metadata = await retrievePaymentIntentMetadata(paymentIntentId);
+    if (metadata.kind === "support") {
+      // Checkout 完了イベントより先に届いた。処理済みにせず Stripe に再送させる。
+      throw new Error("SUPPORT_COMPLETION_PENDING");
+    }
+  }
 
   return `${status} → ${out.result}`;
 }
@@ -152,7 +194,14 @@ async function handleDispute(event: StripeEvent): Promise<string> {
   const status = str(dispute.status);
   if (!status) return "申し立ての状態がありません";
 
+  const supportHandled = await applySupportDispute({ paymentIntentId, status });
+  if (supportHandled) return `support ${status}`;
+
   const out = await callMarkDispute({ paymentIntentId, disputeStatus: status });
+  if (out.result === "unknown_payment") {
+    const metadata = await retrievePaymentIntentMetadata(paymentIntentId);
+    if (metadata.kind === "support") throw new Error("SUPPORT_COMPLETION_PENDING");
+  }
   return `${status} → ${out.result}`;
 }
 
@@ -212,6 +261,14 @@ export async function POST(request: Request) {
     event = parseStripeEvent(payload);
   } catch {
     return NextResponse.json({ ok: false, error: "EVENT_MALFORMED" }, { status: 400 });
+  }
+
+  const mode = stripeSecretMode();
+  if (mode === null) {
+    return NextResponse.json({ ok: false, error: "STRIPE_KEY_MODE_UNKNOWN" }, { status: 503 });
+  }
+  if (event.livemode !== (mode === "live")) {
+    return NextResponse.json({ ok: false, error: "STRIPE_MODE_MISMATCH" }, { status: 400 });
   }
 
   if (!HANDLED.has(event.type)) {

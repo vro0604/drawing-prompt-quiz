@@ -106,6 +106,9 @@ export function SiteFooter() {
         >
           特定商取引法に基づく表示
         </Link>
+        <Link href="/support?source=footer" className="inline-flex min-h-11 items-center text-muted hover:underline">
+          つたわるかなを応援する
+        </Link>
       </div>
     </footer>
   );

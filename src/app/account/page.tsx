@@ -424,6 +424,14 @@ export default async function AccountPage({
         </section>
       ) : null}
 
+      <section className={`${surface} space-y-2`}>
+        <h2 className="text-sm font-bold">サービスを支える</h2>
+        <p className="text-xs text-faint">開発・運営への一回限りの応援です。特典や機能上の優遇はありません。</p>
+        <Link href="/support?source=account" className="inline-flex min-h-11 items-center text-sm underline">
+          開発を応援する
+        </Link>
+      </section>
+
       {/* --- アカウント（サインアウト・退会）------------------------------------
 
           出所: ユーザー指示（2026-09-08）「プロフィール設定と危険な

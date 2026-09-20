@@ -63,6 +63,9 @@ export const SEALED_TABLES = [
   // 表そのものを配る理由が無い
   "share_card_revisions",
   "share_events",
+  // 単発支援。決済 ID と金額は service_role 専用 RPC からだけ読む。
+  "billing_support_payments",
+  "billing_support_refunds",
 ];
 
 /** anon / authenticated が列権限を持つ10表 */
@@ -696,16 +699,16 @@ export const checks = [
     // 2026-09-18 にさらに2表増えた（SNS共有カード）。
     //   ・share_card_revisions … 共有カードの控え
     //   ・share_events         … 共有操作の記録
-    // 合わせて 72。
-    name: "public スキーマの表が72個",
-    expected: 72,
+    // 2026-09-20 に自由額支援の決済・返金2表を追加。合わせて 74。
+    name: "public スキーマの表が74個",
+    expected: 74,
     sql: `select count(*)::int from pg_tables where schemaname = 'public'`,
     detailSql: `select tablename from pg_tables
                  where schemaname = 'public' order by tablename`,
   },
   {
     group: "構造",
-    name: "遮断32表がすべて存在する",
+    name: "遮断34表がすべて存在する",
     expected: SEALED_TABLES.length,
     sql: `select count(*)::int from pg_tables
            where schemaname = 'public' and tablename = any($1)`,
@@ -713,8 +716,8 @@ export const checks = [
   },
   {
     group: "構造",
-    name: "72表すべてで RLS が有効",
-    expected: 72,
+    name: "74表すべてで RLS が有効",
+    expected: 74,
     sql: `select count(*)::int from pg_class c
             join pg_namespace n on n.oid = c.relnamespace
            where n.nspname = 'public' and c.relkind = 'r' and c.relrowsecurity`,

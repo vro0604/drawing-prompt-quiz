@@ -156,8 +156,9 @@ if (STRIPE) {
 
 // アプリへ渡す。**値は表示しない**
 process.env.STRIPE_WEBHOOK_SECRET = webhookSecret;
-if (STRIPE) process.env.STRIPE_SECRET_KEY = stripeKey;
-else delete process.env.STRIPE_SECRET_KEY;
+// ローカル署名試験でも Webhook の test/live 一致検査を通す。
+// この値は Stripe に送らず、実在する鍵でもない。
+process.env.STRIPE_SECRET_KEY = STRIPE ? stripeKey : "sk_test_local_mock_only";
 
 const PORT = 3217;
 const lock = await acquireHeavyLock(`課金の一周（${MODE}）`);
@@ -408,7 +409,7 @@ try {
   const entDup = await entitlementsOf(buyer.id);
   check("二重", "購入1行・権限2本のまま", (await purchaseOf(buyer.id)).length === 1 && entDup.length === 2, JSON.stringify(afterDup));
   const rebuy = await postCheckoutAs(A.ctx);
-  check("二重", "買い終えた人が受け口を叩いても買えない", STRIPE ? rebuy.status === 409 && rebuy.body.code === "ALREADY_OWNED" : rebuy.status === 503, `${rebuy.status} ${rebuy.body.error ?? ""}`);
+  check("二重", "買い終えた人が受け口を叩いても買えない", rebuy.status === 409 && rebuy.body.code === "ALREADY_OWNED", `${rebuy.status} ${rebuy.body.error ?? ""}`);
 
   /* ---------------- 5段目: 公開設定 ---------------- */
   section("5段目: 公開設定を切り替える");

@@ -132,6 +132,7 @@ const STEPS = [
   // 落ちた回で上書きされ、直前の合格の記録が読めなくなる。
   { key: "record-selftest", name: "落ちたときに記録が残るかの自己試験", cmd: "npm", args: ["run", "test:e2e:selftest"] },
   { key: "e2e", name: "ブラウザ試験", cmd: "npm", args: ["run", "test:e2e"] },
+  { key: "support-ui", name: "支援画面のブラウザ試験", cmd: "npm", args: ["run", "test:e2e:support"] },
   { key: "smoke", name: "既存スモーク11本", cmd: "npm", args: ["run", "test:smoke:local"] },
   // **最後に置く。**文書に書いた件数を、この回の実測と突き合わせる。
   // 先に置くと、まだ走っていない検査の件数が「未計測」になる。

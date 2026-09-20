@@ -190,6 +190,11 @@ export default async function FounderPage({
           Founder 一覧を見る
         </Link>
       </p>
+      <p className="text-sm">
+        <Link href="/support?source=founder" className="underline">
+          Founder にならずに自由な金額で応援する
+        </Link>
+      </p>
     </main>
   );
 }
@@ -276,8 +281,18 @@ function FounderState({
   }
 
   // 5. まだ買っていない
-  // **販売していないあいだは、ログインや登録へ誘わない。**
-  // 誘った先で買えないので、誰に対しても「販売していない」だけを出す（2026-09-17）。
+  if (soldOut) {
+    return (
+      <div className="space-y-2 text-sm">
+        <p>Founding Creator は完売しました。返金などで枠が空いた場合は、この画面から購入できます。</p>
+        <Link href="/support?source=founder_soldout" className="underline">
+          引き続き開発を応援できます
+        </Link>
+      </div>
+    );
+  }
+
+  // 販売休止中は、ログインや登録へ誘わない。
   if (!isOpen) {
     return <p className="text-sm">ただいま販売しておりません。</p>;
   }
@@ -304,14 +319,6 @@ function FounderState({
           アカウントを登録する
         </Link>
       </div>
-    );
-  }
-
-  if (soldOut) {
-    return (
-      <p className="text-sm">
-        販売枠が埋まりました。返金などで枠が空いた場合は、この画面から購入できるようになります。
-      </p>
     );
   }
 
