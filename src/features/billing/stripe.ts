@@ -215,6 +215,9 @@ export async function createSupportCheckoutSession(input: {
     idempotencyKey: `support-checkout-${input.supportId}`,
     form: {
       mode: "payment",
+      // この Stripe 口座では Managed Payments が既定で有効。
+      // 支払い方法を明示するため、Founder と同じくこの決済では無効にする。
+      managed_payments: { enabled: false },
       payment_method_types: ["card"],
       allow_promotion_codes: false,
       client_reference_id: input.supportId,
