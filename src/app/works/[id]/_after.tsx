@@ -192,7 +192,7 @@ export function RevealedPromptBox({
   /** 別のセッションへ残せるか（＝登録者か） */
   canPersist: boolean;
 }) {
-  // **「モーフ以外はぜんぶ状態」と数えない。**その数え方だとカラーが
+  // **「モチーフ以外はぜんぶ状態」と数えない。**その数え方だとカラーが
   // 状態に混ざる。上位種別は DB が element_kind で渡してくる。
   const morphs = revealed.cards.filter((c) => c.element_kind === "morph");
   const states = revealed.cards.filter((c) => c.element_kind === "state");

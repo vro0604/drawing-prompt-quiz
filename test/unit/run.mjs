@@ -131,7 +131,9 @@ import {
   edgeFor,
   gapFor,
   isClipped,
+  placeholderCount,
 } from "../../src/features/feed/layout.ts";
+import { validateRegistrationDisplayName } from "../../src/features/auth/display-name.ts";
 import {
   AI_BADGE_TEXT,
   BRAND_TEXT,
@@ -1455,6 +1457,36 @@ test("長押しの失効", "別のカードの上へ移ったら失効する", (
 
 console.log("\n一覧の並べかた（段違いの列）");
 
+for (const [real, expected] of [
+  [0, 8],
+  [1, 7],
+  [2, 6],
+  [7, 1],
+  [8, 0],
+  [9, 0],
+  [100, 0],
+]) {
+  test("一覧のプレースホルダー", `実作品${real}件なら${expected}枚`, () => {
+    assert(placeholderCount(real) === expected, `${placeholderCount(real)}枚になった`);
+  });
+}
+
+console.log("\n登録時の表示名");
+
+for (const raw of ["", "   ", "ゲスト", " ゲスト ", "guest", " guest ", "Guest", "GUEST"]) {
+  test("登録時の表示名", `${JSON.stringify(raw)} は拒否する`, () => {
+    const result = validateRegistrationDisplayName(raw);
+    assert(!result.ok, `${JSON.stringify(raw)} が通った`);
+  });
+}
+
+for (const [raw, expected] of [["花子", "花子"], [" Alice ", "Alice"]]) {
+  test("登録時の表示名", `${JSON.stringify(raw)} は ${expected} として通す`, () => {
+    const result = validateRegistrationDisplayName(raw);
+    assert(result.ok && result.value === expected, JSON.stringify(result));
+  });
+}
+
 /**
  * Pinterest を実測した列数（2026-09-18。
  * docs/RESEARCH/2026-09-18_pinterest-masonry.md）。
@@ -1643,15 +1675,15 @@ test("共有カード", "文言が決まった1組である", () => {
 });
 
 test("共有カード", "問いの文は回答画面と同じ言い回し", () => {
-  assert(questionText("モーフ") === "モーフ はどれ？", questionText("モーフ"));
+  assert(questionText("モチーフ") === "モチーフ はどれ？", questionText("モチーフ"));
 });
 
 console.log("\n共有カードの行の分け方");
 
 test("共有カード", "短い問いは1行に収まる", () => {
-  const lines = wrapQuestion("モーフ はどれ？");
+  const lines = wrapQuestion("モチーフ はどれ？");
   assert(lines.length === 1, `${lines.length} 行`);
-  assert(lines[0] === "モーフ はどれ？", lines[0]);
+  assert(lines[0] === "モチーフ はどれ？", lines[0]);
 });
 
 test("共有カード", "長い問いでも2行を超えない", () => {
@@ -1666,7 +1698,7 @@ test("共有カード", "2行に入り切らないときは末尾が「…」に
 
 test("共有カード", "省略しても各行は文字領域の幅に収まる（字を小さくしない）", () => {
   const max = CARD_WIDTH - CARD_PAD_X * 2;
-  for (const src of ["あ".repeat(200), "A".repeat(400), "モーフ はどれ？"]) {
+  for (const src of ["あ".repeat(200), "A".repeat(400), "モチーフ はどれ？"]) {
     for (const line of wrapQuestion(src)) {
       const w = measureText(line, QUESTION_FONT_SIZE);
       assert(w <= max, `「${line}」が ${w.toFixed(0)}px（上限 ${max}px）`);
@@ -1718,29 +1750,29 @@ test("共有URL", "共有カードの絵は問いと共有IDで変わる", () =>
 });
 
 test("共有先", "X は公式の入口（x.com/intent/tweet）を使う", () => {
-  const u = xIntentUrl("モーフ はどれ？", "https://example.test/works/w?question=1");
+  const u = xIntentUrl("モチーフ はどれ？", "https://example.test/works/w?question=1");
   assert(u.startsWith("https://x.com/intent/tweet?"), u);
 });
 
 test("共有先", "SNS へ渡すのは問題文とURLだけ（紹介文もハッシュタグも足さない）", () => {
-  const u = xIntentUrl("モーフ はどれ？", "https://example.test/w");
+  const u = xIntentUrl("モチーフ はどれ？", "https://example.test/w");
   const text = decodeURIComponent(new URL(u).searchParams.get("text"));
-  assert(text === "モーフ はどれ？", text);
+  assert(text === "モチーフ はどれ？", text);
   assert(!u.includes("hashtags"), "ハッシュタグの欄が付いている");
   assert(!u.includes("via="), "via が付いている");
 });
 
 test("共有先", "Bluesky は text しか受け取れないので本文にURLを入れる", () => {
-  const u = blueskyIntentUrl("モーフ はどれ？", "https://example.test/w");
+  const u = blueskyIntentUrl("モチーフ はどれ？", "https://example.test/w");
   assert(u.startsWith("https://bsky.app/intent/compose?text="), u);
   const text = decodeURIComponent(new URL(u).searchParams.get("text"));
-  assert(text === "モーフ はどれ？\nhttps://example.test/w", JSON.stringify(text));
+  assert(text === "モチーフ はどれ？\nhttps://example.test/w", JSON.stringify(text));
 });
 
 console.log("\n共有の見出しと説明");
 
 test("共有OG", "問い付きは「{問題文}｜つたわるかな」", () => {
-  assert(shareOgTitle("モーフ はどれ？") === "モーフ はどれ？｜つたわるかな", "1");
+  assert(shareOgTitle("モチーフ はどれ？") === "モチーフ はどれ？｜つたわるかな", "1");
 });
 
 test("共有OG", "問いが無ければ差し替えない（null を返す）", () => {
@@ -1756,7 +1788,7 @@ console.log("\nカードに何を載せるか");
 
 /** 既定は「ふつうの公開作品」。試したい欄だけ上書きする */
 const cardSource = (over = {}) => ({
-  question_text: "モーフ はどれ？",
+  question_text: "モチーフ はどれ？",
   author_name: "えがきさん",
   anonymous: false,
   ai: false,
@@ -1769,7 +1801,7 @@ const cardSource = (over = {}) => ({
 test("カードの中身", "ふつうの作品は、問題文とCTAと投稿者名が載る", () => {
   const p = shareCardParts(cardSource());
   assert(p.headline === null, `見出しが ${p.headline}`);
-  assert(p.lines.join("") === "モーフ はどれ？", p.lines.join("/"));
+  assert(p.lines.join("") === "モチーフ はどれ？", p.lines.join("/"));
   assert(p.cta === CTA_TEXT, p.cta);
   assert(p.authorLine === "えがきさん", `${p.authorLine}`);
   assert(p.showAi === false, "AIの札が出ている");
@@ -1802,7 +1834,7 @@ test("カードの中身", "ぼかす作品は、ぼかし・専用の見出し�
 
 test("カードの中身", "ぼかす作品でも問題文は載る（問いを見せるための共有なので）", () => {
   const p = shareCardParts(cardSource({ sensitive: true }));
-  assert(p.lines.join("") === "モーフ はどれ？", p.lines.join("/"));
+  assert(p.lines.join("") === "モチーフ はどれ？", p.lines.join("/"));
 });
 
 test("カードの中身", "問いが無い共有では、問題文の行が0になる", () => {

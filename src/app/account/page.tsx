@@ -30,6 +30,7 @@ import {
   surface,
 } from "@/app/_surface";
 import { AuthConfirmedBeacon } from "@/app/_auth-sync";
+import { DISPLAY_NAME_MAX_LENGTH } from "@/features/auth/display-name";
 
 /**
  * /account ／ アカウントの最小画面。
@@ -87,6 +88,26 @@ function Credentials({ idPrefix }: { idPrefix: string }) {
         />
       </label>
     </>
+  );
+}
+
+function RegistrationDisplayName({ idPrefix }: { idPrefix: string }) {
+  return (
+    <label className="block space-y-1">
+      <span className="block text-xs text-faint">表示名</span>
+      <input
+        id={`${idPrefix}-display-name`}
+        type="text"
+        name="displayName"
+        required
+        maxLength={DISPLAY_NAME_MAX_LENGTH}
+        autoComplete="nickname"
+        className={field}
+      />
+      <span className="block text-xs text-faint">
+        作品の作者名として表示されます。「ゲスト」は使用できません。
+      </span>
+    </label>
   );
 }
 
@@ -361,6 +382,7 @@ export default async function AccountPage({
             </p>
           </div>
           <form action={registerAction} className="space-y-4">
+            <RegistrationDisplayName idPrefix="promote" />
             <Credentials idPrefix="promote" />
             <ConsentCheck
               idPrefix="promote"
@@ -380,6 +402,7 @@ export default async function AccountPage({
           <section className={`${surface} space-y-4`}>
             <h2 className="text-sm font-bold">新しく登録する</h2>
             <form action={registerAction} className="space-y-4">
+              <RegistrationDisplayName idPrefix="signup" />
               <Credentials idPrefix="signup" />
               <ConsentCheck
                 idPrefix="signup"

@@ -185,7 +185,11 @@ const all = async (sql, params = []) => (await db.query(sql, params)).rows;
 
 async function makeBuyer(tag) {
   const email = `billing-${tag}-${Date.now()}@example.com`;
-  const { rows } = await db.query(`insert into auth.users (email, is_anonymous) values ($1, false) returning id`, [email]);
+  const { rows } = await db.query(
+    `insert into auth.users (email, is_anonymous, raw_user_meta_data)
+     values ($1, false, $2) returning id`,
+    [email, { display_name: `購入者${tag}` }],
+  );
   const id = rows[0].id;
   const handle = `buyer-${tag}-${Math.random().toString(36).slice(2, 7)}`;
   await db.query(`update public.profiles set handle = $2, display_name = $3 where id = $1`, [id, handle, `購入者${tag}`]);

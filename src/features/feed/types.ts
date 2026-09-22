@@ -73,13 +73,11 @@ export type FeedCardWork = FeedWorkItem & {
  */
 export type FeedCard =
   | { kind: "work"; work: FeedCardWork }
-  | { kind: "sample"; sample: SampleCard };
+  | { kind: "placeholder"; placeholder: PlaceholderCard };
 
-/** 公開作品が0件のときに並べる見本。**押せない。中身も持たない** */
-export type SampleCard = {
+/** 投稿数が少ない間だけ画面に置く、押せない場所取り。 */
+export type PlaceholderCard = {
   id: string;
-  /** public/ の下に置いた、このサービスが自分で作った画像 */
-  src: string;
   width: number;
   height: number;
 };

@@ -699,7 +699,7 @@ export async function drawPrompt(s, modeKey, timeLimitSeconds = "3600") {
   const answers = new Map();
   const html = clean(page.html);
   //
-  // **キーは枠のキー（morph_1 など）。呼び名（「モーフ」）ではない。**
+  // **キーは枠のキー（morph_1 など）。呼び名（「モチーフ」）ではない。**
   // 新方式では同じ呼び名の枠が1つのお題に何度も出るので、
   // 呼び名で覚えると後から来た枠が前の枠を上書きし、
   // 別の枠の答えで採点することになる（実測で 3問中2問しか合わなかった）。
@@ -899,6 +899,7 @@ export async function register(s, label) {
 
   const after = await s.post("/account", {
     [form.actionId]: "",
+    displayName: `検査用${label}`.slice(0, 30),
     email,
     password,
     ...consentFields(form),
@@ -927,6 +928,7 @@ export async function registerConcurrent(s, label, times) {
     Array.from({ length: times }, () =>
       s.post("/account", {
         [form.actionId]: "",
+        displayName: `検査用${label}`.slice(0, 30),
         email,
         password,
         ...consentFields(form),
@@ -1055,7 +1057,7 @@ export async function answerWork(s, workId, answers, { correct = true } = {}) {
 /**
  * 出題フォームを読み解く。
  *
- * 1問 = 1つの `<fieldset data-question data-slot-label="モーフ">`。
+ * 1問 = 1つの `<fieldset data-question data-slot-label="モチーフ">`。
  * 中のチェックボックスが name="q_{問のID}" value="{タグのID}"
  * data-choice-label="{選択肢の文字}"。
  *
@@ -1087,7 +1089,7 @@ export function parseQuiz(html) {
     const frag = fs[0];
 
     const slotLabel = /data-slot-label="([^"]*)"/.exec(frag)?.[1]?.trim() ?? "";
-    // 枠の呼び名は重複する（「モーフ」が3つある）。突き合わせにはキーを使う
+    // 枠の呼び名は重複する（「モチーフ」が3つある）。突き合わせにはキーを使う
     const slotKey = /data-slot-key="([^"]*)"/.exec(frag)?.[1]?.trim() ?? "";
 
     const choices = [];

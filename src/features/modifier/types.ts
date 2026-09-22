@@ -83,7 +83,7 @@ export type SubDirective = {
  * サブ指令の一覧。24語 × 3候補 = 72件。
  *
  * 【並び】
- *   モーフ8語 → 感情6語 → 性質4語 → カラー6語。
+ *   モチーフ8語 → 感情6語 → 性質4語 → カラー6語。
  *   正式タグ名は本番の tags 表に実在し、現行モードの抽選に出るものだけ。
  *   旧方式でしか使われない motif / species / genre は1語も入れていない。
  *   出所: ユーザー指示（2026-09-10）「必ず現在DBに存在し、
@@ -105,7 +105,7 @@ export type SubDirective = {
  *   出所: ユーザー指示（2026-09-10）「候補3つは初期版では等確率。」
  */
 export const SUB_DIRECTIVES: SubDirective[] = [
-  // ── モーフ 8語 ──
+  // ── モチーフ 8語 ──
   // 灯台
   { key: "lighthouse_beam_wide", label: "光を横へ大きく伸ばす", forTagLabels: ["灯台"], weight: 1 },
   { key: "lighthouse_reflect", label: "水面に光を反射させる", forTagLabels: ["灯台"], weight: 1 },

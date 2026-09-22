@@ -201,7 +201,7 @@ export function cardObjectPosition(width: number, height: number): "top" | "cent
 /**
  * 問いの文。**画面に出ているのと同じ言い回しにする。**
  *
- * 回答画面は「3. モーフ はどれ？」と出す
+ * 回答画面は「3. モチーフ はどれ？」と出す
  * （src/app/works/[id]/_quiz.tsx の legend）。共有カードでは
  * 何問目かに意味が無いので番号だけ落とす。
  *

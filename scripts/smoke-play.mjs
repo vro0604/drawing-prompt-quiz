@@ -313,7 +313,7 @@ must(
   `${slotCount}枠すべての答えが並んでいる`,
   `実際 ${cardCount}枚`,
 );
-must(/モーフ/.test(textOf(page.html)), "描く対象（モーフ）が並んでいる");
+must(/モチーフ/.test(textOf(page.html)), "描く対象（モチーフ）が並んでいる");
 must(/残り |無制限|制作時間/.test(textOf(page.html)), "制作時間が出ている");
 // 全体の引き直しは使っていないので、引き直しの記録は出ない（カテゴリの
 // 引き直しは prompts.reroll_count に数えない）。ここでは数を見ない。

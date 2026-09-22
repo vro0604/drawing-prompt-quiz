@@ -12,6 +12,7 @@ import {
   edgeFor,
   gapFor,
   isClipped,
+  placeholderCount,
 } from "@/features/feed/layout";
 import {
   LIKE_PRESS_MS,
@@ -29,8 +30,9 @@ import type {
   FeedCard,
   FeedCardWork,
   FeedQuery,
-  SampleCard,
+  PlaceholderCard,
 } from "@/features/feed/types";
+import { PLACEHOLDER_CARDS } from "@/features/feed/placeholders";
 import { completenessLabel } from "@/features/work/types";
 import {
   loadFeedPageAction,
@@ -257,14 +259,35 @@ const WorkCardView = memo(function WorkCardView({
   const router = useRouter();
   const [menuOpen, setMenuOpen] = useState(false);
   const [broken, setBroken] = useState(false);
+  const cardRef = useRef<HTMLElement | null>(null);
   const ratio = displayRatio(work.image_width, work.image_height);
   const clipped = isClipped(work.image_width, work.image_height);
 
   // 未回答ならクイズへ、回答済みなら結果へ。**途中に何も挟まない**
   const href = work.answered_by_me ? `/works/${work.id}` : `/works/${work.id}?q=1`;
 
+  useEffect(() => {
+    if (!menuOpen) return;
+
+    const closeOutside = (event: PointerEvent) => {
+      const target = event.target;
+      if (target instanceof Node && !cardRef.current?.contains(target)) setMenuOpen(false);
+    };
+    const closeWithEscape = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setMenuOpen(false);
+    };
+
+    document.addEventListener("pointerdown", closeOutside, true);
+    document.addEventListener("keydown", closeWithEscape);
+    return () => {
+      document.removeEventListener("pointerdown", closeOutside, true);
+      document.removeEventListener("keydown", closeWithEscape);
+    };
+  }, [menuOpen]);
+
   return (
     <article
+      ref={cardRef}
       data-work-card
       data-work-id={work.id}
       data-answered={work.answered_by_me ? "1" : "0"}
@@ -490,18 +513,16 @@ const WorkCardView = memo(function WorkCardView({
  * リンクも、ボタンも、長押しの受け口も持たない。
  * カーソルも変わらないので、押せるようには見えない（指示 24）。
  */
-function SampleCardView({ sample }: { sample: SampleCard }) {
-  const ratio = displayRatio(sample.width, sample.height);
+function PlaceholderCardView({ placeholder }: { placeholder: PlaceholderCard }) {
+  const ratio = displayRatio(placeholder.width, placeholder.height);
   return (
     <div
-      data-sample-card
-      aria-hidden
-      className="dpq-card-frame relative w-full select-none overflow-hidden bg-photo-bed"
+      data-placeholder-card
+      aria-label="作品がここに表示されます"
+      className="dpq-card-frame relative flex w-full select-none items-center justify-center overflow-hidden bg-photo-bed px-3 text-center text-[10px] text-glass-ink opacity-55"
       style={{ aspectRatio: `1 / ${ratio}`, borderRadius: `${CARD_RADIUS_PX}px` }}
     >
-      {/* 見本は SVG。next/image は SVG を既定で最適化しないので素の img で置く */}
-      {/* eslint-disable-next-line @next/next/no-img-element */}
-      <img src={sample.src} alt="" draggable={false} className="h-full w-full object-cover" />
+      <span>作品がここに表示されます</span>
     </div>
   );
 }
@@ -512,14 +533,11 @@ function SampleCardView({ sample }: { sample: SampleCard }) {
 
 export default function MasonryFeed({
   initialWorks,
-  samples,
   query,
   pageSize,
   canReact,
 }: {
   initialWorks: FeedCardWork[];
-  /** 公開作品が0件のときだけ中身が入る。**実作品とは混ざらない**（指示 27） */
-  samples: SampleCard[];
   query: FeedQuery;
   pageSize: number;
   /** 登録ユーザーとして見ているか。押す前の案内を出し分けるためだけ */
@@ -538,8 +556,6 @@ export default function MasonryFeed({
   const [loading, setLoading] = useState(false);
   const [toast, setToast] = useState<string | null>(null);
 
-  const showSamples = samples.length > 0;
-
   /* --- 短い知らせ ------------------------------------------------------- */
   const say = useCallback((text: string) => {
     setToast(text);
@@ -550,8 +566,6 @@ export default function MasonryFeed({
   const pendingScroll = useRef<number | null>(null);
 
   useLayoutEffect(() => {
-    if (showSamples) return;
-
     // 印が、この条件の一覧のものでなければ戻さない（上の説明のとおり）。
     // 使ったら必ず消す。**次に開いたときは新しい値で出す**
     let returning = false;
@@ -600,8 +614,6 @@ export default function MasonryFeed({
   }, [works, offset, done, cardState]);
 
   useEffect(() => {
-    if (showSamples) return;
-
     const save = () => {
       const { works: w, offset: o, done: d, cardState: cs } = latest.current;
       if (w.length === 0) return;
@@ -633,14 +645,14 @@ export default function MasonryFeed({
       document.removeEventListener("visibilitychange", save);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [showSamples]);
+  }, []);
 
   /* --- 読み足し --------------------------------------------------------- */
   const sentinel = useRef<HTMLDivElement | null>(null);
   const loadingRef = useRef(false);
 
   const loadMore = useCallback(async () => {
-    if (loadingRef.current || latest.current.done || showSamples) return;
+    if (loadingRef.current || latest.current.done) return;
     loadingRef.current = true;
     setLoading(true);
     try {
@@ -676,11 +688,11 @@ export default function MasonryFeed({
       setLoading(false);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [pageSize, showSamples, say]);
+  }, [pageSize, say]);
 
   useEffect(() => {
     const el = sentinel.current;
-    if (!el || showSamples) return;
+    if (!el) return;
     const io = new IntersectionObserver(
       (entries) => {
         if (entries.some((e) => e.isIntersecting)) void loadMore();
@@ -691,7 +703,7 @@ export default function MasonryFeed({
     );
     io.observe(el);
     return () => io.disconnect();
-  }, [loadMore, showSamples]);
+  }, [loadMore]);
 
   /* --- 操作 ------------------------------------------------------------- */
   const setOne = useCallback((workId: string, patch: Partial<CardState>) => {
@@ -761,7 +773,6 @@ export default function MasonryFeed({
    * 同じ往復で、いま画面に出ている中身も控える。
    */
   const onLeave = useCallback(() => {
-    if (showSamples) return;
     const { works: w, offset: o, done: d, cardState: cs } = latest.current;
     if (w.length === 0) return;
     const items = w.map((x) => ({
@@ -776,7 +787,7 @@ export default function MasonryFeed({
       /* 使えない環境では復帰しないだけ */
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [showSamples]);
+  }, []);
 
   const doShare = useCallback(
     async (workId: string) => {
@@ -967,9 +978,11 @@ export default function MasonryFeed({
   // 手で useMemo を足すと、compiler が「手の memo を保てない」と言って
   // この部品ぜんたいの最適化をやめてしまう（実測: lint が
   // preserve-manual-memoization で落ちた）
-  const cards: FeedCard[] = showSamples
-    ? samples.map((s) => ({ kind: "sample" as const, sample: s }))
-    : works.map((w) => ({ kind: "work" as const, work: w }));
+  const placeholders = PLACEHOLDER_CARDS.slice(0, placeholderCount(works.length));
+  const cards: FeedCard[] = [
+    ...works.map((work) => ({ kind: "work" as const, work })),
+    ...placeholders.map((placeholder) => ({ kind: "placeholder" as const, placeholder })),
+  ];
 
   // 列の数は**画面の幅そのもの**から決める（Pinterest を実測した式。
   // features/feed/layout.ts）。余白を引いた幅からではない
@@ -981,7 +994,7 @@ export default function MasonryFeed({
   const ratios = cards.map((c) =>
     c.kind === "work"
       ? displayRatio(c.work.image_width, c.work.image_height)
-      : displayRatio(c.sample.width, c.sample.height),
+      : displayRatio(c.placeholder.width, c.placeholder.height),
   );
 
   const laid = distribute(ratios, columns);
@@ -1002,8 +1015,13 @@ export default function MasonryFeed({
           <div key={c} className="flex min-w-0 flex-1 flex-col" style={{ gap: `${gap}px` }}>
             {indexes.map((i) => {
               const card = cards[i];
-              if (card.kind === "sample") {
-                return <SampleCardView key={card.sample.id} sample={card.sample} />;
+              if (card.kind === "placeholder") {
+                return (
+                  <PlaceholderCardView
+                    key={card.placeholder.id}
+                    placeholder={card.placeholder}
+                  />
+                );
               }
               const w = card.work;
               return (
@@ -1033,9 +1051,7 @@ export default function MasonryFeed({
       </div>
 
       {/* 読み足しの目印。ここが画面に入ると続きを取りに行く */}
-      {!showSamples ? (
-        <div data-feed-sentinel ref={sentinel} className="h-px w-full" aria-hidden />
-      ) : null}
+      <div data-feed-sentinel ref={sentinel} className="h-px w-full" aria-hidden />
 
       {loading ? (
         <p data-feed-loading className="py-6 text-center text-xs text-faint">
@@ -1043,7 +1059,7 @@ export default function MasonryFeed({
         </p>
       ) : null}
 
-      {done && !showSamples && works.length > 0 ? (
+      {done && works.length > 0 ? (
         <p data-feed-end className="py-6 text-center text-xs text-faint">
           ここまでです。
         </p>

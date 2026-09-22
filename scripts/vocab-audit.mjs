@@ -182,7 +182,7 @@ async function main() {
   // お題は3〜6語ある。全部の語で禁止された語は使えないので、
   // 語数が増えるほど候補は減る。最悪の組み合わせを見る。
   console.log(`${BOLD}4. お題（複数語）にしたときに残るヒント語${RESET}`);
-  // モーフ以外（状態8カテゴリ ＋ カラー）から3語を引く。
+  // モチーフ以外（状態8カテゴリ ＋ カラー）から3語を引く。
   // **カラーもお題に入るので、ここに含める。**含めないと、
   // 実際には起こるお題の組み合わせを見ないまま数えることになる。
   const morphs = tags.filter((t) => t.kind === "morph");
@@ -307,7 +307,7 @@ async function writeInventory(db, pairs) {
   };
 
   const kindLabel = {
-    morph: "モーフ",
+    morph: "モチーフ",
     state: "状態",
     color: "カラー",
     legacy: "旧語彙",
@@ -385,7 +385,7 @@ async function writeInventory(db, pairs) {
   lines.push("");
   lines.push("| 上位種別 | 中身 |");
   lines.push("|---|---|");
-  lines.push("| モーフ（morph） | 描く対象となる具体語 |");
+  lines.push("| モチーフ（morph） | 描く対象となる具体語 |");
   lines.push("| 状態（state） | 感情・動作・身体状態・変化・環境・関係・性質・社会状態の8カテゴリ |");
   lines.push("| カラー（color） | 色彩語。状態とは別 |");
   lines.push("| 旧語彙（legacy） | 2026-09-04 の分類より前からある語。生成用カテゴリを持たない |");

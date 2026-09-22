@@ -27,6 +27,7 @@ import { readImageInfo } from "@/features/work/image";
 import { removeWorkImage, uploadWorkImage } from "@/features/work/rpc";
 import { getCurrentUser } from "@/features/auth/session";
 import { callAgree } from "@/features/consent/rpc";
+import { validateRegistrationDisplayName } from "@/features/auth/display-name";
 
 /**
  * /account のボタンから呼ばれる Server Action。
@@ -201,6 +202,9 @@ async function successFromCurrentState(
 export async function registerAction(form: FormData): Promise<void> {
   const email = str(form, "email");
   const password = str(form, "password");
+  const displayNameResult = validateRegistrationDisplayName(form.get("displayName"));
+  if (!displayNameResult.ok) back(displayNameResult.message);
+  const displayName = displayNameResult.value;
 
   // --- 規約への同意（P5）------------------------------------------------------
   //
@@ -219,11 +223,11 @@ export async function registerAction(form: FormData): Promise<void> {
   if (current.user?.is_anonymous) {
     // 同じ人の昇格は1本ずつ通す。**まったく同時に届いた場合の備え**
     return oneAtATime(current.user.id, () =>
-      promoteGuest(supabase, email, password, terms, privacy),
+      promoteGuest(supabase, email, password, displayName, terms, privacy),
     );
   }
 
-  return createNewAccount(supabase, email, password, terms, privacy);
+  return createNewAccount(supabase, email, password, displayName, terms, privacy);
 }
 
 /**
@@ -268,10 +272,18 @@ async function promoteGuest(
   supabase: Awaited<ReturnType<typeof createSupabaseServerClient>>,
   email: string,
   password: string,
+  displayName: string,
   terms: string,
   privacy: string,
 ): Promise<never> {
   {
+    // 正式登録へ切り替わる前に名前を確定する。ゲストの行は維持するので、
+    // これまで引いたお題や回答の持ち主は変わらない。
+    const { error: profileError } = await supabase.rpc("set_registration_display_name", {
+      p_display_name: displayName,
+    });
+    if (profileError) back("表示名を保存できませんでした。もう一度お試しください。");
+
     // 送る前に見る。ここで止まれば、メールは1通も増えない
     const already = await successFromCurrentState(supabase, email);
     if (already) {
@@ -280,7 +292,7 @@ async function promoteGuest(
     }
 
     let { error } = await supabase.auth.updateUser(
-      { email, password },
+      { email, password, data: { display_name: displayName } },
       { emailRedirectTo: CONFIRM_URL },
     );
 
@@ -378,6 +390,7 @@ async function createNewAccount(
   supabase: Awaited<ReturnType<typeof createSupabaseServerClient>>,
   email: string,
   password: string,
+  displayName: string,
   terms: string,
   privacy: string,
 ): Promise<never> {
@@ -386,7 +399,7 @@ async function createNewAccount(
   const { data, error } = await supabase.auth.signUp({
     email,
     password,
-    options: { emailRedirectTo: CONFIRM_URL },
+    options: { emailRedirectTo: CONFIRM_URL, data: { display_name: displayName } },
   });
 
   // 未サインインからの新規作成でも、送信枠切れは起こる。
@@ -558,6 +571,11 @@ export async function updateProfileAction(form: FormData): Promise<void> {
   const handle = str(form, "handle");
   const displayName = str(form, "displayName");
   const bio = str(form, "bio");
+
+  if (displayName !== "") {
+    const checked = validateRegistrationDisplayName(displayName);
+    if (!checked.ok) back(checked.message);
+  }
 
   const links: Record<string, string> = {};
   for (const field of LINK_FIELDS) {

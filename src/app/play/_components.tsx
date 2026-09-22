@@ -110,7 +110,7 @@ export function StartForm({
               />
               <span className="space-y-1">
                 <span className="block text-base font-bold">{mode.label}</span>
-                {/* 語数・モーフ上限・候補数・引き直し・出題数を1行にまとめる。
+                {/* 語数・モチーフ上限・候補数・引き直し・出題数を1行にまとめる。
                     語数はモードごとに違う（通常3〜4語／高難度5〜6語。D158）ので、
                     **モードの側から文を作る。**画面に数字を直接書かない。 */}
                 <span className="block text-xs text-faint">{modeSummary(mode)}</span>

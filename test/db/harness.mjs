@@ -210,15 +210,19 @@ export async function asOwner(db, sql, params) {
 
 /** 登録ユーザーを1人作る。auth.users のトリガーが profiles を作る */
 export async function createUser(db, { anonymous = false, handle = null } = {}) {
+  const metadata = anonymous ? {} : { display_name: handle ? `検査用${handle}`.slice(0, 30) : "検査用ユーザー" };
   const { rows } = await db.query(
-    `insert into auth.users (email, is_anonymous)
-     values ($1, $2) returning id`,
-    [anonymous ? null : `${Math.random().toString(36).slice(2)}@example.test`, anonymous],
+    `insert into auth.users (email, is_anonymous, raw_user_meta_data)
+     values ($1, $2, $3) returning id`,
+    [anonymous ? null : `${Math.random().toString(36).slice(2)}@example.test`, anonymous, metadata],
   );
   const id = rows[0].id;
 
-  if (handle) {
-    await db.query(`update public.profiles set handle = $2 where id = $1`, [id, handle]);
+  if (!anonymous) {
+    await db.query(
+      `update public.profiles set handle = coalesce($2, handle), display_name = $3 where id = $1`,
+      [id, handle, metadata.display_name],
+    );
   }
   return id;
 }

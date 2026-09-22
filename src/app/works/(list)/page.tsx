@@ -1,7 +1,7 @@
 import Link from "next/link";
 import { getCurrentUser } from "@/features/auth/session";
 import { countPublicWorks, fetchFeedWorks } from "@/features/feed/rpc";
-import { SAMPLE_CARDS, toFeedCardWorks } from "@/features/feed/present";
+import { toFeedCardWorks } from "@/features/feed/present";
 import {
   COMPLETENESS_FILTERS,
   FEED_PAGE_SIZE,
@@ -54,12 +54,11 @@ import MasonryFeed from "./_masonry";
  *   外す条件は回答を送ったかどうかだけで、開いただけの作品は消えない。
  *   除外は SQL 側で行う（取ってから捨てると1ページの件数がばらつく）。
  *
- * 【作品が1件も無いとき（指示 22〜27）】
- *   真っ白な画面にしない。見本のカードを10枚並べる。
- *   **見本は押せない。**公開作品が1件でもあれば、見本は1枚も出ない。
- *   「1件も無い」の判定は count_public_works で、絞り込みも興味なしも
- *   掛けていない。絞り込みの結果として0件になっただけのときは、
- *   見本ではなく「この条件では見つかりません」と書く。
+ * 【作品が少ないとき】
+ *   実作品を含めて8枚になるまで、押せないプレースホルダーを足す。
+ *   DB・API・ランキング等の件数には含めず、この一覧の見た目だけを補う。
+ *   公開作品が本当に0件のときは、count_public_works の結果を使って
+ *   投稿案内も表示する。
  *
  * Next.js 16 では searchParams が Promise なので await が必要。
  */
@@ -153,10 +152,9 @@ export default async function WorksPage({
 
   const works = toFeedCardWorks(rows);
 
-  // 見本を出すのは「公開作品が本当に0件」のときだけ（指示 27）。
-  // 数えられなかったとき（-1）は出さない。**作品があるのに
-  // 「まだありません」と書くほうが害が大きい。**
-  const showSamples = works.length === 0 && totalPublic === 0;
+  // 「まだ作品がありません」と案内するのは、本当に0件のときだけ。
+  // プレースホルダー自体は絞り込み後の実作品数に応じて一覧側で補う。
+  const hasNoPublicWorks = works.length === 0 && totalPublic === 0;
 
   return (
     // 一覧は画面の幅いっぱいに広げる。**幅に上限を置かない。**
@@ -284,11 +282,11 @@ export default async function WorksPage({
         ) : null}
 
         {/* --- 作品が1件も無いときの説明（指示 25。一覧の上に1度だけ） -------- */}
-        {showSamples ? (
+        {hasNoPublicWorks ? (
           <div data-feed-sample-notice className={`${surface} space-y-2`}>
             <p className="text-sm font-bold">まだ作品がありません。</p>
             <p className="text-sm text-faint">
-              下に並んでいるのは、作品が投稿されたときの表示イメージです。押しても何も起きません。
+              下のカードは、作品が投稿されたときの並び方を示すものです。押しても何も起きません。
             </p>
             <p className="pt-1 text-sm">
               <Link href="/play" className="underline">
@@ -299,7 +297,7 @@ export default async function WorksPage({
         ) : null}
 
         {/* --- 絞り込んだ結果として0件だったとき ----------------------------- */}
-        {works.length === 0 && !showSamples ? (
+        {works.length === 0 && !hasNoPublicWorks ? (
           <div className={surface}>
             <p className="text-sm">
               {unanswered
@@ -316,8 +314,7 @@ export default async function WorksPage({
       </div>
 
       {/* --- 一覧本体 --------------------------------------------------------- */}
-      {works.length > 0 || showSamples ? (
-        <MasonryFeed
+      <MasonryFeed
           /*
             【条件が変わったら、部品ごと作り直す】
               タブや並び順を押すと、同じ道筋のまま検索語だけが変わる。
@@ -328,7 +325,6 @@ export default async function WorksPage({
           */
           key={`${tab.key}|${sort.value}|${done}|${unanswered ? "1" : "0"}`}
           initialWorks={works}
-          samples={showSamples ? SAMPLE_CARDS : []}
           query={{
             division: tab.value,
             sort: sort.value,
@@ -338,7 +334,6 @@ export default async function WorksPage({
           pageSize={FEED_PAGE_SIZE}
           canReact={canReact}
         />
-      ) : null}
     </main>
   );
 }

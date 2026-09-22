@@ -54,7 +54,7 @@ export type RevealedCard = {
   slot_order: number;
   tag_id: number;
   tag_label: string;
-  /** モーフ / 感情 / カラー … のキー */
+  /** モチーフ / 感情 / カラー … のキー */
   category_key: string;
   category_label: string;
   /**

@@ -239,8 +239,9 @@ export async function startSupabaseMock({ db = null } = {}) {
         const anonymous = !input.email;
 
         const { rows } = await database.query(
-          `insert into auth.users (email, is_anonymous) values ($1, $2) returning id`,
-          [input.email ?? null, anonymous],
+          `insert into auth.users (email, is_anonymous, raw_user_meta_data)
+           values ($1, $2, $3) returning id`,
+          [input.email ?? null, anonymous, JSON.stringify(input.data ?? {})],
         );
         return send(res, 200, await makeSession(rows[0].id));
       }
@@ -330,8 +331,9 @@ export async function startSupabaseMock({ db = null } = {}) {
         if (rows.length === 0) {
           rows = (
             await database.query(
-              `insert into auth.users (email, is_anonymous) values ($1, false) returning id`,
-              [input.email],
+              `insert into auth.users (email, is_anonymous, raw_user_meta_data)
+               values ($1, false, $2) returning id`,
+              [input.email, JSON.stringify({ display_name: "検査用ユーザー" })],
             )
           ).rows;
         }
@@ -398,7 +400,7 @@ export async function startSupabaseMock({ db = null } = {}) {
              values ($1, false, $2) returning id`,
             [
               input.email ?? `${randomUUID()}@example.test`,
-              JSON.stringify(input.user_metadata ?? {}),
+              JSON.stringify(input.user_metadata ?? { display_name: "検査用ユーザー" }),
             ],
           );
           return send(res, 200, { user: await userRow(rows[0].id) });

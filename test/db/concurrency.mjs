@@ -139,9 +139,9 @@ async function own(client, sql, params = []) {
  */
 async function member(client, handle) {
   const { rows } = await client.query(
-    `insert into auth.users (email, is_anonymous)
-     values ($1, false) returning id`,
-    [`${handle}@example.test`],
+    `insert into auth.users (email, is_anonymous, raw_user_meta_data)
+     values ($1, false, $2) returning id`,
+    [`${handle}@example.test`, { display_name: `検査用${handle}`.slice(0, 30) }],
   );
   const uid = rows[0].id;
   await client.query(`update public.profiles set handle = $2 where id = $1`, [uid, handle]);

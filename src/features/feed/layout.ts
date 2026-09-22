@@ -98,6 +98,15 @@ export const MAX_COLUMNS = 12;
 /** カードの角の丸み（px）。実測: Pinterest も 16px（広い画面・狭い画面とも） */
 export const CARD_RADIUS_PX = 16;
 
+/** 投稿が少ない時期にも、一覧の密度とカード形状が分かる最低枚数。 */
+export const FEED_MIN_VISIBLE_CARDS = 8;
+
+/** DB や API の件数には触れず、画面だけに足すプレースホルダー数を返す。 */
+export function placeholderCount(realWorkCount: number): number {
+  const safeCount = Number.isFinite(realWorkCount) ? Math.max(0, Math.floor(realWorkCount)) : 0;
+  return Math.max(0, FEED_MIN_VISIBLE_CARDS - safeCount);
+}
+
 /**
  * 表示していい縦横比の限界（指示 4）。
  *

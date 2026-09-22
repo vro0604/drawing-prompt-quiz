@@ -68,7 +68,7 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 // 1. 作者（登録1人目）— お題を引く
 // ══════════════════════════════════════════════════════
 
-section("1. 作者がお題を引く（2段抽選・モーフ・状態・カラー）");
+section("1. 作者がお題を引く（2段抽選・モチーフ・状態・カラー）");
 
 const author = await fixtureSession("cutover-author");
 const authorId = accountUserId((await author.get("/account")).html);
@@ -99,8 +99,8 @@ const states = slotKeys.filter((k) => kindOf(k) === "state");
 const colors = slotKeys.filter((k) => kindOf(k) === "color");
 const others = slotKeys.filter((k) => kindOf(k) === "other");
 
-must(morphs.length >= 1, "モーフが最低1個入っている", `${morphs.length}個`);
-must(others.length === 0, "モーフ・状態・カラー以外の枠が混ざっていない", others.join(" "));
+must(morphs.length >= 1, "モチーフが最低1個入っている", `${morphs.length}個`);
+must(others.length === 0, "モチーフ・状態・カラー以外の枠が混ざっていない", others.join(" "));
 // 呼び名が枠のキーと食い違っていないか（「正しく表示される」の実体）
 {
   const pairs = [...promptHtml.matchAll(

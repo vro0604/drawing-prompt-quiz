@@ -186,7 +186,7 @@ async function main() {
   //   （test/db/run.mjs の「配り方」の節）で確かめる。この関数は
   //   利用者から呼べないので、スモークからは触れない。
   const morphs = started.slots.filter((x) => x.card_slot_key.startsWith("morph_")).length;
-  check(morphs >= 1 && morphs <= 2, "モーフは1〜2枠", `実際 ${morphs}`);
+  check(morphs >= 1 && morphs <= 2, "モチーフは1〜2枠", `実際 ${morphs}`);
   const colors = started.slots.filter((x) => x.card_slot_key.startsWith("color_")).length;
   check(colors <= 1, "カラーは多くても1枠（必須ではない）", `実際 ${colors}`);
   check(started.carried_count === 0, "持ち出しを渡していないので0個");
@@ -327,7 +327,7 @@ async function main() {
     check(prompt.cards.length === done.card_count, `カードが${done.card_count}枚`);
     check(
       prompt.cards.some((c) => c.pool_key === "morph"),
-      "描く対象（モーフ）が1つ以上入っている",
+      "描く対象（モチーフ）が1つ以上入っている",
     );
     check(
       prompt.cards.every((c) => typeof c.tag_label === "string" && c.tag_label.length > 0),

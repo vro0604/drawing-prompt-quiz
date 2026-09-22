@@ -190,8 +190,10 @@ export function ProfileForm({
           name="displayName"
           defaultValue={displayName}
           maxLength={30}
+          required
           className={field}
         />
+        <span className="block text-xs text-faint">「ゲスト」は使用できません。</span>
       </label>
 
       {/* --- 自己紹介 -------------------------------------------------------- */}

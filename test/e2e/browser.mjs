@@ -3945,6 +3945,68 @@ async function main() {
     }
   });
 
+  await test("M", "開いたメニューは外側・別カード・Escapeで閉じ、内側の操作を妨げない", async (t) => {
+    const { ctx, p } = await newGuest();
+    try {
+      await openFeed(p);
+      const cards = p.locator("[data-work-card]");
+      const first = cards.nth(0);
+      const second = cards.nth(1);
+
+      t.stage("ページ見出しを押すと閉じる");
+      await first.hover();
+      await first.locator("[data-card-menu]").click();
+      await p.getByRole("heading", { name: "作品一覧" }).click();
+      assert((await first.getAttribute("data-menu-open")) === "0", "外側を押しても閉じない");
+
+      t.stage("別カードのメニューを開くと前のカードは閉じる");
+      await first.hover();
+      await first.locator("[data-card-menu]").click();
+      await second.hover();
+      await second.locator("[data-card-menu]").click();
+      assert((await first.getAttribute("data-menu-open")) === "0", "前のカードが開いたまま");
+      assert((await second.getAttribute("data-menu-open")) === "1", "別カードが開いていない");
+
+      t.stage("メニュー内部を押しても、その操作が実行される");
+      const secondId = await second.getAttribute("data-work-id");
+      await second.locator('[data-card-menu-item="uninterest"]').click();
+      await p
+        .locator(`[data-work-card][data-work-id="${secondId}"]`)
+        .waitFor({ state: "detached", timeout: 15000 });
+
+      t.stage("Escapeでも閉じる");
+      await first.hover();
+      await first.locator("[data-card-menu]").click();
+      await p.keyboard.press("Escape");
+      assert((await first.getAttribute("data-menu-open")) === "0", "Escapeで閉じない");
+    } finally {
+      await ctx.close();
+    }
+  });
+
+  await test("M", "スマホのタップでも開いているメニューを外側から閉じる", async () => {
+    const ctx = await browser.newContext({
+      viewport: { width: 390, height: 844 },
+      hasTouch: true,
+      isMobile: true,
+    });
+    const p = await ctx.newPage();
+    try {
+      await openFeed(p);
+      const card = p.locator("[data-work-card]").first();
+      // スマホでは操作タブを通常表示しない既存仕様なので、状態だけ開いて
+      // touchの外側判定が同じように働くことを確かめる。
+      await card.locator("[data-card-menu]").evaluate((el) => el.click());
+      assert((await card.getAttribute("data-menu-open")) === "1", "検査用に開けなかった");
+      const heading = await p.getByRole("heading", { name: "作品一覧" }).boundingBox();
+      assert(heading, "見出しの位置が取れない");
+      await p.touchscreen.tap(heading.x + heading.width / 2, heading.y + heading.height / 2);
+      assert((await card.getAttribute("data-menu-open")) === "0", "タップで閉じない");
+    } finally {
+      await ctx.close();
+    }
+  });
+
   await test("M", "「興味なし」を押すと、その人の一覧から消える（読み直しても出ない）", async (t) => {
     const { ctx, p } = await newGuest();
     try {
@@ -4557,21 +4619,37 @@ async function main() {
     }
   });
 
-  await test("M", "作品が1件も無いときは、見本を10枚並べる（1つも押せない）", async (t) => {
+  await test("M", "実作品が8件未満なら不足分だけプレースホルダーを並べる", async (t) => {
     const { ctx, p } = await newGuest();
+    const { rows: published } = await db.query(
+      `select id from public.works where is_published order by created_at, id`,
+    );
     try {
-      t.stage("公開作品をいったん全部伏せる");
-      await db.query(`update public.works set is_published = false where is_published`);
+      assert(published.length >= 9, `検査用の公開作品が ${published.length} 件しかない`);
+      t.stage("公開数を0・1・2・7・8・9件へ変えて不足数を見る");
       try {
-        await p.goto(`${base}/works`);
-        await p.waitForSelector("[data-sample-card]", { timeout: 20000 });
+        for (const realCount of [0, 1, 2, 7, 8, 9]) {
+          await db.query(`update public.works set is_published = false where is_published`);
+          if (realCount > 0) {
+            await db.query(
+              `update public.works set is_published = true where id = any($1::uuid[])`,
+              [published.slice(0, realCount).map((r) => r.id)],
+            );
+          }
+          await p.goto(`${base}/works`);
+          await p.waitForSelector("[data-feed-grid]", { timeout: 20000 });
+          const real = await p.locator("[data-work-card]").count();
+          const placeholders = await p.locator("[data-placeholder-card]").count();
+          assert(real === realCount, `実作品が ${real} 件（${realCount}件のはず）`);
+          assert(
+            placeholders === Math.max(0, 8 - realCount),
+            `実作品${realCount}件でプレースホルダーが${placeholders}枚`,
+          );
+        }
 
-        const samples = await p.locator("[data-sample-card]").count();
-        assert(samples === 10, `見本が ${samples} 枚（10枚のはず）`);
-        assert(
-          (await p.locator("[data-work-card]").count()) === 0,
-          "見本と実作品が混ざっている",
-        );
+        await db.query(`update public.works set is_published = false where is_published`);
+        await p.goto(`${base}/works`);
+        await p.waitForSelector("[data-placeholder-card]", { timeout: 20000 });
 
         t.stage("上に一度だけ説明が出る");
         assert(
@@ -4580,8 +4658,8 @@ async function main() {
         );
         await assertBody(p, /まだ作品がありません/, "説明の文が出ていない");
 
-        t.stage("見本は押せない（リンクもボタンも長押しも無い）");
-        const interactive = await p.$$eval("[data-sample-card]", (list) =>
+        t.stage("プレースホルダーは押せない（リンクもボタンも長押しも無い）");
+        const interactive = await p.$$eval("[data-placeholder-card]", (list) =>
           list.map((n) => ({
             links: n.querySelectorAll("a,button,[role=button]").length,
             cursor: getComputedStyle(n).cursor,
@@ -4589,13 +4667,13 @@ async function main() {
           })),
         );
         for (const s of interactive) {
-          assert(s.links === 0, "見本の中に押せるものがある");
-          assert(s.cursor !== "pointer", "見本が押せるように見えている");
-          assert(s.tabbables === 0, "見本がキーボードの移動先になっている");
+          assert(s.links === 0, "プレースホルダーの中に押せるものがある");
+          assert(s.cursor !== "pointer", "プレースホルダーが押せるように見えている");
+          assert(s.tabbables === 0, "プレースホルダーがキーボードの移動先になっている");
         }
 
-        t.stage("見本を長押ししても何も起きない");
-        const box = await p.locator("[data-sample-card]").first().boundingBox();
+        t.stage("プレースホルダーを長押ししても何も起きない");
+        const box = await p.locator("[data-placeholder-card]").first().boundingBox();
         await p.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
         await p.mouse.down();
         await p.waitForTimeout(800);
@@ -4603,34 +4681,35 @@ async function main() {
         await p.waitForTimeout(300);
         assert(
           new URL(p.url()).pathname === "/works",
-          `見本を押したら画面が移った（${p.url()}）`,
+          `プレースホルダーを押したら画面が移った（${p.url()}）`,
         );
         const { rows } = await db.query(`select count(*)::int as n from public.likes`);
         assert(rows[0].n >= 0, "");
 
         t.stage("縦長・正方形・横長が混ざっている（偏らせてある）");
-        const shapes = await p.$$eval("[data-sample-card]", (list) =>
+        const shapes = await p.$$eval("[data-placeholder-card]", (list) =>
           list.map((n) => {
             const r = n.getBoundingClientRect();
             return r.height / r.width;
           }),
         );
-        assert(shapes.filter((r) => r > 1.05).length >= 5, "縦長が少ない");
+        assert(shapes.filter((r) => r > 1.05).length >= 4, "縦長が少ない");
         assert(shapes.filter((r) => Math.abs(r - 1) <= 0.05).length >= 2, "正方形が無い");
         assert(shapes.filter((r) => r < 0.95).length >= 1, "横長が無い");
       } finally {
-        t.stage("伏せた作品を元に戻す");
+        t.stage("公開状態を元に戻す");
+        await db.query(`update public.works set is_published = false where is_published`);
         await db.query(
-          `update public.works set is_published = true
-            where not is_published and deleted_at is null`,
+          `update public.works set is_published = true where id = any($1::uuid[])`,
+          [published.map((r) => r.id)],
         );
       }
 
-      t.stage("作品が1件でもあれば、見本は1枚も出ない");
+      t.stage("作品が8件以上ならプレースホルダーは出ない");
       await openFeed(p);
       assert(
-        (await p.locator("[data-sample-card]").count()) === 0,
-        "作品があるのに見本が出ている",
+        (await p.locator("[data-placeholder-card]").count()) === 0,
+        "作品が8件以上あるのにプレースホルダーが出ている",
       );
       assert(
         (await p.locator("[data-feed-sample-notice]").count()) === 0,
@@ -5094,6 +5173,7 @@ async function main() {
     await assertBody(page, /ゲストとして遊んでいます/, "ゲストになっていない");
 
     const form = "form:has(button:has-text('このゲストのまま登録する'))";
+    await page.locator(`${form} input[name=displayName]`).fill("検査用ユーザー");
     await page.locator(`${form} input[name=email]`).fill(email);
     await page.locator(`${form} input[name=password]`).fill("dummy-password-1");
     // 規約への同意は登録のときに求める（P5）。入れないと受け口が断る
@@ -6443,8 +6523,8 @@ async function main() {
   /**
    * 語彙を、対応表にあるものだけに絞る。戻す関数を返す。
    *
-   * モーフはどの回でも必ず1枠は出る（実測: 12回引いて12回とも出た）ので、
-   * モーフを絞れば「対応表にある語が必ず1枠は決まる」状態になる。
+   * モチーフはどの回でも必ず1枠は出る（実測: 12回引いて12回とも出た）ので、
+   * モチーフを絞れば「対応表にある語が必ず1枠は決まる」状態になる。
    * 感情・性質・カラーも一緒に絞って、外れる枠を減らしておく。
    */
   async function limitToCovered() {
@@ -6883,6 +6963,7 @@ async function main() {
 
     t.stage("チェックを外したままでは送れない");
     const form = page.locator("form:has(button:has-text('登録する'))").first();
+    await form.locator('input[name="displayName"]').fill("検査用ユーザー");
     await form.locator('input[name="email"]').fill("k-consent@example.test");
     await form.locator('input[name="password"]').fill("dummy-password");
     await form.getByRole("button", { name: "登録する" }).click();
@@ -6896,12 +6977,65 @@ async function main() {
     await ctx.close();
   });
 
+  await test("K", "新規登録の表示名は必須で、ゲスト予約名をサーバーでも拒否する", async (t) => {
+    const ctx = await browser.newContext();
+    const page = await ctx.newPage();
+    try {
+      await page.goto(`${base}/account`);
+      await settledBody(page);
+
+      const locateForm = () => page.locator("form:has(button:has-text('登録する'))").first();
+      const name = locateForm().locator('input[name="displayName"]');
+      t.stage("空欄はブラウザで送れない");
+      assert((await name.getAttribute("required")) !== null, "表示名が必須欄になっていない");
+      assert(!(await name.evaluate((el) => el.checkValidity())), "空欄が有効になっている");
+
+      for (const [index, value] of ["   ", " ゲスト ", "Guest"].entries()) {
+        t.stage(`${JSON.stringify(value)} を送る`);
+        const form = locateForm();
+        await form.locator('input[name="displayName"]').fill(value);
+        await form.locator('input[name="email"]').fill(`reserved-name-${index}@example.test`);
+        await form.locator('input[name="password"]').fill("dummy-password");
+        await form.locator('input[name="agreeDocs"]').check();
+        await submitAndSettle(page, form.getByRole("button", { name: "登録する" }));
+        await assertBody(
+          page,
+          index === 0 ? /表示名を入力してください/ : /この名前は使用できません/,
+          `${JSON.stringify(value)} の拒否理由が出ていない`,
+        );
+      }
+
+      const { rows: rejected } = await db.query(
+        `select count(*)::int n from auth.users where email like 'reserved-name-%@example.test'`,
+      );
+      assert(rejected[0].n === 0, "拒否した名前でユーザーが作られた");
+
+      t.stage("通常の表示名はtrimして登録できる");
+      const form = locateForm();
+      const email = `valid-name-${Date.now()}@example.test`;
+      await form.locator('input[name="displayName"]').fill("  新規ユーザー  ");
+      await form.locator('input[name="email"]').fill(email);
+      await form.locator('input[name="password"]').fill("dummy-password");
+      await form.locator('input[name="agreeDocs"]').check();
+      await submitAndSettle(page, form.getByRole("button", { name: "登録する" }));
+      await assertBody(page, /登録が完了しました|確認メールを送りました/, "通常名で登録できない");
+      const { rows: made } = await db.query(
+        `select p.display_name from public.profiles p join auth.users u on u.id = p.id where u.email = $1`,
+        [email],
+      );
+      assert(made[0]?.display_name === "新規ユーザー", `表示名が ${JSON.stringify(made)}`);
+    } finally {
+      await ctx.close();
+    }
+  });
+
   await test("K", "未同意の登録者は、通常の画面へ進めず同意の画面へ送られる", async (t) => {
     // 同意していない人を1人作る。**このセッションは、いま始まる**
     const email = "k-gate@example.test";
     const { rows: made } = await db.query(
-      `insert into auth.users (email, is_anonymous) values ($1, false) returning id`,
-      [email],
+      `insert into auth.users (email, is_anonymous, raw_user_meta_data)
+       values ($1, false, $2) returning id`,
+      [email, { display_name: "検査用ユーザー" }],
     );
     await db.query(`update public.profiles set handle = 'k-gate' where id = $1`, [made[0].id]);
 

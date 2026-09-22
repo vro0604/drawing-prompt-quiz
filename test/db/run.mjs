@@ -4,7 +4,7 @@
  * 実行: npm run test:db
  *
  * 【何を確かめるか】
- *   A. お題の組み立て   語数・モーフの最低と上限・カテゴリの重複
+ *   A. お題の組み立て   語数・モチーフの最低と上限・カテゴリの重複
  *   B. 持ち出し         自動抽選の制限を上書きすること・出所が残ること
  *   C. ゲストの線       止めるものと、止めないもの
  *   D. 制作時間         更新前後・超過・猶予・二重更新・無制限
@@ -126,7 +126,7 @@ async function main() {
    * A. お題の組み立て（D158 / D159）
    * ------------------------------------------------------------------- */
 
-  await test("A", "通常は3〜4語・モーフ1個以上", async () => {
+  await test("A", "通常は3〜4語・モチーフ1個以上", async () => {
     for (let i = 0; i < 20; i += 1) {
       const u = await makeMember(db, `norm-${i}`);
       const p = await drawPrompt(db, u, { mode: "normal" });
@@ -143,12 +143,12 @@ async function main() {
         cards.cards.map((c) => ({ category_key: c.pool_key })),
       );
       const morphs = byCat.get("morph") ?? 0;
-      assert(morphs >= 1, "モーフが0個のお題が出た（D158 違反）");
-      assert(morphs <= 3, `通常でモーフが ${morphs} 個（上限3のはず）`);
+      assert(morphs >= 1, "モチーフが0個のお題が出た（D158 違反）");
+      assert(morphs <= 3, `通常でモチーフが ${morphs} 個（上限3のはず）`);
     }
   });
 
-  await test("A", "高難度は5〜6語・モーフ最大2個", async () => {
+  await test("A", "高難度は5〜6語・モチーフ最大2個", async () => {
     for (let i = 0; i < 20; i += 1) {
       const u = await makeMember(db, `hard-${i}`);
       const p = await drawPrompt(db, u, { mode: "hard" });
@@ -165,8 +165,8 @@ async function main() {
         cards.cards.map((c) => ({ category_key: c.pool_key })),
       );
       const morphs = byCat.get("morph") ?? 0;
-      assert(morphs >= 1, "モーフが0個のお題が出た（D158 違反）");
-      assert(morphs <= 2, `高難度でモーフが ${morphs} 個（上限2のはず）`);
+      assert(morphs >= 1, "モチーフが0個のお題が出た（D158 違反）");
+      assert(morphs <= 2, `高難度でモチーフが ${morphs} 個（上限2のはず）`);
     }
   });
 
@@ -222,14 +222,14 @@ async function main() {
     //   広すぎないかは、0.60 と 0.40 が区別できる幅かで見た（差 0.20 > 0.10）。
     //
     // 【2026-09-07 に直した（D170）】
-    //   モーフ上限が2になり、確率も 0.60 / 0.40 へ配り直された。
+    //   モチーフ上限が2になり、確率も 0.60 / 0.40 へ配り直された。
     //   期待値を旧い 0.55 / 0.40 / 0.05 のままにしていたので、
     //   **正しく動いていても 50回に1回ほど落ちていた**（実測で1回観測）。
-    //   モーフ3個は上限で塞がれたので、近さではなく **0件そのもの**を見る。
+    //   モチーフ3個は上限で塞がれたので、近さではなく **0件そのもの**を見る。
     assertNear(words3 / N, 0.5, 0.1, "通常で3語になる割合");
-    assertNear(morph1 / N, 0.6, 0.1, "モーフ1個の割合");
-    assertNear(morph2 / N, 0.4, 0.1, "モーフ2個の割合");
-    assert(morph3 === 0, `モーフ3個が ${morph3} 回出た（上限2のはず）`);
+    assertNear(morph1 / N, 0.6, 0.1, "モチーフ1個の割合");
+    assertNear(morph2 / N, 0.4, 0.1, "モチーフ2個の割合");
+    assert(morph3 === 0, `モチーフ3個が ${morph3} 回出た（上限2のはず）`);
 
     // 状態カテゴリの重複。通常は状態が1〜3個なので、重複が起きうる回数は少ない。
     // 「起きる」と「頻発しない」の2つを見る（D158）
@@ -265,20 +265,71 @@ async function main() {
     assert(seen, "400回引いても同じ状態カテゴリが2回出なかった（完全禁止になっている）");
   });
 
-  await test("A", "枠の表示名が、モーフ同士の主従を示さない", async () => {
-    // D158「複数のモーフに主対象・副対象の区別を設けない」。
+  await test("A", "枠の表示名が、モチーフ同士の主従を示さない", async () => {
+    // D158「複数のモチーフに主対象・副対象の区別を設けない」。
     // 表示名に番号が入っていると、1番目が主だと読める。
     const { rows } = await db.query(
       `select card_slot_key, label from public.card_slots
         where card_slot_key like 'morph\\_%' order by card_slot_key`,
     );
-    assert(rows.length === 3, `モーフの枠が ${rows.length} 個（3個のはず）`);
+    assert(rows.length === 3, `モチーフの枠が ${rows.length} 個（3個のはず）`);
     for (const r of rows) {
       assert(
-        r.label === "モーフ",
-        `${r.card_slot_key} の表示名が「${r.label}」（順位を示さない「モーフ」のはず）`,
+        r.label === "モチーフ",
+        `${r.card_slot_key} の表示名が「${r.label}」（順位を示さない「モチーフ」のはず）`,
       );
     }
+  });
+
+  await test("A", "登録ユーザーは検証済み表示名が必須で、匿名ユーザーだけゲスト名を使える", async () => {
+    for (const displayName of [null, "   ", "ゲスト", "guest", "Guest", "GUEST"]) {
+      let rejected = false;
+      try {
+        await db.query(
+          `insert into auth.users (email, is_anonymous, raw_user_meta_data)
+           values ($1, false, $2)`,
+          [`invalid-name-${Math.random()}@example.test`, displayName === null ? {} : { display_name: displayName }],
+        );
+      } catch {
+        rejected = true;
+      }
+      assert(rejected, `${JSON.stringify(displayName)} で登録ユーザーを作れた`);
+    }
+
+    const { rows: registered } = await db.query(
+      `insert into auth.users (email, is_anonymous, raw_user_meta_data)
+       values ($1, false, $2) returning id`,
+      [`valid-name-${Math.random()}@example.test`, { display_name: "  花子  " }],
+    );
+    const { rows: profile } = await db.query(
+      `select display_name from public.profiles where id = $1`,
+      [registered[0].id],
+    );
+    assert(profile[0]?.display_name === "花子", `trim後の名前が ${profile[0]?.display_name}`);
+
+    const { rows: anonymous } = await db.query(
+      `insert into auth.users (email, is_anonymous) values (null, true) returning id`,
+    );
+    const { rows: guestProfile } = await db.query(
+      `select display_name from public.profiles where id = $1`,
+      [anonymous[0].id],
+    );
+    assert(guestProfile[0]?.display_name === "ゲスト", "匿名ユーザーのゲスト名が壊れた");
+
+    await asRole(
+      db,
+      { role: "authenticated", uid: anonymous[0].id, isAnonymous: true },
+      (c) => c.query(`select public.set_registration_display_name($1)`, ["  昇格ユーザー  "]),
+    );
+    await db.query(`update auth.users set is_anonymous = false where id = $1`, [anonymous[0].id]);
+    const { rows: promoted } = await db.query(
+      `select display_name, is_anonymous from public.profiles where id = $1`,
+      [anonymous[0].id],
+    );
+    assert(
+      promoted[0]?.display_name === "昇格ユーザー" && promoted[0]?.is_anonymous === false,
+      `昇格後のプロフィールが ${JSON.stringify(promoted[0])}`,
+    );
   });
 
   await test("A", "誤答に正解と同じ同義グループの語が並ばない", async () => {
@@ -302,7 +353,7 @@ async function main() {
    * B. 一部持ち出し（D161）
    * ------------------------------------------------------------------- */
 
-  await test("B", "モーフ3個の持ち出しが通常の上限を上書きする", async () => {
+  await test("B", "モチーフ3個の持ち出しが通常の上限を上書きする", async () => {
     const u = await makeMember(db, "carry3m");
     const source = await buildPromptWithTags(db, u, ["傘", "蝶", "梟"]);
 
@@ -327,7 +378,7 @@ async function main() {
     ]);
 
     const morphs = detail.cards.filter((c) => c.pool_key === "morph");
-    assert(morphs.length === 3, `モーフが ${morphs.length} 個（持ち出した3個のはず）`);
+    assert(morphs.length === 3, `モチーフが ${morphs.length} 個（持ち出した3個のはず）`);
 
     const labels = morphs.map((c) => c.tag_label).sort();
     assert(
@@ -336,7 +387,7 @@ async function main() {
     );
   });
 
-  await test("B", "状態3個の持ち出しにモーフが足されて4語以上になる", async () => {
+  await test("B", "状態3個の持ち出しにモチーフが足されて4語以上になる", async () => {
     const u = await makeMember(db, "carry3s");
     const source = await buildPromptWithTags(db, u, ["傘", "怒り", "水中", "重い"]);
 
@@ -365,7 +416,7 @@ async function main() {
 
     assert(detail.cards.length >= 4, `語数が ${detail.cards.length}（4語以上のはず）`);
     const morphs = detail.cards.filter((c) => c.pool_key === "morph");
-    assert(morphs.length >= 1, "モーフが足されていない（D158 違反）");
+    assert(morphs.length >= 1, "モチーフが足されていない（D158 違反）");
   });
 
   await test("B", "他者作品からの持ち出しで元作品と元お題が残る", async () => {
@@ -2447,15 +2498,15 @@ async function main() {
   await test("J", "同じ表示名の枠が複数あっても、問ごとに正しく採点する", async () => {
     const u = await makeMember(db, "dup-label");
     const src = await buildPromptWithTags(db, u, ["傘", "蝶", "梟"]);
-    const workId = await postWork(db, u, src, "モーフ3個の作品");
+    const workId = await postWork(db, u, src, "モチーフ3個の作品");
 
     const r = await makeMember(db, "dup-label-answer");
     const answer = await answerWork(db, r, workId, { correct: true });
 
     assert(answer.items.length === 3, `問が ${answer.items.length} 件（3件のはず）`);
     assert(
-      answer.items.every((x) => x.card_slot_label === "モーフ"),
-      "表示名がモーフになっていない",
+      answer.items.every((x) => x.card_slot_label === "モチーフ"),
+      "表示名がモチーフになっていない",
     );
     assert(answer.correct_count === 3, `正解が ${answer.correct_count} 件（3件のはず）`);
 
@@ -2684,13 +2735,13 @@ async function main() {
    *   状態カテゴリは8つのまま維持してください」（2026-09-05）。
    * ------------------------------------------------------------------- */
 
-  await test("K", "上位種別は モーフ1・状態8・カラー1", async () => {
+  await test("K", "上位種別は モチーフ1・状態8・カラー1", async () => {
     const { rows } = await db.query(
       `select kind, count(*)::int as n from public.draw_categories
         where is_active group by kind order by kind`,
     );
     const byKind = new Map(rows.map((r) => [r.kind, r.n]));
-    assert(byKind.get("morph") === 1, `モーフが ${byKind.get("morph")} 件`);
+    assert(byKind.get("morph") === 1, `モチーフが ${byKind.get("morph")} 件`);
     assert(byKind.get("state") === 8, `状態が ${byKind.get("state")} 件（8のはず）`);
     assert(byKind.get("color") === 1, `カラーが ${byKind.get("color")} 件`);
     assert(byKind.size === 3, `上位種別が ${byKind.size} 種類ある`);
@@ -3655,13 +3706,13 @@ async function main() {
     assert(shapes.size >= 2, `40回引いて配分が ${shapes.size} 通りしか出ていない`);
   });
 
-  await test("O", "モーフは最低1枠・最大2枠（通常も高難度も）", async () => {
+  await test("O", "モチーフは最低1枠・最大2枠（通常も高難度も）", async () => {
     const u = await makeMember(db, "morphcap");
     for (let i = 0; i < 60; i++) {
       const st = await startDraftOnly(db, u, { mode: i % 2 ? "hard" : "normal" });
       const morphs = st.slots.filter((x) => x.card_slot_key.startsWith("morph_")).length;
-      assert(morphs >= 1, "モーフが0枠のお題が出た");
-      assert(morphs <= 2, `モーフが ${morphs} 枠出た（上限2）`);
+      assert(morphs >= 1, "モチーフが0枠のお題が出た");
+      assert(morphs <= 2, `モチーフが ${morphs} 枠出た（上限2）`);
       await asRole(db, asMember(u), (c) =>
         c.query(`select public.abandon_draft($1)`, [st.session_id]));
     }
@@ -4251,7 +4302,7 @@ async function main() {
     }
   });
 
-  await test("R", "モーフが0件でも作れる（抽選の必須条件を持ち込まない）", async () => {
+  await test("R", "モチーフが0件でも作れる（抽選の必須条件を持ち込まない）", async () => {
     const u = await makeMember(db, "af-nomorph");
     const ids = await pickIds([["emotion", 1], ["color", 1], ["environment", 1]]);
     const { workId, question_count } = await postArtFirstWork(db, u, ids);
@@ -4267,7 +4318,7 @@ async function main() {
       [workId],
     )).rows[0].n;
 
-    assert(morphs === 0, `モーフが ${morphs} 件入っている（0のはず）`);
+    assert(morphs === 0, `モチーフが ${morphs} 件入っている（0のはず）`);
   });
 
   await test("R", "同じ分類の2語は、1つ目と2つ目の枠へ分かれて入る", async () => {
@@ -6865,8 +6916,9 @@ async function main() {
    */
   const makeUnconsented = async (handle) => {
     const { rows } = await db.query(
-      `insert into auth.users (email, is_anonymous) values ($1, false) returning id`,
-      [`${handle}@example.test`],
+      `insert into auth.users (email, is_anonymous, raw_user_meta_data)
+       values ($1, false, $2) returning id`,
+      [`${handle}@example.test`, { display_name: `検査用${handle}`.slice(0, 30) }],
     );
     await db.query(`update public.profiles set handle = $2 where id = $1`, [rows[0].id, handle]);
     return rows[0].id;
@@ -10855,7 +10907,9 @@ async function main() {
   const blindIds = (x) => JSON.parse(JSON.stringify(x, (k, v) => {
     if (typeof v !== "string") return v;
     if (TIME_RE.test(v)) return "<time>";
-    return v.replace(UUID_RE, "<uuid>");
+    // 20260922120000 は表示語だけを意図して変更する。集計互換の比較では
+    // 新旧どちらも現在の表示語へ寄せ、数と構造の差だけを見る。
+    return v.replace(UUID_RE, "<uuid>").replaceAll("モーフ", "モチーフ");
   }));
 
   let beforeSnapshot = null;

@@ -16,9 +16,11 @@ function member(uid) {
 }
 
 async function createUser(db, { email = null, anonymous = false, handle = null } = {}) {
+  const metadata = anonymous ? {} : { display_name: handle ? `検査用${handle}`.slice(0, 30) : "検査用ユーザー" };
   const { rows } = await db.query(
-    `insert into auth.users (email, is_anonymous) values ($1, $2) returning id`,
-    [email, anonymous],
+    `insert into auth.users (email, is_anonymous, raw_user_meta_data)
+     values ($1, $2, $3) returning id`,
+    [email, anonymous, metadata],
   );
   if (handle) {
     await db.query(`update public.profiles set handle = $2 where id = $1`, [rows[0].id, handle]);
